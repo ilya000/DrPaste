@@ -154,14 +154,27 @@ struct LayoutRepairAction: ClipboardAction {
 
 // MARK: - Registry
 
-final class ActionRegistry {
-    private(set) var actions: [ClipboardAction]
+/// ActionRegistry хранит зарегистрированные actions + конфигурацию (Backlog #8):
+/// enabledFlags для built-in (по action.id) и custom AI actions из ActionConfig.
+/// При applicable() фильтрует и по applicability контекста, и по enabled flag.
+final class ActionRegistry: ObservableObject {
+
+    @Published private(set) var actions: [ClipboardAction] = []
+    @Published var config: ActionConfig = .load() {
+        didSet {
+            if oldValue != config {
+                config.save()
+                rebuildCustomAI()
+            }
+        }
+    }
+
+    /// AI provider — нужен для конструирования AIAction из CustomAIDescriptor.
+    var aiProvider: AIProvider?
 
     init() {
-        // Built-in core actions.
-        // Categorized actions из FileActions/URLActions/etc. регистрируются через register()
-        // из AppDelegate после init().
-        self.actions = [
+        // Built-in core actions. Дальше AppDelegate регистрирует action packs.
+        actions = [
             IdentityAction(),
             LayoutRepairAction(),
             CleanFormattingAction(),
@@ -179,7 +192,90 @@ final class ActionRegistry {
         actions.append(contentsOf: batch)
     }
 
+    /// Все actions с учётом enabled flag.
+    var allEnabled: [ClipboardAction] {
+        actions.filter { isEnabled($0.id) }
+    }
+
     func applicable(for item: ClipboardItem, context: ContentContext) -> [ClipboardAction] {
-        return actions.filter { $0.isApplicable(item: item, context: context) }
+        actions.filter { isEnabled($0.id) && $0.isApplicable(item: item, context: context) }
+    }
+
+    /// Built-in default — enabled. Если в config флаг есть — используем его.
+    func isEnabled(_ actionID: String) -> Bool {
+        config.enabledFlags[actionID] ?? true
+    }
+
+    func setEnabled(_ enabled: Bool, for actionID: String) {
+        config.enabledFlags[actionID] = enabled
+    }
+
+    // MARK: - Custom AI
+
+    /// Перестраивает AI actions из текущего config.customAI.
+    /// Удаляет старые user.* и регистрирует новые из descriptors.
+    func rebuildCustomAI() {
+        guard let provider = aiProvider else { return }
+        actions.removeAll { $0.id.hasPrefix("user.") }
+        for desc in config.customAI where desc.enabled {
+            let types = Set(desc.applicableTypes)
+            let action = AIAction(
+                id: desc.id,
+                title: desc.title,
+                promptTemplate: desc.promptTemplate,
+                provider: provider
+            )
+            // Note: applicability через CustomAIAction wrapper если нужно ограничивать типы.
+            // В минимальной версии — AIAction всегда применим к plain text.
+            _ = types  // reserved for future per-type filtering
+            actions.append(action)
+        }
+    }
+
+    /// Добавляет / обновляет custom AI descriptor.
+    func upsertCustomAI(_ descriptor: CustomAIDescriptor) {
+        var copy = config
+        if let idx = copy.customAI.firstIndex(where: { $0.id == descriptor.id }) {
+            copy.customAI[idx] = descriptor
+        } else {
+            copy.customAI.append(descriptor)
+        }
+        config = copy  // triggers save + rebuildCustomAI
+    }
+
+    func removeCustomAI(id: String) {
+        var copy = config
+        copy.customAI.removeAll { $0.id == id }
+        config = copy
+    }
+
+    // MARK: - Export / Import
+
+    /// Сериализует config в JSON для export. API keys в export НЕ включаются.
+    func exportJSON() -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try? encoder.encode(config)
+    }
+
+    /// Импорт config: replace = заменяет полностью, merge = добавляет уникальное.
+    enum ImportStrategy { case replace, merge }
+
+    func importJSON(_ data: Data, strategy: ImportStrategy) -> Bool {
+        guard let incoming = try? JSONDecoder().decode(ActionConfig.self, from: data) else {
+            return false
+        }
+        switch strategy {
+        case .replace:
+            config = incoming
+        case .merge:
+            var copy = config
+            for (k, v) in incoming.enabledFlags { copy.enabledFlags[k] = v }
+            for desc in incoming.customAI where !copy.customAI.contains(where: { $0.id == desc.id }) {
+                copy.customAI.append(desc)
+            }
+            config = copy
+        }
+        return true
     }
 }

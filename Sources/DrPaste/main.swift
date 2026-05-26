@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     var hudPanel: HudPanel?
     var hudState: HudState!
     var statusItem: NSStatusItem!
+    var settingsController: SettingsWindowController?
 
     private var statusMenu: NSMenu!
     private var recentMenu: NSMenu!
@@ -61,7 +62,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // AI actions всегда регистрируются (Backlog #2): без ключа возвращают .failed
         let cfg = AIProviderConfig.load()
         aiProvider = AnthropicProvider(config: cfg)
+        registry.aiProvider = aiProvider
         registry.register(DefaultAIActions.make(provider: aiProvider).map { $0 as ClipboardAction })
+        // Build custom AI actions из persisted config (Backlog #8)
+        registry.rebuildCustomAI()
+
+        settingsController = SettingsWindowController(registry: registry, store: store)
 
         hudState = HudState()
         startEngine()
@@ -247,19 +253,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     @objc private func menuOpenAccessibility() { openAccessibilitySettings() }
 
     @objc private func menuOpenSettings() {
-        // Placeholder для Backlog #8 Settings UI.
-        // Сейчас открываем providers.json как минимальный config UI.
-        let url = AIProviderConfig.configURL()
-        if !FileManager.default.fileExists(atPath: url.path) {
-            let template = """
-            {
-              "anthropicAPIKey": "sk-ant-...",
-              "anthropicModel": "claude-sonnet-4-6"
-            }
-            """
-            try? template.write(to: url, atomically: true, encoding: .utf8)
-        }
-        NSWorkspace.shared.open(url)
+        // Backlog #8 — полное Settings окно с TabView и playground.
+        settingsController?.show()
     }
 
     @objc private func menuShowAbout() {
@@ -529,7 +524,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     private func performRecovery(_ rec: RecoveryAction) {
         switch rec {
         case .openProvidersConfig:
-            menuOpenSettings()
+            // Закрываем HUD и открываем Settings → AI tab
+            closeHUD()
+            settingsController?.show()
         case .openAccessibilitySettings:
             openAccessibilitySettings()
         case .custom(_, let url):
