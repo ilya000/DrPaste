@@ -1,0 +1,62 @@
+DrPaste
+Copyright (C) 2026 iLya Os
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the
+Free Software Foundation, either version 3 of the License, or (at your
+option) any later version.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+
+
+================================================================================
+ADDITIONAL TERMS — GPL v3 Section 7(d): Attribution Requirement
+================================================================================
+
+Pursuant to Section 7(d) of the GNU General Public License, the following
+additional permission and requirement apply to this work and to any derivative
+works:
+
+  You must preserve the original author attribution "iLya Os" in:
+
+    1. All source files containing the copyright header.
+    2. The LICENSE file (or equivalent), in any redistributed copy.
+    3. The "About" / credits / author section of any user-facing build, if
+       such a section exists, alongside attribution to any subsequent authors.
+
+  Removing or obscuring this attribution is not permitted. Adding your own
+  copyright and attribution alongside the original is encouraged.
+
+These additional terms apply only to the components originally authored by
+iLya Os and do not extend the requirements of GPL v3 in any other way.
+
+
+================================================================================
+FULL LICENSE TEXT
+================================================================================
+
+This file does not include the full canonical text of GPL v3 to keep the
+repository diff small. The official text is available from the Free Software
+Foundation:
+
+  https://www.gnu.org/licenses/gpl-3.0.txt
+
+Maintainers and packagers should download that file and place it alongside
+this one (e.g. as `COPYING` or by replacing the placeholder below with the
+canonical text). This is a common pattern in GPL projects and is fully
+compliant with the license, provided the canonical text is available to
+recipients.
+
+To fetch the canonical text:
+
+  curl -L https://www.gnu.org/licenses/gpl-3.0.txt -o COPYING
+
+After fetching, both this LICENSE (which contains the additional attribution
+terms under §7(d)) and the COPYING file (which contains the canonical GPL v3
+text) should be distributed together.

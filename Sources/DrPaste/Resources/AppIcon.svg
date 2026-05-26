@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    DrPaste app icon.
+    Concept: minimalist squircle с "Dr" по центру. Bold sans-serif,
+    тёплый indigo gradient, плотное содержимое от края до края (без
+    лишнего прозрачного padding — иконка занимает реальное место).
+    "Dr" читается как PhD / scholar / educated, не medical.
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"   stop-color="#7C8DF0"/>
+      <stop offset="1"   stop-color="#4A5BD8"/>
+    </linearGradient>
+    <linearGradient id="textShade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E8ECFF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- squircle background, macOS-style corner radius 22% = 28 для 128 viewport -->
+  <rect x="0" y="0" width="128" height="128" rx="28" ry="28" fill="url(#bg)"/>
+
+  <!-- subtle inner highlight сверху для depth, как у нативных macOS app icons -->
+  <rect x="2" y="2" width="124" height="62" rx="26" ry="26"
+        fill="#FFFFFF" opacity="0.08"/>
+
+  <!-- "Dr" letterform по центру.
+       Используем generic SF/system stack — рендерится одинаково на macOS;
+       вне macOS fallback к Helvetica/sans-serif. -->
+  <text x="64" y="90"
+        text-anchor="middle"
+        font-family="-apple-system, 'SF Pro Display', 'SF Pro', 'Helvetica Neue', system-ui, sans-serif"
+        font-weight="900"
+        font-size="68"
+        letter-spacing="-3"
+        fill="url(#textShade)">Dr</text>
+</svg>

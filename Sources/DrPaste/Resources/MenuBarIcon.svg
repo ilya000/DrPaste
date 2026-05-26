@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    DrPaste menu bar icon — monochrome template.
+    Designed for 18-22pt rendering. macOS will tint this automatically
+    via isTemplate=true (black in light mode, white in dark mode,
+    accent when menu is open).
+    Concept: rounded square frame with "Dr" letterforms.
+  -->
+  <g fill="black">
+    <!-- Squircle outline -->
+    <path d="M 5 2
+             L 17 2
+             Q 20 2 20 5
+             L 20 17
+             Q 20 20 17 20
+             L 5 20
+             Q 2 20 2 17
+             L 2 5
+             Q 2 2 5 2 Z
+             M 5 4
+             Q 4 4 4 5
+             L 4 17
+             Q 4 18 5 18
+             L 17 18
+             Q 18 18 18 17
+             L 18 5
+             Q 18 4 17 4 Z"
+          fill-rule="evenodd"/>
+    <!-- "Dr" letters inside, simple geometric shapes for monochrome readability -->
+    <!-- D -->
+    <path d="M 6 7
+             L 6 15
+             L 9 15
+             Q 11 15 11 11
+             Q 11 7 9 7 Z
+             M 7.5 8.5
+             L 8.8 8.5
+             Q 9.7 8.5 9.7 11
+             Q 9.7 13.5 8.8 13.5
+             L 7.5 13.5 Z"
+          fill-rule="evenodd"/>
+    <!-- r -->
+    <rect x="12" y="9" width="1.4" height="6"/>
+    <path d="M 12 9
+             L 12 10.4
+             Q 13.4 9 15 9.4
+             L 14.6 10.8
+             Q 13.5 10.4 12.6 11.2 Z"/>
+  </g>
+</svg>

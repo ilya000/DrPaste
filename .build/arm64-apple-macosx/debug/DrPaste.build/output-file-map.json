@@ -1,0 +1,82 @@
+{
+  "": {
+    "swift-dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/primary.swiftdeps"
+  },
+  "/Users/ilya000/Dropbox/Claude My/DrPaste/Sources/DrPaste/AIProvider.swift": {
+    "dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/AIProvider.d",
+    "object": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/AIProvider.swift.o",
+    "swiftmodule": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/AIProvider~partial.swiftmodule",
+    "swift-dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/AIProvider.swiftdeps",
+    "diagnostics": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/AIProvider.dia"
+  },
+  "/Users/ilya000/Dropbox/Claude My/DrPaste/Sources/DrPaste/Actions.swift": {
+    "dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/Actions.d",
+    "object": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/Actions.swift.o",
+    "swiftmodule": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/Actions~partial.swiftmodule",
+    "swift-dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/Actions.swiftdeps",
+    "diagnostics": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/Actions.dia"
+  },
+  "/Users/ilya000/Dropbox/Claude My/DrPaste/Sources/DrPaste/AppBrand.swift": {
+    "dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/AppBrand.d",
+    "object": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/AppBrand.swift.o",
+    "swiftmodule": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/AppBrand~partial.swiftmodule",
+    "swift-dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/AppBrand.swiftdeps",
+    "diagnostics": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/AppBrand.dia"
+  },
+  "/Users/ilya000/Dropbox/Claude My/DrPaste/Sources/DrPaste/ClipboardModel.swift": {
+    "dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/ClipboardModel.d",
+    "object": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/ClipboardModel.swift.o",
+    "swiftmodule": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/ClipboardModel~partial.swiftmodule",
+    "swift-dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/ClipboardModel.swiftdeps",
+    "diagnostics": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/ClipboardModel.dia"
+  },
+  "/Users/ilya000/Dropbox/Claude My/DrPaste/Sources/DrPaste/ContextDetector.swift": {
+    "dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/ContextDetector.d",
+    "object": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/ContextDetector.swift.o",
+    "swiftmodule": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/ContextDetector~partial.swiftmodule",
+    "swift-dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/ContextDetector.swiftdeps",
+    "diagnostics": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/ContextDetector.dia"
+  },
+  "/Users/ilya000/Dropbox/Claude My/DrPaste/Sources/DrPaste/HUD.swift": {
+    "dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/HUD.d",
+    "object": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/HUD.swift.o",
+    "swiftmodule": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/HUD~partial.swiftmodule",
+    "swift-dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/HUD.swiftdeps",
+    "diagnostics": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/HUD.dia"
+  },
+  "/Users/ilya000/Dropbox/Claude My/DrPaste/Sources/DrPaste/HotkeyEngine.swift": {
+    "dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/HotkeyEngine.d",
+    "object": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/HotkeyEngine.swift.o",
+    "swiftmodule": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/HotkeyEngine~partial.swiftmodule",
+    "swift-dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/HotkeyEngine.swiftdeps",
+    "diagnostics": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/HotkeyEngine.dia"
+  },
+  "/Users/ilya000/Dropbox/Claude My/DrPaste/Sources/DrPaste/KeyboardLayoutRepair.swift": {
+    "dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/KeyboardLayoutRepair.d",
+    "object": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/KeyboardLayoutRepair.swift.o",
+    "swiftmodule": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/KeyboardLayoutRepair~partial.swiftmodule",
+    "swift-dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/KeyboardLayoutRepair.swiftdeps",
+    "diagnostics": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/KeyboardLayoutRepair.dia"
+  },
+  "/Users/ilya000/Dropbox/Claude My/DrPaste/Sources/DrPaste/PasteSimulator.swift": {
+    "dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/PasteSimulator.d",
+    "object": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/PasteSimulator.swift.o",
+    "swiftmodule": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/PasteSimulator~partial.swiftmodule",
+    "swift-dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/PasteSimulator.swiftdeps",
+    "diagnostics": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/PasteSimulator.dia"
+  },
+  "/Users/ilya000/Dropbox/Claude My/DrPaste/Sources/DrPaste/main.swift": {
+    "dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/main.d",
+    "object": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/main.swift.o",
+    "swiftmodule": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/main~partial.swiftmodule",
+    "swift-dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/main.swiftdeps",
+    "diagnostics": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/main.dia"
+  },
+  "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/DerivedSources/resource_bundle_accessor.swift": {
+    "dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/resource_bundle_accessor.d",
+    "object": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/resource_bundle_accessor.swift.o",
+    "swiftmodule": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/resource_bundle_accessor~partial.swiftmodule",
+    "swift-dependencies": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/resource_bundle_accessor.swiftdeps",
+    "diagnostics": "/Users/ilya000/Dropbox/Claude My/DrPaste/.build/arm64-apple-macosx/debug/DrPaste.build/resource_bundle_accessor.dia"
+  }
+}
