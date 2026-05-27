@@ -25,13 +25,33 @@ struct CustomAIDescriptor: Codable, Identifiable, Equatable {
 
 /// Корневая конфигурация. Сериализуется в actions.json.
 struct ActionConfig: Codable, Equatable {
-    var version: Int = 1
+    var version: Int = 2
     /// builtin action.id → enabled. Default true (если ключа нет в map'е — enabled).
     var enabledFlags: [String: Bool] = [:]
     /// Пользовательские AI actions.
     var customAI: [CustomAIDescriptor] = []
+    /// Custom titles per action ID (правка #6 lite — пользователь может переименовать built-in).
+    /// Если ключа нет — используется action.title (default).
+    var customTitles: [String: String] = [:]
     /// Полный snapshot для export (preferences тоже).
     var preferences: ActionConfigPreferences = ActionConfigPreferences()
+
+    init() {}
+
+    /// Custom decode для backward compat: новые поля используют decodeIfPresent.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        self.enabledFlags = try c.decodeIfPresent([String: Bool].self, forKey: .enabledFlags) ?? [:]
+        self.customAI = try c.decodeIfPresent([CustomAIDescriptor].self, forKey: .customAI) ?? []
+        self.customTitles = try c.decodeIfPresent([String: String].self, forKey: .customTitles) ?? [:]
+        self.preferences = try c.decodeIfPresent(ActionConfigPreferences.self,
+                                                 forKey: .preferences) ?? ActionConfigPreferences()
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, enabledFlags, customAI, customTitles, preferences
+    }
 
     static func load() -> ActionConfig {
         let url = configURL()
@@ -58,6 +78,19 @@ struct ActionConfigPreferences: Codable, Equatable {
     var fontScale: Double = 1.0
     var soundVolume: Double = 0.6
     var soundsEnabled: [String: Bool] = [:]    // SoundCue.rawValue → enabled
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.fontScale = try c.decodeIfPresent(Double.self, forKey: .fontScale) ?? 1.0
+        self.soundVolume = try c.decodeIfPresent(Double.self, forKey: .soundVolume) ?? 0.6
+        self.soundsEnabled = try c.decodeIfPresent([String: Bool].self, forKey: .soundsEnabled) ?? [:]
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case fontScale, soundVolume, soundsEnabled
+    }
 }
 
 private extension JSONEncoder {

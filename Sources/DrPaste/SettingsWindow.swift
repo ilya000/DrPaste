@@ -83,6 +83,31 @@ struct GeneralTab: View {
 
     var body: some View {
         Form {
+            Section("Startup") {
+                HStack {
+                    Toggle("Launch DrPaste on login", isOn: .constant(false))
+                        .disabled(true)
+                        .help("Coming soon — will be available once DrPaste ships signed.")
+                    Text("(coming soon)")
+                        .font(.caption).foregroundStyle(.tertiary)
+                }
+            }
+
+            Section("iCloud sync") {
+                HStack {
+                    Toggle("Sync settings via iCloud", isOn: .constant(false))
+                        .disabled(true)
+                    Text("(coming soon)")
+                        .font(.caption).foregroundStyle(.tertiary)
+                }
+                Text("When enabled, your action presets, AI provider configs, API keys, and preferences sync across all Macs signed in to the same Apple ID. Clipboard history stays local.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Include API keys (via iCloud Keychain)", isOn: .constant(true))
+                    .disabled(true)
+                Text("API keys are end-to-end encrypted by Apple. Requires iCloud Keychain to be enabled in System Settings.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
             Section("HUD") {
                 HStack {
                     Text("Font size:")
@@ -92,6 +117,10 @@ struct GeneralTab: View {
                         .frame(width: 50)
                 }
                 Text("Hotkey: ⌥⌘V (V to paste, C to copy, X to cut & replace)")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Cut & Replace: start cursor on second item (skip just-cut)",
+                       isOn: cursorOnSecondBinding)
+                Text("When you ⌥⌘X, cursor jumps over the freshly cut content to the previous item in history. Default off matches native cut+paste behavior.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -103,7 +132,7 @@ struct GeneralTab: View {
                         .font(.system(.body, design: .monospaced))
                         .frame(width: 50)
                 }
-                ForEach([SoundCue.copySuccess, .copyFailure, .pasteSuccess, .pasteFailure, .typeTick], id: \.rawValue) { cue in
+                ForEach([SoundCue.copySuccess, .copyFailure, .pasteSuccess, .pasteFailure, .typeTick, .delete], id: \.rawValue) { cue in
                     Toggle(cueLabel(cue), isOn: cueBinding(cue))
                 }
             }
@@ -124,6 +153,13 @@ struct GeneralTab: View {
         soundVolume = Double(SoundFeedback.currentVolume())
     }
 
+    private var cursorOnSecondBinding: Binding<Bool> {
+        Binding(
+            get: { UserDefaults.standard.bool(forKey: "drpaste.hud.cursorOnSecondOnCut") },
+            set: { UserDefaults.standard.set($0, forKey: "drpaste.hud.cursorOnSecondOnCut") }
+        )
+    }
+
     private func cueLabel(_ cue: SoundCue) -> String {
         switch cue {
         case .copySuccess: return "Play sound on copy success"
@@ -131,6 +167,7 @@ struct GeneralTab: View {
         case .pasteSuccess: return "Play sound on paste"
         case .pasteFailure: return "Play sound on action failure"
         case .typeTick: return "Play tick on Type Slowly characters"
+        case .delete: return "Play sound on delete from history"
         }
     }
 
@@ -142,43 +179,335 @@ struct GeneralTab: View {
     }
 }
 
-// MARK: - AI Providers tab
+// MARK: - AI Providers tab (Multi-provider, правка #4)
 
 struct AIProvidersTab: View {
     @ObservedObject var registry: ActionRegistry
-    @State private var anthropicKey: String = ""
-    @State private var anthropicModel: String = "claude-sonnet-4-6"
-    @State private var saved = false
+    @ObservedObject private var providerRegistry = AIProviderRegistry.shared
+    @State private var editingProvider: ConfiguredProvider? = nil
+    @State private var showingAddSheet = false
 
     var body: some View {
-        Form {
-            Section("Anthropic (Claude)") {
-                SecureField("API Key", text: $anthropicKey)
-                TextField("Model", text: $anthropicModel)
-                Button("Save") {
-                    var cfg = AIProviderConfig.load()
-                    cfg.anthropicAPIKey = anthropicKey.isEmpty ? nil : anthropicKey
-                    cfg.anthropicModel = anthropicModel
-                    if let data = try? JSONEncoder().encode(cfg) {
-                        try? data.write(to: AIProviderConfig.configURL())
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Default provider:")
+                Picker("", selection: defaultBinding) {
+                    ForEach(providerRegistry.config.providers) { p in
+                        Text(p.displayName).tag(p.id as String?)
                     }
-                    saved = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { saved = false }
                 }
-                if saved {
-                    Text("Saved. Restart DrPaste to apply.")
-                        .font(.caption).foregroundStyle(.green)
+                .pickerStyle(.menu)
+                .frame(maxWidth: 300)
+                Spacer()
+            }
+            Text("Used for all custom AI actions unless overridden per action.")
+                .font(.caption).foregroundStyle(.secondary)
+
+            Divider()
+
+            ScrollView {
+                VStack(spacing: 8) {
+                    let cloud = providerRegistry.config.providers.filter { !$0.kind.isLocal && $0.kind != .custom }
+                    let local = providerRegistry.config.providers.filter { $0.kind.isLocal }
+                    let custom = providerRegistry.config.providers.filter { $0.kind == .custom }
+
+                    if !cloud.isEmpty {
+                        sectionHeader("Cloud providers")
+                        ForEach(cloud) { providerRow($0) }
+                    }
+                    if !local.isEmpty {
+                        sectionHeader("Local providers")
+                        ForEach(local) { providerRow($0) }
+                    }
+                    if !custom.isEmpty {
+                        sectionHeader("Custom")
+                        ForEach(custom) { providerRow($0) }
+                    }
                 }
-                Text("Or set ANTHROPIC_API_KEY environment variable.")
-                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 12) {
+                Button { showingAddSheet = true } label: {
+                    Label("Add provider…", systemImage: "plus.circle")
+                }
+                .controlSize(.small)
+                Spacer()
             }
         }
-        .formStyle(.grouped)
-        .onAppear {
-            let cfg = AIProviderConfig.load()
-            anthropicKey = cfg.anthropicAPIKey ?? ""
-            anthropicModel = cfg.anthropicModel ?? "claude-sonnet-4-6"
+        .padding()
+        .sheet(item: $editingProvider) { p in
+            ProviderEditor(provider: p) { result in
+                if let cp = result.config {
+                    providerRegistry.upsert(cp, apiKey: result.apiKey)
+                    providerRegistry.invalidateCache()
+                }
+                editingProvider = nil
+            }
         }
+        .sheet(isPresented: $showingAddSheet) {
+            ProviderAddSheet { kind in
+                showingAddSheet = false
+                if let kind = kind {
+                    let id = newProviderID(for: kind)
+                    let cp = ConfiguredProvider(
+                        id: id, kind: kind,
+                        displayName: kind.displayName,
+                        model: kind.defaultModel,
+                        baseURL: kind.defaultBaseURL
+                    )
+                    editingProvider = cp
+                }
+            }
+        }
+    }
+
+    private var defaultBinding: Binding<String?> {
+        Binding(
+            get: { providerRegistry.config.defaultProviderID },
+            set: { providerRegistry.setDefault(providerID: $0 ?? "") }
+        )
+    }
+
+    @ViewBuilder
+    private func sectionHeader(_ title: String) -> some View {
+        HStack {
+            Text(title).font(.subheadline).foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.top, 4)
+    }
+
+    @ViewBuilder
+    private func providerRow(_ p: ConfiguredProvider) -> some View {
+        HStack(spacing: 10) {
+            let hasKey = APIKeyStorage.load(for: p.id) != nil
+            let isReady = p.kind.isLocal || hasKey
+            Circle()
+                .fill(isReady ? Color.green : Color.gray.opacity(0.4))
+                .frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(p.displayName).font(.system(size: 13, weight: .medium))
+                Text(p.kind.isLocal
+                     ? "Local · \(p.baseURL ?? "no URL") · \(p.model)"
+                     : "\(isReady ? "Configured" : "Not configured") · \(p.model)")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Toggle("", isOn: enabledBinding(p))
+                .labelsHidden()
+            Button(isReady ? "Edit" : "Setup") { editingProvider = p }
+                .controlSize(.small)
+            Button(role: .destructive) {
+                providerRegistry.remove(providerID: p.id)
+            } label: {
+                Image(systemName: "trash")
+            }
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.04)))
+    }
+
+    private func enabledBinding(_ p: ConfiguredProvider) -> Binding<Bool> {
+        Binding(
+            get: { p.enabled },
+            set: { newValue in
+                var cp = p
+                cp.enabled = newValue
+                providerRegistry.upsert(cp)
+            }
+        )
+    }
+
+    private func newProviderID(for kind: ProviderKind) -> String {
+        let base = kind.rawValue
+        let existing = providerRegistry.config.providers.map { $0.id }
+        if !existing.contains(base) { return base }
+        var i = 2
+        while existing.contains("\(base)\(i)") { i += 1 }
+        return "\(base)\(i)"
+    }
+}
+
+// MARK: - Provider editor sheet
+
+struct ProviderEditorResult {
+    var config: ConfiguredProvider?
+    var apiKey: String?
+}
+
+struct ProviderEditor: View {
+    @State var provider: ConfiguredProvider
+    @State private var apiKey: String = ""
+    @State private var showKey = false
+    @State private var testResult: String? = nil
+    @State private var testing = false
+    let onClose: (ProviderEditorResult) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(provider.kind.displayName).font(.headline)
+
+            HStack {
+                Text("Display name:").frame(width: 110, alignment: .trailing)
+                TextField("", text: $provider.displayName)
+            }
+
+            if provider.kind.requiresBaseURL || provider.kind == .custom {
+                HStack {
+                    Text("Base URL:").frame(width: 110, alignment: .trailing)
+                    TextField(provider.kind.defaultBaseURL ?? "https://example.com/v1",
+                              text: Binding(get: { provider.baseURL ?? "" },
+                                            set: { provider.baseURL = $0.isEmpty ? nil : $0 }))
+                }
+            }
+
+            if provider.kind.requiresAPIKey || provider.kind == .custom {
+                HStack {
+                    Text("API Key:").frame(width: 110, alignment: .trailing)
+                    if showKey {
+                        TextField("sk-...", text: $apiKey)
+                    } else {
+                        SecureField("sk-...", text: $apiKey)
+                    }
+                    Button { showKey.toggle() } label: {
+                        Image(systemName: showKey ? "eye.slash" : "eye")
+                    }
+                    .buttonStyle(.borderless)
+                }
+                if APIKeyStorage.load(for: provider.id) != nil && apiKey.isEmpty {
+                    Text("A key is already saved in Keychain. Leave blank to keep it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            HStack {
+                Text("Model:").frame(width: 110, alignment: .trailing)
+                TextField(provider.kind.defaultModel, text: $provider.model)
+            }
+            if !provider.kind.suggestedModels.isEmpty {
+                HStack {
+                    Spacer().frame(width: 110)
+                    HStack(spacing: 4) {
+                        ForEach(provider.kind.suggestedModels, id: \.self) { m in
+                            Button(m) { provider.model = m }
+                                .buttonStyle(.borderless)
+                                .font(.caption)
+                                .foregroundStyle(.tint)
+                        }
+                    }
+                    Spacer()
+                }
+            }
+
+            HStack {
+                Button("Test connection") { runTest() }
+                    .disabled(testing)
+                if testing { ProgressView().controlSize(.small) }
+                if let r = testResult {
+                    Text(r)
+                        .font(.caption)
+                        .foregroundStyle(r.hasPrefix("✓") ? .green : .red)
+                }
+                Spacer()
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { onClose(ProviderEditorResult(config: nil, apiKey: nil)) }
+                Button("Save") {
+                    onClose(ProviderEditorResult(config: provider,
+                                                 apiKey: apiKey.isEmpty ? nil : apiKey))
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+    }
+
+    private func runTest() {
+        testing = true; testResult = nil
+        let temp = provider
+        let keyToSave = apiKey
+        Task { @MainActor in
+            if !keyToSave.isEmpty {
+                APIKeyStorage.save(keyToSave, for: temp.id)
+            }
+            AIProviderRegistry.shared.upsert(temp)
+            let result = await AIProviderRegistry.shared.testConnection(providerID: temp.id)
+            testing = false
+            switch result {
+            case .success(let msg): testResult = "✓ \(msg)"
+            case .failure(let e):
+                switch e {
+                case .missingAPIKey: testResult = "✗ API key required"
+                case .missingBaseURL: testResult = "✗ Base URL required"
+                case .http(let status, _): testResult = "✗ HTTP \(status)"
+                case .networkUnreachable: testResult = "✗ Network unreachable"
+                case .decode(let s): testResult = "✗ \(s)"
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Provider add sheet
+
+struct ProviderAddSheet: View {
+    let onClose: (ProviderKind?) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Add provider").font(.headline)
+
+            ScrollView {
+                VStack(spacing: 4) {
+                    sectionHeader("Cloud")
+                    ForEach([ProviderKind.anthropic, .openai, .gemini, .grok, .mistral, .deepseek], id: \.self) {
+                        kindRow($0)
+                    }
+                    sectionHeader("Local")
+                    ForEach([ProviderKind.ollama, .lmstudio, .llamaCpp], id: \.self) {
+                        kindRow($0)
+                    }
+                    sectionHeader("Other")
+                    kindRow(.custom)
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { onClose(nil) }
+            }
+        }
+        .padding(20)
+        .frame(width: 420, height: 460)
+    }
+
+    @ViewBuilder
+    private func sectionHeader(_ title: String) -> some View {
+        HStack {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.top, 8)
+    }
+
+    @ViewBuilder
+    private func kindRow(_ kind: ProviderKind) -> some View {
+        Button { onClose(kind) } label: {
+            HStack {
+                Image(systemName: kind.isLocal ? "desktopcomputer" : "cloud")
+                    .foregroundStyle(.secondary)
+                Text(kind.displayName)
+                Spacer()
+                Image(systemName: "chevron.right").foregroundStyle(.tertiary).font(.caption)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.04)))
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -194,29 +523,66 @@ struct ContentTypeTab: View {
     @State private var runningID: String? = nil
     @State private var editingAI: CustomAIDescriptor? = nil
 
+    @State private var editingBuiltin: String? = nil
+
     var body: some View {
+        // 2-колоночная вёрстка (Правка #5):
+        // left = Sample input сверху + Result снизу
+        // right = scrollable Actions list
+        HStack(alignment: .top, spacing: 16) {
+            leftColumn
+                .frame(minWidth: 320, idealWidth: 380, maxWidth: .infinity)
+            Divider()
+            rightColumn
+                .frame(minWidth: 340, idealWidth: 400, maxWidth: .infinity)
+        }
+        .padding()
+        .onAppear { sampleText = SettingsSamples.sample(for: kind).previewText ?? "" }
+        .sheet(item: $editingAI) { desc in
+            AIActionEditor(descriptor: desc, registry: registry) { saved in
+                if let saved = saved { registry.upsertCustomAI(saved) }
+                editingAI = nil
+            }
+        }
+        .sheet(item: Binding(
+            get: { editingBuiltin.map { BuiltinEditTarget(id: $0) } },
+            set: { editingBuiltin = $0?.id })) { target in
+            BuiltinActionEditor(actionID: target.id,
+                                defaultTitle: defaultTitle(for: target.id),
+                                description: descriptionFor(actionID: target.id),
+                                registry: registry) {
+                editingBuiltin = nil
+            }
+        }
+    }
+
+    private var leftColumn: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Sample input")
-                .font(.headline)
+            HStack {
+                Text("Sample input").font(.headline)
+                Spacer()
+                Button("Reset") { resetSample() }
+                    .controlSize(.small)
+            }
             TextEditor(text: $sampleText)
                 .font(.system(.body, design: .monospaced))
-                .frame(height: 80)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
 
-            HStack {
-                Button("Reset to default") { resetSample() }
-                    .controlSize(.small)
-                Spacer()
-            }
-
-            Text("Result")
-                .font(.headline)
+            Text("Result").font(.headline).padding(.top, 6)
             ResultPane(outcome: result, kind: kind)
+                .frame(maxHeight: .infinity)
+        }
+    }
 
-            Divider()
-
-            Text("Actions")
-                .font(.headline)
+    private var rightColumn: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Actions").font(.headline)
+                Spacer()
+                Text("\(applicableActions.count + customAIDescriptors.count)")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(applicableActions, id: \.id) { action in
@@ -239,14 +605,16 @@ struct ContentTypeTab: View {
                 }
             }
         }
-        .padding()
-        .onAppear { sampleText = SettingsSamples.sample(for: kind).previewText ?? "" }
-        .sheet(item: $editingAI) { desc in
-            AIActionEditor(descriptor: desc, registry: registry) { saved in
-                if let saved = saved { registry.upsertCustomAI(saved) }
-                editingAI = nil
-            }
-        }
+    }
+
+    private struct BuiltinEditTarget: Identifiable { let id: String }
+
+    private func defaultTitle(for actionID: String) -> String {
+        registry.actions.first(where: { $0.id == actionID })?.title ?? actionID
+    }
+
+    private func descriptionFor(actionID: String) -> String {
+        BuiltinActionMetadata.descriptions[actionID] ?? ""
     }
 
     private var applicableActions: [ClipboardAction] {
@@ -260,12 +628,29 @@ struct ContentTypeTab: View {
     }
 
     private func actionRow(_ action: ClipboardAction) -> some View {
-        HStack(spacing: 8) {
+        let displayTitle = registry.displayTitle(forActionID: action.id,
+                                                  defaultTitle: action.title)
+        let isCustomized = displayTitle != action.title
+        return HStack(spacing: 8) {
             Toggle("", isOn: enabledBinding(action.id))
                 .labelsHidden()
-            Text(action.title)
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(displayTitle)
+                    .lineLimit(1)
+                if isCustomized {
+                    Text("default: \(action.title)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
             Spacer()
+            if action.id != "builtin.identity" {  // identity не редактируется
+                Button { editingBuiltin = action.id } label: {
+                    Image(systemName: "pencil")
+                }
+                .controlSize(.small)
+                .buttonStyle(.borderless)
+            }
             if runningID == action.id {
                 ProgressView().controlSize(.small)
             } else {
@@ -341,9 +726,14 @@ struct ContentTypeTab: View {
     }
 
     private func runCustomAI(_ desc: CustomAIDescriptor) {
-        guard let provider = registry.aiProvider else { return }
-        let action = AIAction(id: desc.id, title: desc.title,
-                              promptTemplate: desc.promptTemplate, provider: provider)
+        let kinds = Set(desc.applicableTypes.compactMap { SemanticKind(rawValue: $0) })
+        let action = AIAction(
+            id: desc.id,
+            title: desc.title,
+            promptTemplate: desc.promptTemplate,
+            providerID: desc.providerID,
+            applicableTypes: kinds.isEmpty ? [.text, .richText, .markdown] : kinds
+        )
         run(action)
     }
 
@@ -453,7 +843,9 @@ struct AIActionEditor: View {
             HStack {
                 Text("Provider:").frame(width: 90, alignment: .trailing)
                 Picker("", selection: $descriptor.providerID) {
-                    Text("Anthropic (Claude)").tag("anthropic")
+                    ForEach(AIProviderRegistry.shared.config.providers) { p in
+                        Text(p.displayName).tag(p.id)
+                    }
                 }
                 .pickerStyle(.menu)
             }

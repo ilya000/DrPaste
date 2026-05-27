@@ -169,7 +169,8 @@ final class ActionRegistry: ObservableObject {
         }
     }
 
-    /// AI provider — нужен для конструирования AIAction из CustomAIDescriptor.
+    /// AI provider устарел — теперь AIAction резолвит provider через AIProviderRegistry.shared
+    /// по providerID descriptor'а. Поле оставлено для backward compat call sites.
     var aiProvider: AIProvider?
 
     init() {
@@ -201,33 +202,50 @@ final class ActionRegistry: ObservableObject {
         actions.filter { isEnabled($0.id) && $0.isApplicable(item: item, context: context) }
     }
 
-    /// Built-in default — enabled. Если в config флаг есть — используем его.
+    /// Built-in default — enabled if action ID is in curated subset (правка #8 lite).
+    /// Если в config флаг есть — используем его (пользовательский override).
+    /// Иначе — bundled default из CuratedDefaults.
     func isEnabled(_ actionID: String) -> Bool {
-        config.enabledFlags[actionID] ?? true
+        if let flag = config.enabledFlags[actionID] { return flag }
+        return CuratedDefaults.isEnabledByDefault(actionID)
     }
 
     func setEnabled(_ enabled: Bool, for actionID: String) {
         config.enabledFlags[actionID] = enabled
     }
 
+    /// Display title с учётом custom override (правка #6 lite).
+    /// Используется в HUD action chips и в Settings playground.
+    func displayTitle(forActionID actionID: String, defaultTitle: String) -> String {
+        config.customTitles[actionID] ?? defaultTitle
+    }
+
+    func setCustomTitle(_ title: String?, forActionID actionID: String) {
+        var copy = config
+        if let title = title, !title.isEmpty {
+            copy.customTitles[actionID] = title
+        } else {
+            copy.customTitles.removeValue(forKey: actionID)
+        }
+        config = copy
+    }
+
     // MARK: - Custom AI
 
     /// Перестраивает AI actions из текущего config.customAI.
     /// Удаляет старые user.* и регистрирует новые из descriptors.
+    /// Provider резолвится через AIProviderRegistry.shared по descriptor.providerID.
     func rebuildCustomAI() {
-        guard let provider = aiProvider else { return }
         actions.removeAll { $0.id.hasPrefix("user.") }
         for desc in config.customAI where desc.enabled {
-            let types = Set(desc.applicableTypes)
+            let kinds = Set(desc.applicableTypes.compactMap { SemanticKind(rawValue: $0) })
             let action = AIAction(
                 id: desc.id,
                 title: desc.title,
                 promptTemplate: desc.promptTemplate,
-                provider: provider
+                providerID: desc.providerID,
+                applicableTypes: kinds.isEmpty ? [.text, .richText, .markdown] : kinds
             )
-            // Note: applicability через CustomAIAction wrapper если нужно ограничивать типы.
-            // В минимальной версии — AIAction всегда применим к plain text.
-            _ = types  // reserved for future per-type filtering
             actions.append(action)
         }
     }

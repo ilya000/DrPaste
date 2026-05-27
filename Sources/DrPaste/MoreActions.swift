@@ -171,8 +171,67 @@ enum TableActionsPack {
     }
 }
 
+// MARK: - Rich → HTML (правка #9)
+
+struct RichTextToHTMLAction: ClipboardAction {
+    let id = "builtin.rich_to_html"; let title = "Rich → HTML"; let isLocal = true
+    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
+        context.contains(.richText)
+    }
+    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
+        guard let rel = item.representations["public.rtf"],
+              let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
+              let attr = try? NSAttributedString(data: data,
+                                                  options: [.documentType: NSAttributedString.DocumentType.rtf],
+                                                  documentAttributes: nil),
+              let html = RichTextHelpers.attributedStringToHTML(attr)
+        else {
+            return .failed(original: item, reason: "No RTF representation found", recovery: nil)
+        }
+        return .preview(makeTextItem(html, from: item))
+    }
+}
+
+// MARK: - Rich → Wiki markup (правка #10)
+
+struct RichTextToWikiAction: ClipboardAction {
+    let id = "builtin.rich_to_wiki"; let title = "Rich → Wiki markup"; let isLocal = true
+    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
+        context.contains(.richText)
+    }
+    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
+        let attr: NSAttributedString
+        if let rel = item.representations["public.rtf"],
+           let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
+           let parsed = try? NSAttributedString(data: data,
+                                                options: [.documentType: NSAttributedString.DocumentType.rtf],
+                                                documentAttributes: nil) {
+            attr = parsed
+        } else {
+            attr = NSAttributedString(string: item.previewText ?? "")
+        }
+        let wiki = RichTextHelpers.attributedStringToWiki(attr)
+        return .preview(makeTextItem(wiki, from: item))
+    }
+}
+
+// MARK: - Paste as text (правка #8 — combined clean+trim)
+
+struct PasteAsTextAction: ClipboardAction {
+    let id = "builtin.paste_as_text"; let title = "Paste as text"; let isLocal = true
+    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
+        context.contains(.plain) || context.contains(.richText)
+    }
+    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
+        // Strip formatting через previewText (plain текст уже без RTF/HTML).
+        let plain = item.previewText ?? ""
+        let trimmed = plain.trimmingCharacters(in: .whitespacesAndNewlines)
+        return .preview(makeTextItem(trimmed, from: item))
+    }
+}
+
 enum RichTextActionsPack {
     static var all: [ClipboardAction] {
-        [RichTextToMarkdownAction()]
+        [RichTextToMarkdownAction(), RichTextToHTMLAction(), RichTextToWikiAction(), PasteAsTextAction()]
     }
 }

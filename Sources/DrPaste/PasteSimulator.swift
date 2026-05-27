@@ -6,8 +6,10 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Имитация ⌘V / ⌘C / ⌘X в активном приложении (Backlog #9)
-//  + writers в NSPasteboard с восстановлением всех representations (Backlog #1).
+//  Имитация ⌘V / ⌘C / ⌘X в активном приложении (Backlog #9 + Правка #16):
+//  - физический ⌥ "приподнимается" чтобы synthetic был чистым ⌘X не ⌥⌘X
+//  - все наши events помечаются DrPasteSyntheticMarker → EventTap игнорирует recursion
+//  Plus writers в NSPasteboard с восстановлением всех representations (Backlog #1).
 //
 
 import AppKit
@@ -20,6 +22,23 @@ enum PasteSimulator {
 
     private static func postShortcut(keyCode: Int) {
         let src = CGEventSource(stateID: .combinedSessionState)
+        let loc = CGEventTapLocation.cghidEventTap
+
+        // Правка #16 слой 1: проверяем физическое состояние ⌥ — если зажат,
+        // programmatically up'аем его перед synthetic ⌘X, чтобы app видел
+        // чистый ⌘X не ⌥⌘X (важно для cut/copy через ⌥⌘X / ⌥⌘C).
+        let optionHeld = NSEvent.modifierFlags.contains(.option)
+        if optionHeld {
+            let optUp = CGEvent(keyboardEventSource: src,
+                                virtualKey: CGKeyCode(kVK_Option),
+                                keyDown: false)
+            optUp?.flags = []
+            optUp?.setIntegerValueField(.eventSourceUserData, value: DrPasteSyntheticMarker)
+            optUp?.post(tap: loc)
+            // 5 ms settling
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+
         let cmdDown = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_Command), keyDown: true)
         cmdDown?.flags = .maskCommand
         let keyDown = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(keyCode), keyDown: true)
@@ -27,11 +46,27 @@ enum PasteSimulator {
         let keyUp = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(keyCode), keyDown: false)
         keyUp?.flags = .maskCommand
         let cmdUp = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_Command), keyDown: false)
-        let loc = CGEventTapLocation.cghidEventTap
+
+        // Слой 2: пометить все наши synthetic чтобы EventTap не recursively обработал.
+        for ev in [cmdDown, keyDown, keyUp, cmdUp] {
+            ev?.setIntegerValueField(.eventSourceUserData, value: DrPasteSyntheticMarker)
+        }
+
         cmdDown?.post(tap: loc)
         keyDown?.post(tap: loc)
         keyUp?.post(tap: loc)
         cmdUp?.post(tap: loc)
+
+        // Восстановить ⌥ если был up'нут.
+        if optionHeld {
+            Thread.sleep(forTimeInterval: 0.005)
+            let optDown = CGEvent(keyboardEventSource: src,
+                                  virtualKey: CGKeyCode(kVK_Option),
+                                  keyDown: true)
+            optDown?.flags = .maskAlternate
+            optDown?.setIntegerValueField(.eventSourceUserData, value: DrPasteSyntheticMarker)
+            optDown?.post(tap: loc)
+        }
     }
 }
 

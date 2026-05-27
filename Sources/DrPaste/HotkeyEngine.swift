@@ -57,7 +57,12 @@ protocol HotkeyEngineDelegate: AnyObject {
     func hotkeyEngineDidCancel()
     func hotkeyEngineDidRequestFontChange(_ change: FontChange)
     func hotkeyEngineDidQuickCopy()
+    func hotkeyEngineDidDeleteFocused()    // Правка #14
 }
+
+/// Marker для собственных synthetic CGEvents (Правка #16, слой 2 — фильтрация recursion).
+/// Записывается в .eventSourceUserData при posting ⌘V/⌘X/⌘C.
+let DrPasteSyntheticMarker: Int64 = 0x44525041535445  // "DRPASTE" ASCII
 
 protocol HotkeyEngine: AnyObject {
     var delegate: HotkeyEngineDelegate? { get set }
@@ -118,9 +123,22 @@ final class EventTapEngine: HotkeyEngine {
         tap = nil; runLoopSource = nil; hudIsActive = false
     }
 
+    /// Принудительно очистить hudIsActive (используется как watchdog в AppDelegate
+    /// если HUD не успел открыться — Правка #16 слой 3).
+    func resetHudActive() { hudIsActive = false }
+
+    /// Текущее состояние — для AppDelegate state machine синхронизации.
+    var isHudActive: Bool { hudIsActive }
+
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let t = tap { CGEvent.tapEnable(tap: t, enable: true) }
+            return Unmanaged.passUnretained(event)
+        }
+
+        // Правка #16 слой 2: пропускаем собственные synthetic events,
+        // чтобы не было recursion (наш ⌘X не интерпретировался как user ⌥⌘X).
+        if event.getIntegerValueField(.eventSourceUserData) == DrPasteSyntheticMarker {
             return Unmanaged.passUnretained(event)
         }
 
@@ -147,6 +165,9 @@ final class EventTapEngine: HotkeyEngine {
                 case kVK_Escape:
                     hudIsActive = false
                     DispatchQueue.main.async { self.delegate?.hotkeyEngineDidCancel() }
+                    return nil
+                case kVK_Delete:           // Правка #14: Backspace → delete focused item
+                    DispatchQueue.main.async { self.delegate?.hotkeyEngineDidDeleteFocused() }
                     return nil
                 case kVK_ANSI_Equal, kVK_ANSI_KeypadPlus:
                     DispatchQueue.main.async { self.delegate?.hotkeyEngineDidRequestFontChange(.bigger) }
@@ -317,6 +338,8 @@ final class GlobalMonitorEngine: HotkeyEngine {
             case kVK_Escape:
                 hudIsActive = false
                 DispatchQueue.main.async { self.delegate?.hotkeyEngineDidCancel() }
+            case kVK_Delete:
+                DispatchQueue.main.async { self.delegate?.hotkeyEngineDidDeleteFocused() }
             case kVK_ANSI_Equal, kVK_ANSI_KeypadPlus:
                 DispatchQueue.main.async { self.delegate?.hotkeyEngineDidRequestFontChange(.bigger) }
             case kVK_ANSI_Minus, kVK_ANSI_KeypadMinus:

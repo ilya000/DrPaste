@@ -33,6 +33,14 @@ final class HudState: ObservableObject {
     @Published var mode: HudMode = .gesture
     @Published var engineLabel: String = ""
 
+    /// Content meta для focused item — лениво вычисляется через ContentMetaCache (Правка #15).
+    @Published var contentMeta: String? = nil
+
+    /// Optional provider — позволяет HUD получить custom title для action
+    /// (правка #6 lite — пользователь может переименовать built-in).
+    /// Закладывается через AppDelegate.showPanel при создании view.
+    var actionTitleProvider: ((String, String) -> String)? = nil
+
     private static let fontScaleKey = "drpaste.hud.fontScale"
     @Published var fontScale: CGFloat = {
         let v = UserDefaults.standard.double(forKey: HudState.fontScaleKey)
@@ -63,6 +71,7 @@ final class HudState: ObservableObject {
 
 final class HudPanel: NSPanel {
     private let allowsKey: Bool
+    private static let cornerRadius: CGFloat = 18
 
     init(contentRect: NSRect, allowsKey: Bool) {
         self.allowsKey = allowsKey
@@ -83,6 +92,39 @@ final class HudPanel: NSPanel {
     }
     override var canBecomeKey: Bool { allowsKey }
     override var canBecomeMain: Bool { false }
+
+    // Правка #12: defensive corner radius — re-apply при каждом layout,
+    // recursively на subview'ы (vibrant material имеет собственный layer).
+    // cornerCurve = .continuous даёт Apple-style squircle.
+    override func layoutIfNeeded() {
+        super.layoutIfNeeded()
+        applyRoundedCorners()
+    }
+
+    override func setFrame(_ frameRect: NSRect, display flag: Bool) {
+        super.setFrame(frameRect, display: flag)
+        applyRoundedCorners()
+    }
+
+    private func applyRoundedCorners() {
+        guard let cv = contentView else { return }
+        cv.wantsLayer = true
+        cv.layer?.cornerRadius = Self.cornerRadius
+        cv.layer?.cornerCurve = .continuous
+        cv.layer?.masksToBounds = true
+        applyRoundedCornersRecursive(cv)
+    }
+
+    private func applyRoundedCornersRecursive(_ view: NSView) {
+        for sub in view.subviews {
+            if sub.wantsLayer || sub.layer != nil {
+                sub.layer?.cornerRadius = Self.cornerRadius
+                sub.layer?.cornerCurve = .continuous
+                sub.layer?.masksToBounds = true
+            }
+            applyRoundedCornersRecursive(sub)
+        }
+    }
 }
 
 // MARK: - acceptsFirstMouse host
@@ -99,6 +141,7 @@ struct HudView: View {
     let onCommit: () -> Void                      // release / Enter / dbl-click
     let onOpenAccessibility: () -> Void
     let onRecoveryAction: (RecoveryAction) -> Void
+    let onClose: () -> Void                       // Правка #15: close button mouse-route
 
     @State private var hoveredItemID: UUID? = nil
     @State private var hoveredActionID: String? = nil
@@ -115,9 +158,8 @@ struct HudView: View {
                         .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
                 )
 
-            VStack(spacing: 10) {
-                header
-                if let src = currentSourceLabel { sourceLabel(src) }
+            VStack(spacing: 8) {
+                compactHeader
                 Divider().opacity(0.3)
                 content
                 Divider().opacity(0.3)
@@ -130,54 +172,79 @@ struct HudView: View {
         .frame(width: 720, height: state.mode == .summon ? 440 : 400)
     }
 
-    // MARK: header
+    // MARK: header (Правка #15 — компактная одна строка + close button)
 
-    private var header: some View {
-        HStack(spacing: 8) {
+    private var compactHeader: some View {
+        HStack(spacing: 6) {
             AppBrand.icon
                 .resizable()
                 .aspectRatio(contentMode: .fit)
-                .frame(width: sz(22), height: sz(22))
+                .frame(width: sz(16), height: sz(16))
             Text(AppBrand.name)
-                .font(.system(size: sz(14), weight: .semibold))
-            Spacer()
+                .font(.system(size: sz(13), weight: .semibold))
+            Text("·").foregroundStyle(.secondary)
             Text("\(state.itemIndex + 1)/\(max(state.items.count, 1))")
                 .font(.system(size: sz(11), design: .monospaced))
                 .foregroundStyle(.secondary)
+            if let src = compactSourceLabel {
+                Text("·").foregroundStyle(.secondary)
+                Text(src)
+                    .font(.system(size: sz(11)))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            Spacer()
             if !state.engineLabel.isEmpty {
                 Text(state.engineLabel)
-                    .font(.system(size: sz(10), design: .monospaced))
-                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .font(.system(size: sz(9), design: .monospaced))
+                    .padding(.horizontal, 5).padding(.vertical, 1)
                     .background(Capsule().fill(Color.primary.opacity(0.08)))
                     .foregroundStyle(.secondary)
             }
-        }
-    }
-
-    private var currentSourceLabel: String? {
-        guard let item = state.currentItem else { return nil }
-        if let app = item.sourceAppName {
-            if let title = item.sourceWindowTitle, !title.isEmpty {
-                return "Copied from \(app) — \(title)"
+            Button(action: onClose) {
+                Image(systemName: "xmark.circle.fill")
+                    .symbolRenderingMode(.hierarchical)
+                    .font(.system(size: sz(14)))
+                    .foregroundStyle(.secondary)
             }
-            return "Copied from \(app)"
+            .buttonStyle(.plain)
+            .help("Close (Esc)")
+            .accessibilityLabel("Close DrPaste")
         }
-        if let bundle = item.sourceBundleID {
-            return "Copied from \(bundle)"
-        }
-        return nil
     }
 
-    private func sourceLabel(_ text: String) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: "doc.on.clipboard")
-                .font(.system(size: sz(9)))
-                .foregroundStyle(.secondary)
-            Text(text)
-                .font(.system(size: sz(10)))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+    /// Краткая форма source: app + window title (truncate до 25 char)
+    private var compactSourceLabel: String? {
+        guard let item = state.currentItem else { return nil }
+        guard let app = item.sourceAppName ?? item.sourceBundleID?
+                .components(separatedBy: ".").last?.capitalized else { return nil }
+        if let title = item.sourceWindowTitle, !title.isEmpty {
+            let trimmed = title.prefix(25)
+            let suffix = title.count > 25 ? "…" : ""
+            return "\(app) \"\(trimmed)\(suffix)\""
         }
+        return app
+    }
+
+    /// Content meta row (Правка #15 — небольшая строка с metadata о focused item).
+    /// Расположена непосредственно над preview pane, в правой колонке content area.
+    private var contentMetaRow: some View {
+        HStack(spacing: 0) {
+            if let meta = state.contentMeta {
+                Text(meta)
+                    .font(.system(size: sz(10)))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            } else if state.currentItem != nil {
+                Text("…")
+                    .font(.system(size: sz(10)))
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer()
+        }
+        .frame(height: sz(14))
     }
 
     // MARK: content
@@ -197,7 +264,12 @@ struct HudView: View {
             HStack(spacing: 12) {
                 historyColumn.frame(width: 260, alignment: .leading)
                 Divider().opacity(0.2)
-                previewPane.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                VStack(alignment: .leading, spacing: 4) {
+                    contentMetaRow                  // meta теперь NAD preview pane
+                    previewPane
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
     }
@@ -343,14 +415,19 @@ struct HudView: View {
                     .font(.system(size: sz(12), design: .monospaced))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.disabled)
+                    .padding(.horizontal, 6)        // защита от corner-radius clipping
+                    .padding(.vertical, 2)
             }
         case .richText:
             ScrollView {
                 richTextView(item)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
             }
         case .image, .pdf:
             ImagePreview(item: item)
+                .padding(.horizontal, 6)
         case .files:
             VStack(alignment: .leading, spacing: 2) {
                 if let urls = filesList(item) {
@@ -361,6 +438,7 @@ struct HudView: View {
                     }
                 }
             }
+            .padding(.horizontal, 6)
         case .unknown:
             VStack(alignment: .leading) {
                 Text("Unknown content type")
@@ -368,6 +446,7 @@ struct HudView: View {
                 Text(item.previewText ?? "")
                     .font(.system(size: sz(11), design: .monospaced))
             }
+            .padding(.horizontal, 6)
         }
     }
 
@@ -501,39 +580,76 @@ struct HudView: View {
         let a = state.actions[idx]
         let isActive = idx == state.actionIndex
         let isHover = hoveredActionID == a.id
-        return Text(a.title)
-            .font(.system(size: sz(11), weight: isActive ? .semibold : .regular))
-            .foregroundStyle(isActive ? Color.primary : .secondary)
-            .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(
-                Capsule().fill(
-                    isActive
-                    ? accent.opacity(0.28)
-                    : (isHover ? Color.primary.opacity(0.10) : Color.primary.opacity(0.06))
-                )
+        let title = state.actionTitleProvider?(a.id, a.title) ?? a.title
+        return HStack(spacing: 4) {
+            if let badge = providerBadge(for: a) {
+                ProviderBadgeView(text: badge.label, color: badge.color, fontSize: sz(9))
+            }
+            Text(title)
+                .font(.system(size: sz(11), weight: isActive ? .semibold : .regular))
+                .foregroundStyle(isActive ? Color.primary : .secondary)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(
+            Capsule().fill(
+                isActive
+                ? accent.opacity(0.28)
+                : (isHover ? Color.primary.opacity(0.10) : Color.primary.opacity(0.06))
             )
-            .contentShape(Capsule())
-            .onHover { hovering in hoveredActionID = hovering ? a.id : nil }
-            .onTapGesture(count: 2) {
-                onPick(state.itemIndex, idx)
-                onCommit()
+        )
+        .contentShape(Capsule())
+        .onHover { hovering in hoveredActionID = hovering ? a.id : nil }
+        .onTapGesture(count: 2) {
+            onPick(state.itemIndex, idx)
+            onCommit()
+        }
+        .onTapGesture(count: 1) {
+            onPick(state.itemIndex, idx)
+        }
+    }
+
+    /// Provider badge для AI actions (Правка #8). Возвращает label + color.
+    private func providerBadge(for action: ClipboardAction) -> (label: String, color: Color)? {
+        guard let ai = action as? AIAction else { return nil }
+        // Resolve provider kind через registry
+        let resolvedKind: ProviderKind? = {
+            if let id = ai.providerID,
+               let cp = AIProviderRegistry.shared.config.providers.first(where: { $0.id == id }) {
+                return cp.kind
             }
-            .onTapGesture(count: 1) {
-                onPick(state.itemIndex, idx)
+            if let defaultID = AIProviderRegistry.shared.config.defaultProviderID,
+               let cp = AIProviderRegistry.shared.config.providers.first(where: { $0.id == defaultID }) {
+                return cp.kind
             }
+            return nil
+        }()
+        guard let kind = resolvedKind else { return ("AI", Color.gray) }
+        return (kind.badgeLabel, badgeColor(for: kind))
+    }
+
+    private func badgeColor(for kind: ProviderKind) -> Color {
+        switch kind {
+        case .anthropic: return .orange
+        case .openai:    return .green
+        case .gemini:    return .blue
+        case .grok:      return .primary
+        case .mistral:   return .purple
+        case .deepseek:  return .indigo
+        case .ollama, .lmstudio, .llamaCpp, .custom: return .gray
+        }
     }
 
     // MARK: footer
 
     private var footer: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             keyHint("↑↓", "history")
             keyHint("←→", "actions")
+            keyHint("⌫", "delete")             // Правка #14
             if state.mode == .gesture {
                 keyHint("release", "paste")
             } else {
-                keyHint("enter", "paste")
-                keyHint("dbl-click", "paste")
+                keyHint("⏎", "paste")
             }
             keyHint("esc", "cancel")
             Spacer()
@@ -592,17 +708,45 @@ struct VisualEffect: NSViewRepresentable {
 
 // MARK: - Image preview
 
-struct ImagePreview: NSViewRepresentable {
-    let item: ClipboardItem
-    func makeNSView(context: Context) -> NSImageView {
-        let v = NSImageView()
-        v.imageScaling = .scaleProportionallyUpOrDown
-        return v
+/// Provider badge (Правка #8) — маленькая капсула слева от title в action chip.
+/// Цвет — accent provider'а, alpha 0.18 для background, full saturation для текста.
+struct ProviderBadgeView: View {
+    let text: String
+    let color: Color
+    let fontSize: CGFloat
+    var body: some View {
+        Text(text)
+            .font(.system(size: fontSize, weight: .medium, design: .monospaced))
+            .foregroundStyle(color)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(Capsule().fill(color.opacity(0.18)))
     }
-    func updateNSView(_ nsView: NSImageView, context: Context) {
-        if let rel = item.previewImageRel {
-            let url = AppStorage.imagesDir.appendingPathComponent(rel)
-            nsView.image = NSImage(contentsOf: url)
+}
+
+/// Image preview pane (Правка #13) — thumbnail + constraints + dimensions label.
+/// Никогда не рендерит full-size NSImage — только cached thumbnail (max 600 pt).
+struct ImagePreview: View {
+    let item: ClipboardItem
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let rel = item.previewImageRel,
+               let img = NSImage(contentsOf: AppStorage.imagesDir.appendingPathComponent(rel)) {
+                Image(nsImage: img)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: 480, maxHeight: 280)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.primary.opacity(0.1), lineWidth: 0.5)
+                    )
+            } else {
+                Image(systemName: "photo")
+                    .font(.system(size: 36))
+                    .foregroundStyle(.secondary)
+            }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }

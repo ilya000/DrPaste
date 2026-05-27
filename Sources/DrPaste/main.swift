@@ -17,7 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     var store: ClipboardStore!
     var watcher: ClipboardWatcher!
     var registry: ActionRegistry!
-    var aiProvider: AnthropicProvider!
+    // AI provider теперь резолвится через AIProviderRegistry.shared (multi-provider, Правка #4)
 
     var engine: HotkeyEngine!
     var hudPanel: HudPanel?
@@ -59,11 +59,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // Type Slowly (Backlog #7)
         registry.register(TypeSlowlyAction())
 
-        // AI actions всегда регистрируются (Backlog #2): без ключа возвращают .failed
-        let cfg = AIProviderConfig.load()
-        aiProvider = AnthropicProvider(config: cfg)
-        registry.aiProvider = aiProvider
-        registry.register(DefaultAIActions.make(provider: aiProvider).map { $0 as ClipboardAction })
+        // AI actions всегда регистрируются (Backlog #2): без provider'а возвращают .failed
+        // с recovery action. Правка #4: multi-provider через AIProviderRegistry.shared.
+        // Инициализируем registry (load из providers.json + миграция v1→v2 если нужно).
+        _ = AIProviderRegistry.shared
+        registry.register(DefaultAIActions.make().map { $0 as ClipboardAction })
         // Build custom AI actions из persisted config (Backlog #8)
         registry.rebuildCustomAI()
 
@@ -258,13 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     }
 
     @objc private func menuShowAbout() {
-        NSApp.orderFrontStandardAboutPanel(options: [
-            .applicationName: AppBrand.name,
-            .applicationVersion: AppBrand.version,
-            .credits: AppBrand.aboutCredits,
-            .applicationIcon: AppBrand.nsIcon
-        ])
-        NSApp.activate(ignoringOtherApps: true)
+        AboutWindowController.shared.show()
     }
 
     @objc private func recentItemSelected(_ sender: NSMenuItem) {
@@ -301,19 +295,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         Task { @MainActor in
             self.currentSummonReason = reason
             if reason == .cutAndReplace {
+                // Правка #16 слой 5: event-driven verification вместо fixed asyncAfter.
+                // Polling до 250 ms ждём изменение pasteboard, дальше openHUD.
+                // Если не дождались — silent fail, не зависаем в opening.
                 let frontApp = NSWorkspace.shared.frontmostApplication
                 self.savedFrontmostApp = frontApp
+                let before = NSPasteboard.general.changeCount
                 PasteSimulator.simulateCut()
-                // Дать macOS обработать cut и watcher подхватить новый payload
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                    self.watcher.forceTick()
-                    self.openHUD()
-                }
+                self.pollClipboardChangeThenOpenHUD(changeCountBefore: before)
             } else {
                 self.openHUD()
             }
         }
     }
+
+    /// Правка #16 слой 5 + 3: poll pasteboard для cut verification +
+    /// watchdog таймер. Если cut не сработал — silent fail без HUD opening.
+    @MainActor
+    private func pollClipboardChangeThenOpenHUD(changeCountBefore: Int) {
+        let start = Date()
+        let deadline: TimeInterval = 0.25
+        Task { @MainActor in
+            while Date().timeIntervalSince(start) < deadline {
+                try? await Task.sleep(nanoseconds: 20_000_000)  // 20 ms
+                if NSPasteboard.general.changeCount > changeCountBefore {
+                    self.watcher.forceTick()
+                    self.openHUD()
+                    return
+                }
+            }
+            // Timeout — нет selection или app заблокировал cut
+            SoundFeedback.play(.copyFailure)
+            // Force reset hudIsActive в engine — мы туда уже его установили в summon
+            if let tap = self.engine as? EventTapEngine { tap.resetHudActive() }
+        }
+    }
+
     nonisolated func hotkeyEngineDidRelease() { Task { @MainActor in self.commitHUD() } }
     nonisolated func hotkeyEngineDidCancel() { Task { @MainActor in self.closeHUD() } }
     nonisolated func hotkeyEngineDidNavigate(_ direction: NavDirection) {
@@ -321,6 +338,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     }
     nonisolated func hotkeyEngineDidRequestFontChange(_ change: FontChange) {
         Task { @MainActor in self.hudState.adjustFontScale(change) }
+    }
+
+    /// Правка #14: Backspace в HUD → delete focused item.
+    nonisolated func hotkeyEngineDidDeleteFocused() {
+        Task { @MainActor in
+            guard let item = self.hudState.currentItem else { return }
+            let position = self.hudState.itemIndex
+            self.store.remove(item.id)
+            self.hudState.items = self.store.items
+            SoundFeedback.play(.delete)
+            if self.hudState.items.isEmpty {
+                self.closeHUD()
+                return
+            }
+            self.hudState.itemIndex = min(position, self.hudState.items.count - 1)
+            self.hudState.actionIndex = 0
+            self.recomputeActions()
+            self.refreshPreview()
+            self.updateContentMeta()
+        }
     }
 
     /// Backlog #9 + #10: Quick Copy через ⌥⌘C.
@@ -356,12 +393,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
 
     private func openHUD() {
         hudState.items = store.items
-        hudState.itemIndex = 0
+        // Cut & Replace UX: если cursorOnSecondOnCut включён и есть >1 item,
+        // курсор стартует на втором (skip just-cut). Default = false (native).
+        let skipCutItem = currentSummonReason == .cutAndReplace
+            && UserDefaults.standard.bool(forKey: "drpaste.hud.cursorOnSecondOnCut")
+            && hudState.items.count > 1
+        hudState.itemIndex = skipCutItem ? 1 : 0
         hudState.actionIndex = 0
+        hudState.contentMeta = nil
         recomputeActions()
         refreshPreview()
+        updateContentMeta()
         showPanel()
         if engine.hudMode == .summon { installLocalKeyMonitor() }
+    }
+
+    /// Правка #15: вычислить content meta для focused item (async, lazy, cached).
+    private func updateContentMeta() {
+        guard let item = hudState.currentItem else {
+            hudState.contentMeta = nil
+            return
+        }
+        hudState.contentMeta = nil   // placeholder "…"
+        let itemID = item.id
+        Task { [weak self] in
+            // Background compute через detached child task, потом await обратно на MainActor.
+            // Это избегает Swift 6 warning про concurrent var capture self в MainActor.run.
+            let meta = await Task.detached(priority: .userInitiated) {
+                ContentMetaCache.shared.computeSync(for: item)
+            }.value
+            guard let self = self else { return }
+            if self.hudState.currentItem?.id == itemID {
+                self.hudState.contentMeta = meta
+            }
+        }
     }
 
     private func commitHUD() {
@@ -423,12 +488,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         case .up:
             if hudState.itemIndex > 0 {
                 hudState.itemIndex -= 1; hudState.actionIndex = 0
-                recomputeActions(); refreshPreview()
+                recomputeActions(); refreshPreview(); updateContentMeta()
             }
         case .down:
             if hudState.itemIndex + 1 < hudState.items.count {
                 hudState.itemIndex += 1; hudState.actionIndex = 0
-                recomputeActions(); refreshPreview()
+                recomputeActions(); refreshPreview(); updateContentMeta()
             }
         case .left:
             if hudState.actionIndex > 0 { hudState.actionIndex -= 1; refreshPreview() }
@@ -480,17 +545,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
 
     private func showPanel() {
         if hudPanel == nil {
+            // Provider для custom titles (правка #6 lite)
+            hudState.actionTitleProvider = { [weak self] (id, defaultTitle) in
+                self?.registry.displayTitle(forActionID: id, defaultTitle: defaultTitle) ?? defaultTitle
+            }
             let view = HudView(
                 state: hudState,
                 onPick: { [weak self] itemIdx, actionIdx in
                     guard let self = self else { return }
+                    let itemChanged = itemIdx != self.hudState.itemIndex
                     self.hudState.itemIndex = itemIdx
                     self.hudState.actionIndex = actionIdx
                     self.refreshPreview()
+                    if itemChanged { self.updateContentMeta() }
                 },
                 onCommit: { [weak self] in self?.commitHUD() },
                 onOpenAccessibility: { [weak self] in self?.openAccessibilitySettings() },
-                onRecoveryAction: { [weak self] rec in self?.performRecovery(rec) }
+                onRecoveryAction: { [weak self] rec in self?.performRecovery(rec) },
+                onClose: { [weak self] in self?.closeHUD() }   // Правка #15: close button
             )
             let allowsKey = engine.hudMode == .summon
             let host = HudHostingView(rootView: view)
@@ -506,6 +578,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             NSApp.activate(ignoringOtherApps: true)
         } else {
             panel.orderFrontRegardless()
+        }
+        // Правка #16 слой 4: verify visibility, retry если не успел
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            if let p = self.hudPanel, !p.isVisible {
+                NSLog("DrPaste: HUD did not become visible, retry")
+                if self.engine.hudMode == .summon {
+                    p.makeKeyAndOrderFront(nil)
+                } else {
+                    p.orderFrontRegardless()
+                }
+            }
         }
     }
 
@@ -547,6 +630,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                 self.commitHUD(); return nil
             case kVK_Escape:
                 self.closeHUD(); return nil
+            case kVK_Delete:                       // Правка #14: Backspace в Limited Mode
+                self.hotkeyEngineDidDeleteFocused(); return nil
             case kVK_UpArrow:    self.navigate(.up);    return nil
             case kVK_DownArrow:  self.navigate(.down);  return nil
             case kVK_LeftArrow:  self.navigate(.left);  return nil

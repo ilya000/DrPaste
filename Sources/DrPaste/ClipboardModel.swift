@@ -83,7 +83,15 @@ struct ClipboardItem: Identifiable, Codable, Equatable {
     /// Не payload — это derived view, может быть короче или сэмплем.
     var previewText: String?
     /// Относительный path к PNG-превью (для image / PDF kinds).
+    /// Это **thumbnail** (max 600 pt, сгенерирован в PreviewSynthesizer.imageRelative).
+    /// Full-size image живёт в representations[…].
     var previewImageRel: String?
+
+    /// Image metadata (Правка #13). Заполняется при snapshot если semantic == .image.
+    var originalImageWidth: Int? = nil
+    var originalImageHeight: Int? = nil
+    var originalImageFileSize: Int? = nil     // байт original (до thumbnail downscale)
+    var imageFormat: String? = nil            // "PNG" / "TIFF" / "JPEG" / "HEIC"
 
     /// Source metadata — откуда скопировали.
     var sourceBundleID: String?
@@ -355,6 +363,10 @@ final class ClipboardWatcher {
                                                            store: store)
         let src = SourceResolver.resolve()
 
+        let imgMeta = semantic == .image
+            ? PreviewSynthesizer.imageMetadata(from: pasteboard)
+            : (width: nil, height: nil, fileSize: nil, format: nil)
+
         return ClipboardItem(
             id: UUID(),
             semantic: semantic,
@@ -363,6 +375,10 @@ final class ClipboardWatcher {
             typesOrdered: ordered,
             previewText: previewText,
             previewImageRel: previewImage,
+            originalImageWidth: imgMeta.width,
+            originalImageHeight: imgMeta.height,
+            originalImageFileSize: imgMeta.fileSize,
+            imageFormat: imgMeta.format,
             sourceBundleID: src.bundleID,
             sourceAppName: src.name,
             sourceWindowTitle: src.window,
@@ -480,21 +496,74 @@ enum PreviewSynthesizer {
         }
     }
 
-    /// Для image — кешируем PNG-thumbnail в imagesDir, возвращаем relative path.
-    /// Для остальных — nil (используем previewText).
+    /// Для image — кешируем **thumbnail** (max 600 pt) PNG в imagesDir, возвращаем relative path.
+    /// Full-size payload остаётся в representations[png/tiff/etc].
+    /// HUD рендерит thumbnail — не nagrushает layout при больших картинках (Правка #13).
     static func imageRelative(from pasteboard: NSPasteboard,
                               semantic: SemanticKind,
                               store: ClipboardStore) -> String? {
         guard semantic == .image else { return nil }
         let imgData = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff)
         guard let data = imgData else { return nil }
-        let png: Data
-        if let bitmap = NSBitmapImageRep(data: data),
+        let fullImage = NSImage(data: data) ?? NSImage()
+        let thumb = makeThumbnail(fullImage, maxDimension: 600)
+        let png: Data?
+        if let tiff = thumb.tiffRepresentation,
+           let bitmap = NSBitmapImageRep(data: tiff),
            let pngRep = bitmap.representation(using: .png, properties: [:]) {
             png = pngRep
         } else {
             png = data
         }
-        return store.writeImageData(png)
+        guard let pngData = png else { return nil }
+        return store.writeImageData(pngData)
+    }
+
+    /// Image metadata (Правка #13). Используется в HUD ContentMetaRow.
+    static func imageMetadata(from pasteboard: NSPasteboard)
+        -> (width: Int?, height: Int?, fileSize: Int?, format: String?)
+    {
+        let format: String
+        let data: Data?
+        if let d = pasteboard.data(forType: .png) { data = d; format = "PNG" }
+        else if let d = pasteboard.data(forType: NSPasteboard.PasteboardType("public.jpeg")) { data = d; format = "JPEG" }
+        else if let d = pasteboard.data(forType: NSPasteboard.PasteboardType("public.heic")) { data = d; format = "HEIC" }
+        else if let d = pasteboard.data(forType: .tiff) { data = d; format = "TIFF" }
+        else { return (nil, nil, nil, nil) }
+
+        guard let imgData = data, let img = NSImage(data: imgData) else {
+            return (nil, nil, nil, nil)
+        }
+        // Native pixel dimensions (не points)
+        var width: Int? = nil
+        var height: Int? = nil
+        if let rep = img.representations.first as? NSBitmapImageRep {
+            width = rep.pixelsWide
+            height = rep.pixelsHigh
+        } else {
+            width = Int(img.size.width)
+            height = Int(img.size.height)
+        }
+        return (width, height, imgData.count, format)
+    }
+
+    /// Lanczos-quality downscale до maxDimension pt в большей стороне.
+    /// Если image уже меньше — возвращает original.
+    static func makeThumbnail(_ source: NSImage, maxDimension: CGFloat) -> NSImage {
+        let originalSize = source.size
+        guard originalSize.width > 0, originalSize.height > 0 else { return source }
+        let scale = min(maxDimension / originalSize.width,
+                        maxDimension / originalSize.height,
+                        1.0)
+        if scale >= 1.0 { return source }
+        let newSize = NSSize(width: originalSize.width * scale,
+                             height: originalSize.height * scale)
+        let thumb = NSImage(size: newSize)
+        thumb.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        source.draw(in: NSRect(origin: .zero, size: newSize),
+                    from: .zero, operation: .copy, fraction: 1.0)
+        thumb.unlockFocus()
+        return thumb
     }
 }

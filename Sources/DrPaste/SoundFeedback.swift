@@ -19,6 +19,7 @@ enum SoundCue: String {
     case pasteSuccess = "paste-success"
     case pasteFailure = "paste-failure"
     case typeTick     = "type-tick"
+    case delete       = "delete"
 
     var defaultsKey: String { "drpaste.sound.\(rawValue).enabled" }
     var defaultEnabled: Bool { true }
@@ -29,6 +30,7 @@ enum SoundCue: String {
         case .copySuccess, .pasteSuccess: return NSSound.Name("Tink")
         case .copyFailure, .pasteFailure: return NSSound.Name("Funk")
         case .typeTick:                   return NSSound.Name("Morse")
+        case .delete:                     return NSSound.Name("Bottle")
         }
     }
 }

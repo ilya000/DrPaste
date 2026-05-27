@@ -4,6 +4,77 @@
 
 ---
 
+## Итерация 3 — для 0.4.0
+
+### Правка №1 (iteration 3) — ⌥⌘X UX: option "start cursor on second item"
+
+**Статус:** запланирована. Маленькая правка ~10 строк (toggle в Settings + условие в openHUD).
+
+**Контекст:** обсуждалось 2026-05-26. По дефолту cursor встаёт на just-cut item (это native — release без navigation = no-op, как undo). Некоторые пользователи могут предпочесть auto-skip на второй item — пусть будет toggle.
+
+**В Settings → General → HUD section:**
+
+```
+Cut & Replace (⌥⌘X)
+  ☐ Start cursor on second item (skip just-cut)
+```
+
+Default off (native behavior). Когда on — `openHUD()` для `cutAndReplace` reason устанавливает `itemIndex = 1` если `items.count > 1`.
+
+Принцип `native + choice`.
+
+---
+
+## Версия 0.3.0 — applied 2026-05-26
+
+**Применено** (волна iteration 2, часть 2):
+
+- #4 — Multi-provider AI Registry: новый `AIProviderRegistry` singleton + `ConfiguredProvider` codable + 10 provider kinds (Anthropic, OpenAI, Gemini, Grok, Mistral, DeepSeek, Ollama, LM Studio, llama.cpp, Custom). Unified `OpenAICompatibleProvider` для OpenAI-схожих API, `AnthropicProvider` и `GeminiProvider` со своими схемами. Миграция `providers.json` v1→v2. Settings AI tab перевёрстан с list of providers + per-provider edit sheet + Test connection.
+- #4 — Keychain `APIKeyStorage` через `kSecClassGenericPassword` с поддержкой `kSecAttrSynchronizable` (включается в #11 iCloud sync позже).
+- #9 — `RichTextHelpers.swift`: `attributedStringToMarkdown`, `markdownToAttributedString` (native `NSAttributedString(markdown:)`), `attributedStringToHTML`. AI `preserveRichFormatting` через MD round-trip — `translate (rich)` и `fix grammar (rich)` сохраняют bold/italic/headings/links. `Rich → HTML` engine.
+- #10 — `attributedStringToWiki` (MediaWiki синтаксис) + `Rich → Wiki markup` engine. Default translate prompt теперь Spanish ↔ English (вместо RU ↔ EN).
+- #8 partial — Provider badge в HUD action chips: `[Claude]` оранжевый, `[GPT]` зелёный, `[Gemini]` синий, `[Ollama]` серый, etc. + `Paste as text` engine (clean + trim комбо).
+
+**HUD bug fixes (по результатам тестинга 0.2.0):**
+
+- HUD corner radius клипал начало строк в preview pane — добавлены internal `.padding(.horizontal, 6)` для всех semantic types content.
+- Content meta row (word count / image size / etc.) перенесена из-под header **в правую колонку content area, прямо над preview pane** — семантически правильное место.
+
+**Отложено до 0.4.0** (большой UI refactor + engine architecture):
+
+- #5 — Settings content tabs: 2-колоночная вёрстка + drag-reorder + Paste as is locked
+- #6 — Unified Action Editor sheet (built-in и AI используют один и тот же sheet)
+- #7 — Action Engine architecture — algorithm как переменный компонент, `CustomActionDescriptor` с `engineID`
+- #8 — Curated default-enabled subset + PalettePicker для остальных engines
+
+---
+
+## Версия 0.2.0 — applied 2026-05-26
+
+**Применено** (волна iteration 2):
+
+- #1 — `ilya000` GitHub handle, убран /issues link
+- #2 — Custom About window (`AboutWindow.swift`, 560×500, NSWindowController + SwiftUI)
+- #3 — Settings → General → "Launch DrPaste on login" placeholder (disabled, coming soon)
+- #11 — Settings → General → iCloud sync placeholder + "Include API keys via iCloud Keychain" sub-toggle (disabled, coming soon)
+- #12 — HudPanel.applyRoundedCorners в layoutIfNeeded + setFrame + recursive subview layers, `cornerCurve = .continuous`
+- #13 — Thumbnail (600 pt max) для image clipboard items в PreviewSynthesizer.imageRelative + image metadata (width/height/fileSize/format) в ClipboardItem + SwiftUI Image with frame constraints в HUD ImagePreview
+- #14 — Backspace в HUD → `hotkeyEngineDidDeleteFocused` (в EventTap + GlobalMonitor + local key monitor для Limited Mode), store.remove + cursor reposition + `delete` sound cue (system fallback "Bottle"). Без undo (сознательное решение). Footer legend обновлён: `⌫ delete`
+- #15 — Компактный header в одну строку (icon 16pt · name · count · source · engine · ×), Close button SF Symbol `xmark.circle.fill` (always visible, mouse-route safety net), Content meta row с lazy async compute через `ContentMetaCache` (новый файл, in-memory cache, budget time 50 ms, для большого text — sampling-based approximation)
+- #16 — `PasteSimulator.postShortcut` теперь приподнимает физический ⌥ перед synthetic ⌘X/⌘V/⌘C (правильный modifier state) + все наши synthetic events помечены `DrPasteSyntheticMarker` (`.eventSourceUserData`), EventTap фильтрует свои события (разрыв recursion). `pollClipboardChangeThenOpenHUD` — event-driven verification cut с timeout 250 ms (вместо fixed 80 ms heuristic). HUD visibility verification через 80 ms с retry.
+
+**Отложено до 0.3.0** (большая архитектурная волна — engine architecture + multi-provider AI + Settings refactor):
+
+- #4 — Multi-provider AI: cloud (OpenAI, Gemini, Grok, Mistral, DeepSeek) + local (Ollama, LM Studio, llama.cpp, custom) + Keychain
+- #5 — Settings content tabs: 2-колоночная вёрстка + drag-reorder + Paste as is locked
+- #6 — Unified Action Editor sheet (built-in и AI используют один и тот же sheet)
+- #7 — Action Engine dropdown — algorithm как переменный компонент, `CustomActionDescriptor` с `engineID`
+- #8 — Curated default actions + palette для остальных + provider-aware naming (`[Claude]` badge)
+- #9 — Rich Text: real RTF sample + rich-preserving Result pane + MD round-trip AI translate/fix
+- #10 — Полная курация default-наборов по всем content tabs + Wiki markup engine + Spanish как default translate target
+
+---
+
 ## Правка №1 (next iteration) — Universal Semantic Clipboard Layer
 
 **Статус:** запланирована. Архитектурная правка такого же масштаба как Full/Limited Mode (Правка №9 текущей итерации). Оценка 600–900 строк изменений в 4–5 файлах.
@@ -1749,6 +1820,4259 @@ Type tick особенно — должен быть **тише** других �
 ### Накопленные звуки во время быстрых операций
 
 Если пользователь делает несколько `⌥⌘C` подряд за секунду — каждый раз играть звук может прозвучать как стрекот. Решение: throttle 200 ms (не играть тот же sound если предыдущий вызов был < 200 ms назад). Применить ко всем sounds кроме type-tick (там это часть UX).
+
+---
+
+---
+
+# Итерация 2
+
+Правки накапливаются здесь и применяются волной после обсуждения. Нумерация независимая от итерации 1.
+
+---
+
+## Правка №1 (iteration 2) — About window: корректный GitHub handle, убрать несуществующий /issues
+
+**Статус:** запланирована. Маленькая правка, ~10 строк.
+
+**Затрагивает:** `AppBrand.swift` (`aboutCredits` NSAttributedString), опционально `BACKLOG.md` / `README.md` если в них встречаются те же ссылки.
+
+### Проблема
+
+В About окне сейчас:
+
+```
+Source code: https://github.com/iLya-Os/DrPaste
+Support: https://github.com/iLya-Os/DrPaste/issues
+```
+
+Две ошибки:
+
+1. **Неправильный handle.** Мой GitHub username — `ilya000` (а не `iLya-Os`, который я указал в copyright/license — это nickname для авторских ярлыков, не GitHub login).
+2. **Раздела Issues нет.** Репозиторий не имеет включённого Issues tab, ссылка ведёт в никуда.
+
+### Что меняем
+
+В `AppBrand.aboutCredits`:
+
+```swift
+// БЫЛО:
+body.append(NSAttributedString(string: """
+Copyright © 2026 iLya Os.
+Licensed under GNU GPL v3.0-or-later with attribution requirement.
+
+Source code: https://github.com/iLya-Os/DrPaste
+Support: https://github.com/iLya-Os/DrPaste/issues
+
+"""))
+
+// СТАЛО:
+body.append(NSAttributedString(string: """
+Copyright © 2026 iLya Os.
+Licensed under GNU GPL v3.0-or-later with attribution requirement.
+
+Source code: https://github.com/ilya000/DrPaste
+
+"""))
+```
+
+Изменения:
+- `iLya-Os` → `ilya000` в URL
+- Строка с `Support: …/issues` удаляется целиком
+
+Copyright строка остаётся `iLya Os` (это nickname для атрибуции, не GitHub login — два разных идентификатора, оба корректны).
+
+### Проверить заодно
+
+При применении правки прогрепать репозиторий на `iLya-Os` и `/issues` — если те же ссылки встречаются в `README.md`, `LICENSE`, `BACKLOG.md` или комментариях в коде, поправить там же одной волной. Особенно важно в `README.md` (увидят первым посетители репо).
+
+### Что не меняется
+
+- Copyright `iLya Os` остаётся как есть — это authoring nickname.
+- License-секция `Licensed under GNU GPL v3.0-or-later with attribution requirement.` — без изменений.
+- Acknowledgements block (Flycut/Maccy/Paste/Raycast, AppKit/SwiftUI/Core Image/Vision/Carbon) — без изменений.
+
+### Когда появится Issues
+
+Если/когда я открою Issues tab — добавим обратно отдельной правкой. Сейчас лучше не показывать broken link, чем "пусть будет".
+
+---
+
+## Правка №2 (iteration 2) — Custom About window: шире, с воздухом и полями
+
+**Статус:** запланирована. Средняя правка, ~120–180 строк (новый файл `AboutWindow.swift` + точка вызова в `main.swift`).
+
+**Затрагивает:** новый `AboutWindow.swift` (NSWindowController + SwiftUI hosting), `main.swift` (`showAbout()` теперь открывает наше окно вместо `NSApp.orderFrontStandardAboutPanel`), `AppBrand.swift` (структурированные поля для About вместо одной NSAttributedString, чтобы было удобнее верстать в SwiftUI).
+
+### Проблема
+
+Сейчас About открывается через `NSApp.orderFrontStandardAboutPanel(options:)`. У Apple-овской панели **фиксированная ширина** (~360–380 pt) и **зажатые поля** — текст идёт впритык к границам окна, многострочные credits переносятся узкой колонкой, читается как сжатый паспорт. Acknowledgements block с inspirations и frameworks внутри стандартной панели выглядит «куцо» и не передаёт качество продукта.
+
+`orderFrontStandardAboutPanel` НЕ позволяет:
+- задать ширину окна
+- задать padding/insets вокруг credits
+- управлять выравниванием
+- использовать богатый layout (иконка слева большая, текст справа структурированный)
+
+Опции которые есть (`.credits`, `.applicationIcon`, `.applicationName`, `.applicationVersion`) — только контент, не верстка.
+
+### Решение — собственное About окно
+
+Простое NSWindow с фиксированным размером и SwiftUI content. Не часть Settings (та правка отдельная — Backlog #8 итерации 1, уже сделана), а самостоятельное модальное-style окно как у Sketch / Linear / Raycast — компактное, но с воздухом.
+
+### Целевая верстка
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│                                                                │
+│                                                                │
+│     ┌──────┐    DrPaste                                        │
+│     │  Dr  │    Press-and-hold clipboard, designed as the      │
+│     │      │    natural extension of the Paste gesture.        │
+│     └──────┘    Version 0.1.0                                  │
+│                                                                │
+│    ──────────────────────────────────────────────────────      │
+│                                                                │
+│    Copyright © 2026 iLya Os.                                   │
+│    Licensed under GNU GPL v3.0-or-later                        │
+│    with attribution requirement.                               │
+│                                                                │
+│    Source code:  github.com/ilya000/DrPaste                    │
+│                                                                │
+│    ──────────────────────────────────────────────────────      │
+│                                                                │
+│    Acknowledgements                                            │
+│                                                                │
+│    DrPaste's design is inspired by Flycut, Maccy, Paste,       │
+│    and Raycast — open clipboard utilities that paved the way   │
+│    for keyboard-first paste UX on macOS.                       │
+│                                                                │
+│    Built on Apple's AppKit, SwiftUI, Core Image, Vision,       │
+│    and Carbon HIToolbox.                                       │
+│                                                                │
+│    Thanks to the open-source community.                        │
+│                                                                │
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
+        (фиксированная ширина 560 pt, высота ~ 500 pt)
+```
+
+Ключевые параметры:
+
+- **Ширина окна:** 560 pt (против ~370 у standard panel) — комфортно читается строка ≈ 65 символов.
+- **Высота:** ~500 pt, фиксированная (не resizable).
+- **Внутренний padding:** 32 pt со всех сторон (стандартный «комфортный» SwiftUI inset).
+- **Иконка:** 96×96 pt слева, выровнена по верху первого текстового блока.
+- **Заголовок DrPaste:** SF Pro Display 24 pt semibold.
+- **Tagline под заголовком:** secondaryLabelColor, 12 pt regular.
+- **Version:** tertiaryLabelColor, 11 pt monospaced — снизу tagline.
+- **Divider'ы:** standard `Divider()` SwiftUI, между секциями ровно по 24 pt сверху/снизу.
+- **Раздел Acknowledgements:** заголовок 13 pt semibold, текст 12 pt regular с line spacing 4 pt для воздуха.
+- **GitHub link:** clickable, accentColor, открывается через `NSWorkspace.shared.open(...)`.
+- **Фон:** default `Color(NSColor.windowBackgroundColor)` — система сама даст white/dark в зависимости от appearance. Окно НЕ vibrant/HUD-style — это standard window.
+
+### Поведение окна
+
+- **Window style:** `[.titled, .closable]` — без resize, без minimize, без zoom (одинокая красная кнопка, как у настоящего About).
+- **Title bar:** `titlebarAppearsTransparent = true`, `titleVisibility = .hidden` — title bar становится «слитым» с фоном, остаётся только закрывашка слева.
+- **Movable:** да, `isMovableByWindowBackground = true` — можно таскать за любое место.
+- **Center on first show:** да. На повторных открытиях — на позиции последнего открытия (window restoration через `NSWindowController` дефолтно).
+- **Single instance:** второй вызов showAbout приносит существующее окно вперёд (`makeKeyAndOrderFront`), а не открывает второе.
+- **Closable Esc:** добавить keyDown handler — Esc закрывает окно.
+
+### Реализация
+
+**`AboutWindow.swift`:**
+
+```swift
+import SwiftUI
+import AppKit
+
+final class AboutWindowController: NSWindowController {
+    static let shared = AboutWindowController()
+
+    private init() {
+        let hosting = NSHostingController(rootView: AboutView())
+        let window = NSWindow(contentViewController: hosting)
+        window.styleMask = [.titled, .closable, .fullSizeContentView]
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isMovableByWindowBackground = true
+        window.setContentSize(NSSize(width: 560, height: 500))
+        window.center()
+        window.title = "About \(AppBrand.name)"
+        super.init(window: window)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func show() {
+        if window?.isVisible == false || window == nil {
+            window?.center()
+        }
+        showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+struct AboutView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+
+            // Header: icon + title + tagline + version
+            HStack(alignment: .top, spacing: 20) {
+                Image(nsImage: AppBrand.nsIcon)
+                    .resizable()
+                    .frame(width: 96, height: 96)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(AppBrand.name)
+                        .font(.system(size: 24, weight: .semibold, design: .default))
+                    Text(AppBrand.tagline)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Version \(AppBrand.version)")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .padding(.top, 4)
+                }
+                Spacer(minLength: 0)
+            }
+
+            Divider().padding(.vertical, 24)
+
+            // Copyright + license + source
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Copyright © 2026 iLya Os.")
+                Text("Licensed under GNU GPL v3.0-or-later with attribution requirement.")
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text("Source code:")
+                        .foregroundStyle(.secondary)
+                    Link("github.com/ilya000/DrPaste",
+                         destination: URL(string: "https://github.com/ilya000/DrPaste")!)
+                }
+                .padding(.top, 4)
+            }
+            .font(.system(size: 12))
+            .fixedSize(horizontal: false, vertical: true)
+
+            Divider().padding(.vertical, 24)
+
+            // Acknowledgements
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Acknowledgements")
+                    .font(.system(size: 13, weight: .semibold))
+
+                Text("DrPaste's design is inspired by Flycut, Maccy, Paste, and Raycast — open clipboard utilities that paved the way for keyboard-first paste UX on macOS.")
+                    .foregroundStyle(.secondary)
+
+                Text("Built on Apple's AppKit, SwiftUI, Core Image, Vision, and Carbon HIToolbox.")
+                    .foregroundStyle(.secondary)
+
+                Text("Thanks to the open-source community.")
+                    .foregroundStyle(.secondary)
+            }
+            .font(.system(size: 12))
+            .lineSpacing(4)
+            .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 0)
+        }
+        .padding(32)
+        .frame(width: 560, height: 500, alignment: .topLeading)
+        .background(Color(NSColor.windowBackgroundColor))
+    }
+}
+```
+
+**`AppBrand.swift` — добавить `tagline`:**
+
+```swift
+static let tagline = "Press-and-hold clipboard, designed as the natural extension of the Paste gesture."
+```
+
+(можно немного отполировать — это draft)
+
+**`main.swift.showAbout()`:**
+
+```swift
+// БЫЛО:
+@objc private func showAbout() {
+    NSApp.orderFrontStandardAboutPanel(options: [
+        .applicationName: AppBrand.name,
+        .applicationVersion: AppBrand.version,
+        .credits: AppBrand.aboutCredits,
+        .applicationIcon: AppBrand.nsIcon
+    ])
+}
+
+// СТАЛО:
+@objc private func showAbout() {
+    AboutWindowController.shared.show()
+}
+```
+
+`AppBrand.aboutCredits` остаётся для совместимости / возможного будущего использования, но из showAbout больше не дергается.
+
+### Что не делается в этой правке
+
+- **Богатая визуализация инструментов** (логотипы Apple frameworks, badges Flycut/Maccy/Paste/Raycast) — это превратится в дизайн-проект сам по себе. Текст plain, чистый — этого достаточно.
+- **Анимация появления** (fade-in/scale) — стандартное NSWindow открытие.
+- **Build number в version** — пока только `0.1.0`, без build. Когда появится CI с автоматическим build counter — добавим `Version 0.1.0 (build 42)`.
+- **Localization** — текст на английском, как и весь UI пока. Локализация — отдельная правка после v1.
+- **Embedded license text** — кнопка «View License» открывающая GPL текст. Излишне, license file есть в репо и в LICENSE рядом с executable.
+
+### Зависимости
+
+- Опирается на правку №1 итерации 2 (`ilya000` handle, убрать /issues) — финальные строки About должны быть уже исправленными. Логично применять обе правки одной волной.
+- Не имеет дальнейших зависимостей в итерации 2.
+
+### Размер изменений
+
+- Новый файл `AboutWindow.swift`: ~120 строк
+- `AppBrand.swift`: +3 строки (tagline) + правки в aboutCredits (правка №1)
+- `main.swift`: 1 строка изменена в showAbout
+- Build & run: должно компилироваться без warnings
+
+---
+
+## Правка №3 (iteration 2) — Settings → General: Launch DrPaste on login (placeholder)
+
+**Статус:** запланирована. Маленькая правка, ~15 строк.
+
+**Затрагивает:** `SettingsWindow.swift` (General tab — добавить Toggle в существующий section).
+
+### Что добавляем
+
+В Settings → General tab, в верхней части, новая Toggle-строка:
+
+```
+☐ Launch DrPaste on login        (disabled — coming soon)
+```
+
+### Почему серым
+
+Полноценная реализация требует регистрации Login Item через `SMAppService.mainApp.register()` (macOS 13+), отдельный helper executable не нужен с современным API, но всё равно надо:
+
+1. Подписать app codesign'ом (login items без подписи macOS блокирует на 14/15)
+2. Добавить usage description ключ в Info.plist
+3. Зарегистрировать observer на изменения статуса (`SMAppService.Status`)
+4. Корректно обрабатывать пользовательский revoke через System Settings → Login Items
+
+Для DrPaste-as-SwiftPM-executable без подписи это пока не работает без танцев. Поэтому **UI ставим сейчас** (чтобы пользователь видел что фича в планах и не искал её в других местах), а **функционал — отдельной правкой** когда дойдём до code signing / distribution flow.
+
+### Реализация
+
+В `SettingsWindow.swift` в General tab (внутри VStack настроек):
+
+```swift
+Toggle("Launch DrPaste on login", isOn: .constant(false))
+    .disabled(true)
+    .help("Coming soon — will be available once DrPaste ships signed.")
+```
+
+`isOn: .constant(false)` — пока не bind'имся к реальному state, всегда false.
+`.disabled(true)` — серый, не кликабельный.
+`.help(...)` — tooltip при hover, объясняющий почему серый.
+
+### Опционально — visual hint что это placeholder
+
+Чтобы пользователь не подумал что приложение «забыло» включить toggle, можно добавить inline subtle подпись:
+
+```swift
+HStack {
+    Toggle("Launch DrPaste on login", isOn: .constant(false))
+        .disabled(true)
+    Text("(coming soon)")
+        .font(.caption)
+        .foregroundStyle(.tertiary)
+}
+```
+
+«(coming soon)» в тёртичной серой 11 pt — даёт явный сигнал «это не баг, это план».
+
+### Когда переходить к реальной реализации
+
+Отдельной правкой когда:
+- DrPaste получит code signing (Developer ID Application или Apple Distribution)
+- Появится распространяемый `.app` bundle (сейчас raw executable)
+
+Тогда правка станет: импорт `ServiceManagement`, реальный binding к `SMAppService.mainApp.status`, register/unregister handlers, error handling для `SMAppServiceErrorDomain` cases.
+
+### Расширение этой правки в будущем
+
+Аналогично «(coming soon)» placeholder'ы могут появиться для других ещё не реализованных pref'ов:
+
+- Hotkey rebinding UI (требует `sindresorhus/KeyboardShortcuts` package)
+- Cloud sync via iCloud (требует CloudKit setup)
+- Update channel (stable / beta) — требует Sparkle integration
+
+Договоримся: placeholder-toggle всегда disabled + помечен «(coming soon)», чтобы roadmap был виден в самом продукте, а не только в README.
+
+---
+
+## Правка №4 (iteration 2) — Multi-provider AI: cloud + local providers в Settings
+
+**Статус:** запланирована. Большая правка ~350–500 строк (расширение `AIProvider.swift` + новый UI в `SettingsWindow.swift` → AI tab + миграция формата `providers.json`).
+
+**Затрагивает:** `AIProvider.swift` (новый `AIProviderRegistry`, протокол + реализации для всех провайдеров, унифицированный chat/completions API), `SettingsWindow.swift` (AI Providers tab — полная пересборка), `Actions.swift` (`AIAction` берёт provider по ID из registry вместо одного hardcoded), `ActionConfig.swift` (CustomAIDescriptor.providerID уже есть — больше не hardcoded "anthropic"), новый `providers.json` schema с миграцией.
+
+### Цель
+
+Сейчас в DrPaste hardcoded один провайдер — `AnthropicProvider`. Пользователь хочет (а) выбирать между cloud-провайдерами по предпочтению и цене, (б) использовать **локальные модели** (Ollama, LM Studio) — это privacy critical: clipboard содержит sensitive данные (пароли, ключи, личные документы), некоторые пользователи принципиально не хотят чтобы они уходили в облако.
+
+После правки: пользователь может одновременно иметь сконфигурированные несколько провайдеров и в каждом custom AI action указывать какой использовать.
+
+### Поддерживаемые провайдеры (production-минимум)
+
+**Cloud:**
+
+| Provider | API | Authentication | Models |
+|---|---|---|---|
+| **Anthropic** ✓ (есть) | `https://api.anthropic.com/v1/messages` | `x-api-key` header | claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5 |
+| **OpenAI** | `https://api.openai.com/v1/chat/completions` | `Authorization: Bearer` | gpt-5, gpt-5-mini, gpt-4.1, gpt-4o |
+| **Google Gemini** | `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent` | `?key={apiKey}` query param | gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash |
+| **xAI Grok** | `https://api.x.ai/v1/chat/completions` | `Authorization: Bearer` | grok-4, grok-3 |
+| **Mistral** | `https://api.mistral.ai/v1/chat/completions` | `Authorization: Bearer` | mistral-large, codestral |
+| **DeepSeek** | `https://api.deepseek.com/chat/completions` | `Authorization: Bearer` | deepseek-chat, deepseek-reasoner |
+
+**Local:**
+
+| Provider | API | Authentication | Default URL |
+|---|---|---|---|
+| **Ollama** | OpenAI-compatible на `/v1/chat/completions` | нет | `http://localhost:11434` |
+| **LM Studio** | OpenAI-compatible | нет (по умолчанию) | `http://localhost:1234` |
+| **llama.cpp server** | OpenAI-compatible | нет | `http://localhost:8080` |
+
+**Generic custom:**
+
+| Provider | API | |
+|---|---|---|
+| **Custom OpenAI-compatible** | OpenAI-compatible на user-specified base URL + optional Bearer token | для прочих local runners или enterprise-proxy endpoints |
+
+### Архитектурный сдвиг — Registry
+
+```swift
+// AIProvider.swift
+
+protocol AIProvider {
+    var id: String { get }
+    var displayName: String { get }
+    var requiresAPIKey: Bool { get }
+    var requiresBaseURL: Bool { get }      // true для Ollama / custom
+    var availableModels: [String] { get }  // hint для UI dropdown (можно расширять)
+    var defaultModel: String { get }
+
+    func complete(prompt: String, system: String?, model: String) async throws -> String
+}
+
+enum AIProviderError: Error {
+    case missingAPIKey
+    case missingBaseURL
+    case modelUnavailable(String)
+    case http(status: Int, body: String)
+    case decodingFailed(String)
+    case networkUnreachable
+    case rateLimited(retryAfter: TimeInterval?)
+}
+
+final class AIProviderRegistry: ObservableObject {
+    static let shared = AIProviderRegistry()
+    @Published private(set) var configured: [ConfiguredProvider] = []
+    @Published var defaultProviderID: String?
+
+    func provider(id: String) -> AIProvider? { ... }
+    func configure(_ config: ProviderConfig) { ... }
+    func remove(id: String) { ... }
+    func test(id: String) async -> Result<String, AIProviderError> { ... }
+}
+
+struct ProviderConfig: Codable, Identifiable {
+    var id: String                  // например "openai" / "ollama" / "custom-1"
+    var kind: ProviderKind          // .anthropic / .openai / .gemini / .grok / .mistral / .deepseek / .ollama / .lmstudio / .llamaCpp / .custom
+    var displayName: String         // overridable, default по kind
+    var apiKey: String?             // nil для local
+    var baseURL: String?            // только для local / custom
+    var model: String               // выбранная модель
+    var enabled: Bool
+}
+```
+
+### Implementation реализаций
+
+**Common OpenAI-compatible client** — Ollama, LM Studio, llama.cpp, OpenAI, Grok, Mistral, DeepSeek, custom — все используют один HTTP-клиент со схемой `POST /v1/chat/completions` с body `{"model": "...", "messages": [...], ...}`. Различия только в:
+- base URL
+- Authorization header (Bearer vs none)
+- response shape (минимальные различия в `choices[0].message.content`)
+
+Реализуем `OpenAICompatibleProvider` с параметрами baseURL / authHeader / defaultModel, и оборачиваем им большинство провайдеров.
+
+**Anthropic** уже отдельная реализация — `/v1/messages` со своей схемой `messages` и `system`. Остаётся.
+
+**Gemini** — отдельная реализация (`/v1beta/models/{model}:generateContent` с другим body shape — `contents` вместо `messages`). Отдельный класс.
+
+```swift
+final class AnthropicProvider: AIProvider { ... }  // existing
+final class OpenAICompatibleProvider: AIProvider { ... }  // unified для большинства
+final class GeminiProvider: AIProvider { ... }  // отдельный
+```
+
+`OpenAICompatibleProvider` конфигурируется при создании:
+
+```swift
+extension OpenAICompatibleProvider {
+    static func openAI(apiKey: String, model: String) -> Self { ... }
+    static func grok(apiKey: String, model: String) -> Self { ... }
+    static func mistral(apiKey: String, model: String) -> Self { ... }
+    static func deepseek(apiKey: String, model: String) -> Self { ... }
+    static func ollama(baseURL: String, model: String) -> Self { ... }
+    static func lmStudio(baseURL: String, model: String) -> Self { ... }
+    static func llamaCpp(baseURL: String, model: String) -> Self { ... }
+    static func custom(baseURL: String, apiKey: String?, model: String) -> Self { ... }
+}
+```
+
+### UI — Settings → AI Providers tab
+
+```
+┌─ AI Providers ──────────────────────────────────────────────┐
+│                                                             │
+│ Default provider: [Anthropic Claude ▼]                      │
+│ Used for all custom AI actions unless overridden per action.│
+│                                                             │
+│ ─────────────────────────────────────────────────────────   │
+│                                                             │
+│ Cloud providers                                             │
+│                                                             │
+│  Anthropic Claude              ●  configured       [Edit]   │
+│  OpenAI GPT                    ○  not configured   [Setup]  │
+│  Google Gemini                 ○  not configured   [Setup]  │
+│  xAI Grok                      ○  not configured   [Setup]  │
+│  Mistral                       ○  not configured   [Setup]  │
+│  DeepSeek                      ○  not configured   [Setup]  │
+│                                                             │
+│ Local providers                                             │
+│                                                             │
+│  Ollama                        ●  configured       [Edit]   │
+│  LM Studio                     ○  not configured   [Setup]  │
+│  llama.cpp server              ○  not configured   [Setup]  │
+│                                                             │
+│ Custom                                                      │
+│                                                             │
+│  [+ Add custom OpenAI-compatible endpoint…]                 │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Click [Edit] / [Setup]** — модальное sheet с полями:
+
+Для cloud-провайдера (Anthropic / OpenAI / Gemini / Grok / Mistral / DeepSeek):
+
+```
+┌─ OpenAI ────────────────────────────────────────────────────┐
+│                                                             │
+│ API Key:    [ sk-...___________________________ ]  [👁]     │
+│             Get one at platform.openai.com/api-keys         │
+│                                                             │
+│ Model:      [ gpt-5-mini  ▼ ]                               │
+│             Custom: [____________________]                  │
+│                                                             │
+│ [Test connection]    ●  Connected (gpt-5-mini, 245 ms)      │
+│                                                             │
+│                            [Cancel]    [Save]               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Для local-провайдера (Ollama / LM Studio / llama.cpp):
+
+```
+┌─ Ollama ────────────────────────────────────────────────────┐
+│                                                             │
+│ Base URL:   [ http://localhost:11434                ]       │
+│             [Detect running instance]                       │
+│                                                             │
+│ Model:      [ llama3.2:latest        ▼ ]                    │
+│             ↻ Refresh list from server                      │
+│                                                             │
+│ [Test connection]    ●  Connected — 12 models available     │
+│                                                             │
+│                            [Cancel]    [Save]               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Особенности local UI:
+
+- **«Detect running instance»** — Bonjour scan / port probe на стандартные порты (11434 Ollama, 1234 LM Studio, 8080 llama.cpp). Если найдено — заполняет Base URL автоматически.
+- **«Refresh model list from server»** — Ollama имеет endpoint `GET /api/tags` со списком установленных моделей, LM Studio имеет `GET /v1/models`, llama.cpp пока тоже OpenAI-compatible `/v1/models`. Заполняет dropdown реально установленными моделями.
+- **API key hidden behind 👁 toggle** — стандартный pattern для password fields. Хранится через SecureField в SwiftUI.
+
+Для custom OpenAI-compatible:
+
+```
+┌─ Custom OpenAI-compatible endpoint ─────────────────────────┐
+│                                                             │
+│ Display name: [ My company proxy            ]               │
+│                                                             │
+│ Base URL:     [ https://ai-proxy.acme.com/v1     ]          │
+│                                                             │
+│ API Key:      [ ___________________________ ]  [👁]         │
+│               (leave empty if no auth required)             │
+│                                                             │
+│ Model:        [ acme-llama-70b                   ]          │
+│                                                             │
+│ [Test connection]                                           │
+│                                                             │
+│                            [Cancel]    [Save]               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Test connection
+
+Каждый sheet имеет **[Test connection]** кнопку:
+
+```swift
+func test(_ provider: AIProvider) async -> Result<String, AIProviderError> {
+    let start = Date()
+    do {
+        let _ = try await provider.complete(
+            prompt: "Reply with the single word OK.",
+            system: nil,
+            model: provider.defaultModel
+        )
+        let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+        return .success("Connected (\(elapsed) ms)")
+    } catch {
+        return .failure(mapToProviderError(error))
+    }
+}
+```
+
+При успехе — зелёная лампочка + время отклика. При failure — внятная error message:
+- `missingAPIKey` → «API key required»
+- `http(401)` → «Invalid API key»
+- `http(404)` → «Endpoint not found — check base URL»
+- `networkUnreachable` → «Could not reach server»
+- `modelUnavailable` → «Model "..." not available on this provider»
+- `rateLimited(retryAfter: t)` → «Rate limited (retry in \(t) s)»
+
+Это критически важно — без Test пользователь не понимает почему AI action возвращает `.failed`.
+
+### Per-action provider override
+
+В custom AI action editor (Backlog #8 итерации 1 уже сделан) есть поле «Provider:». Сейчас оно показывает только `anthropic`. После правки:
+
+```
+Provider:  [Default (Anthropic Claude) ▼]
+           ├─ Default (Anthropic Claude)
+           ├─ Anthropic Claude
+           ├─ OpenAI GPT
+           ├─ Ollama (llama3.2:latest)
+           └─ ...
+```
+
+«Default» использует `AIProviderRegistry.shared.defaultProviderID`. Конкретный provider — overrides default. Если выбранный provider удалён — fallback на default + warning в action list.
+
+### Privacy nudge
+
+Когда пользователь конфигурирует cloud-провайдер и в action queue есть actions помеченные `.privacySensitive = true` (TODO будущий tag для actions работающих с password fields, IBAN, credit cards) — UI показывает inline notice:
+
+```
+ⓘ "Translate" will send clipboard content to Anthropic Claude API.
+  For private content, configure a local provider (Ollama, LM Studio).
+```
+
+Не блокирующий, информационный. Хорошо для education.
+
+### Миграция `providers.json`
+
+**Старый формат:**
+```json
+{
+  "anthropic": {
+    "apiKey": "sk-...",
+    "model": "claude-sonnet-4-6"
+  }
+}
+```
+
+**Новый формат:**
+```json
+{
+  "version": 2,
+  "defaultProviderID": "anthropic",
+  "providers": [
+    {
+      "id": "anthropic",
+      "kind": "anthropic",
+      "displayName": "Anthropic Claude",
+      "apiKey": "sk-...",
+      "model": "claude-sonnet-4-6",
+      "enabled": true
+    },
+    {
+      "id": "ollama",
+      "kind": "ollama",
+      "displayName": "Ollama",
+      "baseURL": "http://localhost:11434",
+      "model": "llama3.2:latest",
+      "enabled": true
+    }
+  ]
+}
+```
+
+Миграция: при load если `version` отсутствует — это v1, читаем старый формат, оборачиваем в один `ProviderConfig{kind: .anthropic}`, сохраняем как v2. Прозрачно для пользователя.
+
+### Keychain vs plain text для API keys
+
+Текущая реализация хранит API key в plain text JSON в Application Support. Это **не идеально** для security. Правка опционально включает **переход на macOS Keychain**:
+
+```swift
+import Security
+
+enum APIKeyStorage {
+    static func save(_ key: String, for providerID: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "com.ilya000.DrPaste.provider",
+            kSecAttrAccount as String: providerID,
+            kSecValueData as String: key.data(using: .utf8)!,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
+        ]
+        SecItemDelete(query as CFDictionary)
+        SecItemAdd(query as CFDictionary, nil)
+    }
+
+    static func load(for providerID: String) -> String? {
+        var item: AnyObject?
+        let query: [String: Any] = [ ... kSecMatchLimitOne, kSecReturnData: true]
+        SecItemCopyMatching(query as CFDictionary, &item)
+        return (item as? Data).flatMap { String(data: $0, encoding: .utf8) }
+    }
+}
+```
+
+В `ProviderConfig` хранится только `id` ключа в keychain, не сам ключ. Export config теперь не содержит ключей (что и так было в плане Backlog #8 итерации 1 — «API keys в export НЕ включаются»).
+
+**Решение:** да, переходим на Keychain в этой же правке. Это естественный момент пока меняем формат providers.json.
+
+### Что не входит
+
+- **Streaming responses** — все провайдеры поддерживают streaming через SSE, но текущая HUD-архитектура показывает only final result. Streaming можно добавить отдельной правкой когда HUD получит «typing» preview.
+- **Multi-modal** (vision models — image input для GPT-4o/Claude/Gemini) — пока только text in / text out. Для image actions OCR делается локально через Vision (Backlog #3 итерации 1, уже есть).
+- **Embeddings / RAG** — не нужно для clipboard transformations.
+- **Function calling / tools** — не нужно.
+- **Cost tracking / token counters** — out of scope для v1. Полезно, но отдельной правкой.
+
+### Зависимости
+
+- Опирается на **Backlog #8 итерации 1** (уже сделан — Settings UI, `ActionConfig.customAI[].providerID` уже есть в data model). Правка эта расширяет существующий хук.
+- Опирается на **Backlog #2 итерации 1** (Visible failures, уже сделан) — для отображения provider config errors.
+
+### Размер изменений
+
+- `AIProvider.swift`: +250 строк (новые провайдеры, registry)
+- `SettingsWindow.swift` → AI Providers tab: +200 строк (новый список + sheet editors)
+- `Actions.swift`: ~10 строк (AIAction берёт provider по ID из registry)
+- Новый `APIKeyStorage.swift`: ~40 строк
+- Миграция `providers.json` v1 → v2: ~30 строк в `AIProvider.swift`
+
+Итого: ~530 строк.
+
+---
+
+## Правка №5 (iteration 2) — Settings content tabs: 2-колоночная вёрстка + drag-reorder + rename actions
+
+**Статус:** запланирована. Большая правка ~300–400 строк (вёрстка + drag state machine + rename UX + persistence для порядка и переименований).
+
+**Затрагивает:** `SettingsWindow.swift` (полная пересборка `ContentTypeTab` view), `ActionConfig.swift` (новые поля `actionOrder`, `customTitles` в config), `ActionRegistry` (учитывать пользовательский порядок при отдаче applicable actions), `Actions.swift` (мелкая правка `title` getter — overridable из config).
+
+### Проблема
+
+Сейчас в каждом content-type tab (Plain text / URL / Image / …) **три блока друг под другом по вертикали**:
+
+```
+┌─ Plain text ────────────────────────┐
+│ Sample input:                       │  <- ~120 pt высоты
+│ [ textarea ]                        │
+│ [Reset to default sample]           │
+│                                     │
+│ Result:                             │  <- ~120 pt высоты
+│ [ output preview ]                  │
+│                                     │
+│ Actions:                            │  <- 200+ pt, скроллится
+│ ☑ Paste as is                [Run] │
+│ ☑ Fix keyboard layout        [Run] │
+│ ☑ UPPERCASE                  [Run] │
+│ ... (15–20 actions per type)        │
+└─────────────────────────────────────┘
+```
+
+Проблема: Actions list занимает существенно больше места чем Sample + Result, окно становится узким и длинным, скроллится. При этом Sample и Result часто компактные (одна строка URL, одно слово в результате) — впустую тратят horizontal space.
+
+### Новая 2-колоночная вёрстка
+
+```
+┌─ Plain text ───────────────────────────────────────────────────────┐
+│ ┌─ Sample input ────────────────┐  ┌─ Actions ───────────────────┐ │
+│ │ [ textarea ~ 200 pt high ]    │  │ ⋮⋮ ☑ Paste as is    [Run]  │ │  <- "Paste as is" locked (no drag handle / no rename)
+│ │                               │  │ ⋮⋮ ☑ Fix layout 🖉 [Run]   │ │  <- ⋮⋮ = drag handle, 🖉 = rename button
+│ │                               │  │ ⋮⋮ ☑ UPPERCASE  🖉 [Run]   │ │
+│ │ [Reset to default sample]     │  │ ⋮⋮ ☑ lowercase  🖉 [Run]   │ │
+│ └───────────────────────────────┘  │ ⋮⋮ ☑ Title Case 🖉 [Run]   │ │
+│                                    │ ⋮⋮ ☑ Trim       🖉 [Run]   │ │
+│ ┌─ Result ──────────────────────┐  │ ⋮⋮ ☑ Sort lines 🖉 [Run]   │ │
+│ │ [ output preview ~ 200 pt ]   │  │ ⋮⋮ ☑ Slugify    🖉 [Run]   │ │
+│ │                               │  │ ─ Custom AI ──────────────  │ │
+│ │                               │  │ ⋮⋮ ☑ Summarize 🖉🛠 [Run]  │ │  <- 🛠 = edit prompt (для AI)
+│ │ (Run any action ...)          │  │ ⋮⋮ ☑ Translate 🖉🛠 [Run]  │ │
+│ └───────────────────────────────┘  │ ⋮⋮ ☑ Fix grammar 🖉🛠[Run] │ │
+│                                    │ [+ Add custom AI action…]   │ │
+│                                    └─────────────────────────────┘ │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+Левая колонка: **Sample input** сверху, **Result** снизу. Каждый блок ~ 200 pt высоты, у обоих textarea editable / read-only соответственно. Между ними отступ 16 pt.
+
+Правая колонка: **Actions list**, scrollable, занимает всю высоту правой колонки.
+
+Минимальная ширина окна Settings увеличивается до ~ 880 pt (440 + 440 с paddings). Это норма для tabbed Settings — большинство Apple-приложений и так используют 700–900 pt.
+
+### Drag-to-reorder
+
+Пользователь хватает action за **drag handle** (⋮⋮ — две вертикальные точки, иконка `arrow.up.and.down.and.arrow.left.and.right` либо `line.3.horizontal` слева от toggle) и перетаскивает выше / ниже в списке.
+
+**Правила:**
+
+1. **«Paste as is» (identity action) заблокирован.** Всегда первый, не имеет drag handle, не имеет rename button. Это semantic anchor: «вот оригинал без модификаций». Если пользователь хочет другую default-первую — пусть будет, но identity должен быть identity.
+
+2. **Built-in actions можно тасовать между собой и между AI.** Никакой жёсткой сегрегации built-in / AI. Пользователь может поставить «AI: summarize» вторым, а «UPPERCASE» — куда-то в конец.
+
+3. **Heading «─ Custom AI ──» удаляется.** В новой версии нет визуальной сегрегации — AI actions просто помечаются маленьким значком ✨ слева от названия, чтобы пользователь видел тип. Тип-фильтрация делается уже при первой настройке, не каждый раз в списке.
+
+4. **Drag indicator при перетаскивании** — пустая строка-плейсхолдер с подсвеченной линией показывает куда будет вставлено. Стандартный SwiftUI `.onDrag` / `.onDrop` или AppKit-обёртка через `NSItemProvider`.
+
+5. **Cross-content-type drag не нужен.** Action в Plain text tab нельзя перетащить в URL tab. Это разные filtered lists одной registry; порядок per content type.
+
+### Rename action
+
+Каждый action (кроме Paste as is) имеет **🖉 (pencil) кнопку** между toggle и [Run]. Клик — inline editable:
+
+```
+⋮⋮ ☑ [ Fix keyboard layout___________ ]  ✓ ✗   [Run]
+        ⓘ default: Fix keyboard layout
+```
+
+- Поле становится TextField, текст auto-selected (полностью выделен) для быстрого набора нового
+- ✓ Save / ✗ Cancel под полем (или Enter/Esc)
+- **Под полем — серая 11 pt подпись с дефолтным названием** — критично для UX, как ты и просил. Пользователь не теряется: видит и что переименовывает (default name), и что вводит (новое title).
+
+**После save** в списке отображается custom title, а на hover — tooltip с дефолтным:
+
+```
+⋮⋮ ☑ My Layout Fix  🖉 [Run]
+      ↓ hover
+      ┌─────────────────────────────┐
+      │ Default: Fix keyboard layout │
+      │ ID: builtin.layout_repair    │
+      └─────────────────────────────┘
+```
+
+ID показывается в tooltip — это помогает при export/import и при разборе конфигов вручную.
+
+**Reset to default** — если custom title задан, рядом с pencil появляется маленький ↺ (counterclockwise.arrow) который сбрасывает на default. Когда title == default — этой кнопки нет.
+
+### Что вижу при клике мышью на action
+
+Ты пишешь «при клике мышью должно быть видно дефолтное название» — есть две интерпретации:
+
+**(А) Простой клик по строке** (не на Run/rename/toggle/handle) — раскрывает inline-detail row с full information:
+
+```
+⋮⋮ ☑ My Layout Fix                                      [Run]
+  ┌──────────────────────────────────────────────────────┐
+  │ Default name: Fix keyboard layout                    │
+  │ ID:           builtin.layout_repair                  │
+  │ Type:         Built-in (local)                       │
+  │ Applies to:   Plain text                             │
+  │ Description:  Detects wrong keyboard layout and      │
+  │               corrects RU↔EN mishits.                │
+  │ [Reset to default name]                              │
+  └──────────────────────────────────────────────────────┘
+```
+
+Повторный клик / клик на другую строку сворачивает.
+
+**(B) Один глобальный info pane снизу справа** — выделенный action показывает свои метаданные в фиксированной зоне. Меньше visual jumps.
+
+Думаю — **вариант А (раскрывающийся inline)** лучше для одного активного UI элемента (rename), но **B менее визуально шумный**. Решим при реализации.
+
+### Action metadata storage
+
+В `ActionConfig`:
+
+```swift
+struct ActionConfig: Codable {
+    var version: Int = 1
+    var enabledFlags: [String: Bool] = [:]
+
+    /// Пользовательский порядок per content type.
+    /// Key — ContentTypeID rawValue ("plain", "url", "image", …)
+    /// Value — массив action.id в нужном порядке.
+    /// Если ключа нет — используется default order (как зарегистрировано в registry).
+    /// Если action есть в registry но нет в массиве — добавляется в конец (новый).
+    var actionOrder: [String: [String]] = [:]
+
+    /// Custom titles per action ID.
+    /// Если ключа нет — используется action.title (default).
+    var customTitles: [String: String] = [:]
+
+    var customAI: [CustomAIDescriptor] = []
+    var preferences: ActionConfigPreferences = ActionConfigPreferences()
+}
+```
+
+`ActionRegistry.applicable(for:context:)` теперь:
+
+```swift
+func applicable(for item: ClipboardItem, context: ContentContext) -> [ClipboardAction] {
+    let typeKey = primaryContentType(context).rawValue   // например "plain"
+    let savedOrder = config.actionOrder[typeKey] ?? []
+    let allApplicable = actions.filter { isEnabled($0.id) && $0.isApplicable(item: item, context: context) }
+    return reorder(allApplicable, by: savedOrder)
+}
+
+func displayTitle(for actionID: String, default defaultTitle: String) -> String {
+    config.customTitles[actionID] ?? defaultTitle
+}
+```
+
+В HUD при рендере action title — используем `registry.displayTitle(for: action.id, default: action.title)`. Это гарантирует что переименование видно и в Settings playground, и в реальном HUD.
+
+### Drag-reorder реализация
+
+SwiftUI поддерживает `.onMove(perform:)` для List/ForEach начиная с macOS 11. Но `.onMove` работает в edit mode List'а — для нашего custom-styled списка нужен ручной D&D через `.onDrag { NSItemProvider(...) }` и `.onDrop(of: ..., delegate: ...)`. Стандартный паттерн, ~80 строк кода с custom drop delegate чтобы было плавно.
+
+Для блокировки Paste as is — `.onMove` обработчик проверяет `.first` индекс:
+
+```swift
+.onMove { source, destination in
+    var newOrder = currentOrder
+    let pasteAsIsIdx = newOrder.firstIndex(of: "builtin.identity")
+    newOrder.move(fromOffsets: source, toOffset: destination)
+    // Если Paste as is сместилось — откатываем
+    if newOrder.firstIndex(of: "builtin.identity") != pasteAsIsIdx {
+        return  // отказ от перемещения
+    }
+    config.actionOrder[currentTypeKey] = newOrder
+}
+```
+
+Альтернатива — `.onDrag { … }` возвращает nil для identity (нельзя начать drag) + `.onDrop` отвергает drops в позицию 0. Чище визуально.
+
+### Edge cases
+
+- **Reset all** в Settings (общая кнопка где-то снизу): сбрасывает `actionOrder` и `customTitles` к пустым словарям. Подтверждение через alert.
+- **Import config с другим набором actions** — если incoming config упоминает action.id которого нет в нашем registry — id молча игнорируется (forward compatibility). Если у нас есть action.id которого нет в incoming actionOrder[type] — добавляется в конец (default position).
+- **Переименование в пустую строку** — отвергается, восстанавливается предыдущее имя. Минимум 1 символ.
+- **Дубликаты имён** — разрешены. Пользователь может назвать два action одинаково; различаются по id под капотом. Не ломает функционал.
+
+### UI размеры и motion
+
+- Settings минимальная ширина: 880 pt (raise с текущих ~620).
+- Settings высота: 600 pt минимум, resizable.
+- Левая колонка: flexible width, min 360, ideal 440.
+- Правая колонка: flexible width, min 360, ideal 440.
+- Drag animation: 0.2 s ease-out, легкий tilt 2° на dragged row.
+- Inline rename appearing: 0.15 s ease-in-out, textfield автофокус + selectAll().
+
+### Что не входит
+
+- **Группировка / categories actions** (свои фолдеры) — out of scope. Если у пользователя 30 actions в одном tab — линейный список + scroll. Категоризация может прийти позже как opt-in.
+- **Keyboard shortcuts per action** — назначить ⌘1, ⌘2, … на отдельные actions для quick-trigger в HUD без navigate. Хорошая идея, но отдельная правка.
+- **Action search/filter** — текстовый фильтр сверху списка. Полезно когда actions станет много, но не сейчас.
+- **Color/icon customization** — out of scope. Иконки автоматические по action kind / content type.
+
+### Зависимости
+
+- Опирается на **Backlog #8 итерации 1** (Settings + ActionConfig — уже сделан). Эта правка расширяет существующее.
+- Не имеет других зависимостей в итерации 2.
+
+### Размер изменений
+
+- `SettingsWindow.swift` → ContentTypeTab: ~250 строк (новый layout + drag delegate + rename inline editor)
+- `ActionConfig.swift`: +20 строк (actionOrder, customTitles fields)
+- `Actions.swift` / ActionRegistry: ~30 строк (displayTitle, reordered applicable)
+- HUD.swift: ~5 строк (использовать displayTitle вместо action.title)
+
+Итого: ~305 строк.
+
+---
+
+## Правка №6 (iteration 2) — Единый Action Editor (отменяет inline rename из правки №5)
+
+**Статус:** запланирована. Заменяет UX-часть правки №5 (inline editable title) на единый модальный sheet. Архитектурно — упрощение, ~150 строк (одно UI место вместо двух).
+
+**Затрагивает:** `SettingsWindow.swift` (новый `ActionEditorSheet` view, удаление inline rename UI, удаление отдельного `AIActionEditor` если был), `ActionConfig.swift` (без изменений data model — поля те же).
+
+### Что не так с правкой №5
+
+В правке №5 я предложил **inline rename** через pencil-кнопку (TextField прямо в строке списка) и **отдельный full editor** для AI actions. Это два разных места для редактирования одного и того же концепта — «настройки конкретного action'а». Несимметрично и плодит UX-стили.
+
+Твоё наблюдение правильное: **edit built-in action и edit custom AI action — это один и тот же диалог**, просто для built-in часть полей read-only / hidden. Делаем единый editor.
+
+### Единый Action Editor sheet
+
+Один SwiftUI sheet `ActionEditorSheet`, открывается из кнопки [Edit] (вместо отдельного 🖉 pencil + отдельного «edit» для AI). Иконка кнопки — `pencil` SF Symbol, label «Edit».
+
+```
+┌─ Edit action ──────────────────────────────────────────────┐
+│                                                            │
+│  Title              [ Fix keyboard layout         ]        │
+│                     Default: Fix keyboard layout           │
+│                     [↺ Reset to default]                   │
+│                                                            │
+│  ─────────────────────────────────────────────────────     │
+│                                                            │
+│  Type               Built-in (local)                       │
+│  ID                 builtin.layout_repair                  │
+│  Applies to         Plain text, Mixed-script text          │
+│  Description        Detects wrong keyboard layout (e.g.    │
+│                     RU↔EN mishits) and corrects it.        │
+│                                                            │
+│  ─────────────────────────────────────────────────────     │
+│                                                            │
+│  ☑ Enabled                                                 │
+│                                                            │
+│                                  [Cancel]    [Save]        │
+└────────────────────────────────────────────────────────────┘
+```
+
+Для AI action — тот же sheet, но дополнительные поля становятся видимыми и editable:
+
+```
+┌─ Edit action ──────────────────────────────────────────────┐
+│                                                            │
+│  Title              [ AI: summarize                 ]      │
+│                     Default: AI: summarize                 │
+│                     [↺ Reset to default]                   │
+│                                                            │
+│  ─────────────────────────────────────────────────────     │
+│                                                            │
+│  Type               AI (cloud)                             │
+│  ID                 user.summarize                         │
+│                                                            │
+│  Provider           [ Anthropic Claude ▼ ]                 │
+│                     Override default for this action only. │
+│                                                            │
+│  Model              [ Use provider default ▼ ]             │
+│                     (или sonnet-4-6 / haiku-4-5 / ...)     │
+│                                                            │
+│  Prompt template                                           │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ Summarize the user's input in 1–3 sentences.         │  │
+│  │ Reply with the summary only, no preamble.            │  │
+│  │                                                      │  │
+│  │ {INPUT} is replaced with clipboard content.          │  │
+│  └──────────────────────────────────────────────────────┘  │
+│  Variables: {INPUT}, {SOURCE_APP}, {SEMANTIC_KIND}         │
+│                                                            │
+│  Applies to                                                │
+│   [✓] Plain text   [✓] Rich text   [ ] URL   [ ] JSON      │
+│   [ ] Code         [ ] Markdown    [ ] Table  [ ] Files    │
+│                                                            │
+│  ─────────────────────────────────────────────────────     │
+│                                                            │
+│  ☑ Enabled                                                 │
+│                                                            │
+│  [🗑 Delete action]            [Cancel]    [Save]          │
+└────────────────────────────────────────────────────────────┘
+```
+
+### Различия built-in / AI в одном sheet
+
+Поля показываются всегда **в одном и том же visual layout**, но для built-in:
+
+| Поле | Built-in action | Custom AI action |
+|---|---|---|
+| **Title** | editable | editable |
+| **Default name + Reset** | да (если customTitle ≠ default) | да |
+| **Type** | read-only label "Built-in (local)" | read-only "AI (cloud)" / "AI (local)" |
+| **ID** | read-only label | read-only label |
+| **Applies to** | read-only label (фиксировано в коде) | editable checkboxes |
+| **Description** | read-only label из bundled metadata | optional editable note |
+| **Provider** | скрыто | editable dropdown |
+| **Model** | скрыто | editable dropdown |
+| **Prompt template** | скрыто | editable multiline textarea |
+| **Delete action** | скрыто (built-in нельзя удалить, только disable) | red destructive button |
+| **Enabled** | toggle | toggle |
+
+Условный рендеринг через `if action.isAIAction { ... }`. Поля группируются в SwiftUI `Section`'ах с заголовками для визуальной структуры, но layout единообразный для обоих типов.
+
+### «Add custom AI action…»
+
+Этот же sheet открывается с пустыми полями + изменённым title окна → «New AI action». Тип фиксирован как AI (toggle между built-in и AI создать невозможно — built-ins создаются только в коде). После [Save] — добавляется новый `CustomAIDescriptor` в `ActionConfig.customAI`.
+
+### Bundled metadata для built-in actions
+
+Для красивого «Description» поля нужны заранее заготовленные описания всех built-in actions. Делаем bundled JSON:
+
+```
+Sources/DrPaste/Resources/Actions/builtin-metadata.json
+```
+
+```json
+{
+  "builtin.layout_repair": {
+    "description": "Detects wrong keyboard layout (e.g. RU↔EN mishits) and corrects it.",
+    "appliesTo": ["plain", "layoutWrong", "mixedScript"]
+  },
+  "builtin.uppercase": {
+    "description": "Converts all letters to UPPERCASE.",
+    "appliesTo": ["plain"]
+  },
+  "builtin.trim": {
+    "description": "Trims whitespace at the start and end of each line.",
+    "appliesTo": ["plain"]
+  },
+  "builtin.json_pretty": {
+    "description": "Reformats JSON with 2-space indentation.",
+    "appliesTo": ["json"]
+  },
+  ...
+}
+```
+
+`ActionRegistry.metadata(for: actionID)` загружает этот JSON и отдаёт `ActionMetadata{description, appliesTo}`. Если для конкретного action.id нет записи — Description пустая, Applies to — вычисляется через `action.isApplicable` пробежавшись по sample items каждого ContentTypeID.
+
+Готовая metadata.json — это документация продукта внутри продукта. Заодно даст материал для будущего README/website без отдельного maintenance.
+
+### Удаляется из правки №5
+
+- Inline TextField rename в строке списка (был после клика на 🖉) — **отменяется**, заменяется на этот sheet.
+- Отдельный «Edit prompt» (🛠) для AI — **отменяется**, тот же sheet редактирует и title, и prompt.
+- Маленькая «default» подпись 11 pt под inline title — **переносится** в этот sheet (поле «Default: ...» под Title input).
+
+### Остаётся из правки №5
+
+- Drag handle ⋮⋮ для reorder — без изменений.
+- «Paste as is» (identity) заблокирован для drag и для open editor (или editor показывает только enabled toggle с readonly остальным).
+- ↺ Reset to default — теперь внутри editor sheet, не в строке списка.
+- Persistence (`actionOrder`, `customTitles` в ActionConfig) — без изменений.
+- Tooltip на hover в строке списка (Default + ID) — остаётся.
+- Inline-detail row на клик по строке (вариант А из правки №5) — **отменяется в пользу editor sheet**. Клик мышью по строке (не на elements внутри) → открывает editor sheet. Один путь к metadata вместо двух.
+
+### Изменённая строка списка (после правки №6)
+
+```
+⋮⋮ ☑ My Layout Fix                              [Edit]  [Run]
+```
+
+Колонки:
+- `⋮⋮` — drag handle (24 pt wide)
+- `☑` — enable toggle (24 pt wide)
+- Custom title — flexible width
+- `[Edit]` — pencil-icon button открывающий sheet (32 pt)
+- `[Run]` — text button (60 pt)
+
+Для AI action в начале title добавляется ✨ иконка (15 pt) — единственный визуальный маркер типа в списке (вся подробная информация — в editor sheet).
+
+Для «Paste as is»:
+
+```
+   ☑ Paste as is                                          [Run]
+```
+
+Нет drag handle, нет Edit (или Edit показывает только enabled toggle с всеми остальными полями read-only — обсудим). По умолчанию — без Edit вообще, чтобы максимально подчеркнуть «это semantic anchor, его не настраивают».
+
+### Преимущества единого editor
+
+1. **Один UI place** — пользователь учит один pattern.
+2. **Дискаверабильность всех metadata** — даже для built-in видна description + ID + applies to.
+3. **Симметрия** — built-in и AI выглядят как разновидности одной концепции «action», а не два разных продукта.
+4. **Простота кода** — одна view вместо двух (rename inline + AI sheet).
+5. **Готовность к будущим типам** — если появятся не-AI custom actions (например shell script action, JavaScript transformation), они тоже открываются в этом же editor с подходящими полями.
+
+### UI implementation
+
+```swift
+struct ActionEditorSheet: View {
+    @Binding var draft: ActionEditorDraft
+    let isNewAIAction: Bool
+    let onSave: () -> Void
+    let onCancel: () -> Void
+    let onDelete: (() -> Void)?  // только для AI; для built-in nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            // Title section (always)
+            titleSection
+            Divider()
+            // Metadata section (always — но содержимое условное)
+            metadataSection
+            // AI-specific (только если isAI)
+            if draft.isAI {
+                Divider()
+                aiSection
+            }
+            Divider()
+            // Enabled toggle (always)
+            Toggle("Enabled", isOn: $draft.enabled)
+
+            Spacer()
+
+            // Buttons row
+            HStack {
+                if let onDelete {
+                    Button(role: .destructive) { onDelete() } label: {
+                        Label("Delete action", systemImage: "trash")
+                    }
+                }
+                Spacer()
+                Button("Cancel", action: onCancel).keyboardShortcut(.escape)
+                Button("Save", action: onSave)
+                    .keyboardShortcut(.return)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(24)
+        .frame(width: 520, height: draft.isAI ? 620 : 380)
+    }
+}
+```
+
+`ActionEditorDraft` — POD struct с editable полями. На Save применяется к `ActionConfig` через registry. На Cancel — отбрасывается.
+
+### Что не входит
+
+- **Live preview во время редактирования prompt** — было бы круто, но требует Run-кнопки внутри editor + интеграции с playground sample. Можно добавить отдельной правкой когда станет очевидно нужно. Пока пользователь сохраняет → возвращается в Settings tab → жмёт Run.
+- **Diff с дефолтным prompt'ом** — visual подсветка изменений vs bundled default. Хорошо для сложных AI actions, но overkill для v1.
+- **Multi-action bulk edit** — выбрать несколько → переименовать pattern'ом или enable/disable. Out of scope.
+
+### Зависимости
+
+- Заменяет UX-часть правки №5 (inline rename), но не отменяет drag-reorder из правки №5. Применять обе правки нужно одной волной — иначе придётся выкидывать недоделанный inline-rename.
+- Опирается на правку №4 (multi-provider AI) — dropdown Provider в AI section должен показывать список из `AIProviderRegistry.configured`. Если правка №4 не применена — fallback на список из одного «Anthropic Claude».
+- Опирается на **Backlog #8 итерации 1** (Settings + AI editor — уже был, тут refactor в единый sheet).
+
+### Размер изменений
+
+- `SettingsWindow.swift`: ~200 строк новых (`ActionEditorSheet`), но удаляется ~80 строк inline rename и ~120 строк отдельного AIActionEditor. **Net: ~0 строк, упрощение**.
+- `Resources/Actions/builtin-metadata.json`: новый файл, ~30 entries × 3 строки = ~90 строк JSON.
+- `ActionRegistry`: +20 строк (loading metadata.json, metadata(for:) method).
+- `Actions.swift`: без изменений в основной логике.
+
+Итого: +110 строк (но с одновременным удалением ~200 строк из правки №5 что не успели применить).
+
+---
+
+## Правка №7 (iteration 2) — Action Engine dropdown: алгоритм как переменный компонент action'а
+
+**Статус:** запланирована. Развивает правку №6. Архитектурно важное обобщение, ~200 строк (но переформатирует backend модель).
+
+**Затрагивает:** `ActionConfig.swift` (`CustomAIDescriptor` → `CustomActionDescriptor` с полем `engineID`), `Actions.swift` (новый `ActionEngine` слой между descriptor и runtime), `SettingsWindow.swift` (ActionEditorSheet получает Engine dropdown сверху, остальные поля становятся engine-зависимыми), bundled `engines.json` (registry available engines).
+
+### Идея
+
+В правке №6 у нас два класса actions:
+
+- **Built-in** — hardcoded Swift struct, нельзя создать ещё один такой же. Можно только enable/disable + переименовать.
+- **AI** — user-creatable, в editor показывает prompt + provider + model.
+
+Это асимметрия. Пользователь может хотеть две версии «UPPERCASE» с разными именами и разными `Applies to` (например «UPPERCASE for English only» и «UPPERCASE for any text»). Или две регулярки с разными pattern'ами. Сейчас это невозможно — built-in единственный.
+
+**Новая модель:**
+
+Любой пользовательский action имеет поле **«Engine»** — выпадающий список заранее реализованных алгоритмов (engines). Engine определяет:
+1. Какой код выполняется при apply
+2. Какие параметры показываются в editor (`schema` — engine знает свои поля)
+
+Engine — это **plugin point архитектуры**. Built-in actions становятся «factory presets» — это descriptors с уже выбранным engine и заполненными параметрами. Пользователь может создать сколько угодно собственных action'ов, выбирая engine и заполняя его параметры.
+
+### Engine dropdown в editor
+
+В sheet ActionEditorSheet **первым полем после Title** добавляется dropdown:
+
+```
+┌─ Edit action ───────────────────────────────────────────────┐
+│                                                             │
+│  Title       [ My UPPERCASE for emphasis            ]       │
+│              Default: UPPERCASE                             │
+│                                                             │
+│  Engine      [ Text: UPPERCASE                    ▼ ]       │
+│              ┌─────────────────────────────────────┐        │
+│              │ AI                                  │        │
+│              │   ✨ AI prompt                       │        │
+│              │ ─────────────────────────────       │        │
+│              │ Text                                │        │
+│              │   Aa UPPERCASE                      │        │
+│              │   aa lowercase                      │        │
+│              │   Aa Title Case                     │        │
+│              │   Aa Sentence case                  │        │
+│              │   _ snake_case                      │        │
+│              │   - kebab-case                      │        │
+│              │   ⌨ Fix keyboard layout              │        │
+│              │   ⤓ Trim whitespace                  │        │
+│              │   ⇅ Sort lines                       │        │
+│              │   ⊝ Unique lines                     │        │
+│              │   🔍 Regex replace                   │        │
+│              │   Σ Word/char count                  │        │
+│              │ ─────────────────────────────       │        │
+│              │ URL                                 │        │
+│              │   ✂ Strip tracking params           │        │
+│              │   🌐 Just domain                     │        │
+│              │   🖼 Generate QR code                │        │
+│              │ ─────────────────────────────       │        │
+│              │ JSON                                │        │
+│              │   { } Pretty-print                  │        │
+│              │   { } Minify                        │        │
+│              │   { } Extract keys                  │        │
+│              │   { } Flatten                       │        │
+│              │ ─────────────────────────────       │        │
+│              │ Table                               │        │
+│              │   ⇆ Transpose                       │        │
+│              │   {} CSV → JSON                     │        │
+│              │   |  CSV → Markdown table           │        │
+│              │ ─────────────────────────────       │        │
+│              │ Image (local, CoreImage/Vision)     │        │
+│              │   👁 OCR (extract text)              │        │
+│              │   ▦ Decode QR                       │        │
+│              │   ⚪ Grayscale                       │        │
+│              │   ↻ Rotate 90°                      │        │
+│              │   ⊖ Invert                          │        │
+│              │ ─────────────────────────────       │        │
+│              │ Side-effects                        │        │
+│              │   📁 Reveal in Finder                │        │
+│              │   🌐 Open in browser                 │        │
+│              └─────────────────────────────────────┘        │
+│                                                             │
+│  ─────────────────────────────────────────────────────      │
+│                                                             │
+│  [Engine-specific parameters appear here]                   │
+│                                                             │
+│  ─────────────────────────────────────────────────────      │
+│                                                             │
+│  Applies to                                                 │
+│  [✓] Plain text   [ ] Rich text   [ ] URL    ...            │
+│                                                             │
+│  ☑ Enabled                                                  │
+│                                                             │
+│  [🗑 Delete]                       [Cancel]    [Save]       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Engine dropdown сгруппирован по категориям (Text / URL / JSON / Table / Image / AI / Side-effects). Категории — для navigation; визуально разделены `Divider`-ами или `Picker`-стилевыми Group'ами.
+
+### Engine-specific parameters
+
+В зависимости от выбранного engine — разные поля под dropdown:
+
+**Engine = AI prompt:**
+
+```
+Provider         [ Anthropic Claude         ▼ ]
+Model            [ Use provider default     ▼ ]
+Prompt template  ┌────────────────────────────────┐
+                 │ Summarize the user's input...  │
+                 │                                │
+                 └────────────────────────────────┘
+Variables: {INPUT}, {SOURCE_APP}, {SEMANTIC_KIND}
+```
+
+**Engine = Regex replace:**
+
+```
+Pattern          [ \s+                           ]
+Replacement      [ <space>                       ]
+☑ Case sensitive
+☑ Multi-line
+```
+
+**Engine = UPPERCASE / lowercase / Title Case / etc:**
+
+```
+(no parameters — algorithm has no settings)
+```
+
+**Engine = Strip tracking params (URL):**
+
+```
+Tracking parameters to strip (one per line, regex allowed):
+┌────────────────────────────────┐
+│ utm_*                          │
+│ fbclid                         │
+│ gclid                          │
+│ ref                            │
+└────────────────────────────────┘
+☑ Use built-in list as starting point
+```
+
+**Engine = Reveal in Finder:** no parameters.
+
+**Engine = OCR:**
+
+```
+Languages        [ Auto-detect              ▼ ]
+                 [ en, ru, sr, ...              ]
+☑ Recognize handwriting
+```
+
+**Engine = CSV → JSON:**
+
+```
+Separator        ⦿ Tab   ○ Comma   ○ Auto-detect
+First row is headers  ☑
+```
+
+Каждый engine описывает свой `ParameterSchema` — список полей с типами (Text, Toggle, Picker, Multiline, …). Sheet рендерит UI по schema автоматически.
+
+### Архитектура — Engine slot
+
+```swift
+// Engine — это logical алгоритм. Не зависит от пользовательских настроек.
+struct ActionEngine: Identifiable, Codable {
+    let id: String                          // "engine.uppercase", "engine.ai_prompt", "engine.regex"
+    let category: EngineCategory            // .text / .url / .json / .table / .image / .ai / .sideEffect
+    let displayName: String                 // "UPPERCASE" / "AI prompt" / "Regex replace"
+    let iconName: String                    // SF Symbol name
+    let parameterSchema: [EngineParameter]  // list of fields editor показывает
+    let defaultApplicableTypes: [SemanticKind]
+    let isAIBased: Bool                     // true → требует provider
+}
+
+enum EngineCategory: String, Codable, CaseIterable {
+    case ai, text, url, json, table, markdown, code, image, files, sideEffect
+}
+
+struct EngineParameter: Codable, Identifiable {
+    let id: String                          // ключ в `parameters` dict
+    let displayName: String
+    let kind: EngineParameterKind           // .text / .multiline / .toggle / .picker / .number / .stringList
+    let defaultValue: AnyCodable?
+    let pickerOptions: [String]?            // только для .picker
+}
+
+// CustomActionDescriptor — теперь полностью обобщён
+struct CustomActionDescriptor: Codable, Identifiable, Equatable {
+    var id: String                          // "user.<slug>" или "builtin.<name>" для presets
+    var engineID: String                    // обязательно
+    var title: String
+    var enabled: Bool = true
+    var applicableTypes: [String]
+    var parameters: [String: AnyCodable]    // engine-specific values
+    var isPreset: Bool                      // true для built-in defaults — нельзя удалить (только disable)
+}
+
+// ActionConfig — заменяет customAI на customActions
+struct ActionConfig: Codable {
+    var version: Int = 2
+    var enabledFlags: [String: Bool] = [:]
+    var customActions: [CustomActionDescriptor] = []   // <-- было customAI
+    var actionOrder: [String: [String]] = [:]
+    var customTitles: [String: String] = [:]
+    var preferences: ActionConfigPreferences = ActionConfigPreferences()
+}
+```
+
+### Runtime resolution
+
+```swift
+final class ActionRegistry {
+    let engines: [String: ActionEngine]     // bundled + future user-defined
+
+    func resolve(descriptor: CustomActionDescriptor) -> ClipboardAction? {
+        guard let engine = engines[descriptor.engineID] else { return nil }
+        return EngineRuntime.make(engine: engine, descriptor: descriptor)
+    }
+}
+
+enum EngineRuntime {
+    static func make(engine: ActionEngine, descriptor: CustomActionDescriptor) -> ClipboardAction {
+        switch engine.id {
+        case "engine.uppercase":
+            return UppercaseEngineAction(descriptor: descriptor)
+        case "engine.regex":
+            return RegexReplaceEngineAction(descriptor: descriptor)
+        case "engine.ai_prompt":
+            return AIPromptEngineAction(descriptor: descriptor, provider: resolveProvider(descriptor))
+        case "engine.json_pretty":
+            return JSONPrettyEngineAction(descriptor: descriptor)
+        // ... etc
+        default:
+            return nil
+        }
+    }
+}
+```
+
+Идея: **engine.id → factory class** (как в правке №8 итерации 1 уже было для builtins, но теперь обобщено на все).
+
+### Migration ActionConfig v1 → v2
+
+`customAI: [CustomAIDescriptor]` сейчас → `customActions: [CustomActionDescriptor]` с `engineID: "engine.ai_prompt"`.
+
+Все built-in actions которые сейчас hardcoded в ActionRegistry.init — конвертируются в `customActions[]` с `isPreset: true`. При первом запуске v2 происходит auto-migration:
+
+```swift
+if config.version < 2 {
+    config.customActions = bundledPresets() + config.customAI.map { aiDescToPresetDesc($0) }
+    config.version = 2
+    config.save()
+}
+```
+
+`bundledPresets()` возвращает дефолтный набор descriptors с пометкой `isPreset: true` — это «factory defaults», встроенный набор действий который пользователь видит при первом открытии Settings. Их нельзя delete (кнопка скрыта), но можно disable, переименовать, поменять Applies to, и **forked** — кнопка «Duplicate to customize…» создаёт копию с `isPreset: false` которую можно править свободно.
+
+### Кнопка [Duplicate to customize…]
+
+В editor sheet для presets вместо [Delete] кнопки — **[⎘ Duplicate to customize…]**. Создаёт новый descriptor с тем же engine, скопированными параметрами, новым id (`user.<slug>`), `isPreset = false`. Открывается editor для нового descriptor'а — пользователь меняет что хочет → Save.
+
+Это решает кейс «хочу UPPERCASE только для коротких строк» — duplicates стандартный UPPERCASE engine и в Applies to снимает галочки кроме «Plain text», добавляет regex filter pre-condition (если будет такой param), Save.
+
+### Sheet для built-in preset (read-only поведение)
+
+Для preset descriptor'а — Title editable, Engine dropdown **disabled** (нельзя сменить engine у preset'а — это сломало бы factory default), parameters editable (если engine их имеет), Applies to editable, кнопка [Duplicate to customize…] вместо [Delete].
+
+Для user descriptor (`isPreset: false`) — все поля editable, Engine dropdown editable (можно сменить engine — параметры reset'ятся к defaults нового engine), [Delete] показывается.
+
+### Преимущества обобщения
+
+1. **Симметрия built-in / custom**: оба — `CustomActionDescriptor` с разными engine. Нет «двух классов гражданства».
+2. **N инстансов одного engine**: пользователь делает 5 разных Regex replace action'ов под разные задачи. До этого Regex был бы single hardcoded action.
+3. **Будущие engines добавляются единообразно**: новый engine = новая запись в `engines.json` + factory case в EngineRuntime. Никаких трогать UI, ActionConfig, Settings — sheet рендерится автоматически по `parameterSchema`.
+4. **Action packs становятся семантическими**: вместо «pack даёт 5 hardcoded actions» — «pack даёт 5 descriptors над bundled engines». Импорт чужого pack'а безопаснее (используются только known engines, никакой arbitrary code execution).
+5. **Engine = единственное место attack surface для безопасности**. Если когда-нибудь добавим engine.shell или engine.javascript — это будут single hot spots для sandbox review.
+
+### Будущие engines (не входят в текущую правку, но архитектура подготовлена)
+
+| Engine | Категория | Параметры | Когда добавим |
+|---|---|---|---|
+| engine.shell_command | scripting | command template, timeout, working dir | после стабилизации (security review) |
+| engine.javascript | scripting | JS source, sandboxed JSContext | --//-- |
+| engine.applescript | scripting | AppleScript source | --//-- |
+| engine.http_post | network | URL, headers, body template | для webhook integrations |
+| engine.python (PythonKit) | scripting | Python source | overkill — вряд ли |
+
+### UI implementation notes
+
+**Engine dropdown** — `Picker` или `Menu` с group structure. SwiftUI `Picker(selection:) { Section(...) { ... } }` поддерживает grouping. Если визуально не устроит — заменим на custom popover.
+
+**Engine-specific parameters рендер** — switch по schema:
+
+```swift
+ForEach(engine.parameterSchema) { param in
+    switch param.kind {
+    case .text:
+        TextField(param.displayName, text: binding(for: param))
+    case .multiline:
+        TextEditor(text: binding(for: param)).frame(minHeight: 80)
+    case .toggle:
+        Toggle(param.displayName, isOn: toggleBinding(for: param))
+    case .picker:
+        Picker(param.displayName, selection: binding(for: param)) {
+            ForEach(param.pickerOptions ?? [], id: \.self) { Text($0) }
+        }
+    case .stringList:
+        MultilineListEditor(items: binding(for: param))
+    case .number:
+        TextField(param.displayName, value: binding(for: param), formatter: NumberFormatter())
+    }
+}
+```
+
+### Что не входит в текущую правку
+
+- **Engine для shell / JS / AppleScript** — security review нужен отдельно (см. таблицу выше).
+- **Pipeline engines** (один action = chain нескольких engines) — отдельная архитектурная правка позже.
+- **Engine marketplace / sharing** — community может публиковать `.drpaste-actions.json` с собственными descriptors используя bundled engines (правка №4 итерации 1 готова к этому). Custom engines (со своим Swift кодом) — потребовали бы plugin loading, out of scope.
+- **Parameter validation** — кроме «не пустое для required» сложной валидации не делаем (например regex syntax check). Если engine вернёт error из apply — это .failed outcome (правка №2 итерации 1).
+
+### Зависимости
+
+- **Сильно завязана на правку №6** (единый editor sheet). Engine dropdown — это просто дополнительное поле в этом sheet'е.
+- **Связана с правкой №5** (drag-reorder, customTitles) — те же data structures, без конфликтов.
+- Применяем все три правки (№5, №6, №7) **одной волной** — они описывают одну переработку Settings + action model.
+
+### Размер изменений
+
+- `Actions.swift` / новый `Engines.swift`: ~150 строк (Engine struct, ParameterSchema, factory)
+- `ActionConfig.swift`: ~80 строк (CustomActionDescriptor + migration v1→v2)
+- `SettingsWindow.swift` → ActionEditorSheet: +120 строк (Engine dropdown, dynamic parameter rendering)
+- `Resources/Actions/engines.json`: новый файл, ~30 engines × 8 строк = ~240 строк JSON
+- Bundled presets in `Resources/Actions/presets.json`: ~30 entries × 6 строк = ~180 строк JSON
+
+Итого: ~770 строк (включая JSON). Чистого Swift кода ~350.
+
+---
+
+## Правка №8 (iteration 2) — Curated default actions + palette для остальных + provider-aware naming
+
+**Статус:** запланирована. Уточняет правки №5/6/7 (особенно #7 — там я нарисовал все engines в списке action'ов, что засоряет). UX cleanup, ~150 строк + правка bundled presets.
+
+**Затрагивает:** `Resources/Actions/presets.json` (curate default set), `Resources/Actions/engines.json` (исправления отдельных engines), `SettingsWindow.swift` (новый PalettePicker sheet, кнопка «+ Add more actions…» внизу списка, badge провайдера для AI actions), `Actions.swift` (новый `PasteAsTextEngine` объединяющий clean+trim).
+
+### Что не так
+
+Сейчас (после правок №5/6/7) в `Plain text` tab показывается **~15 actions сразу**: Paste as is, Fix keyboard layout, UPPERCASE, lowercase, Title Case, Sentence case, camelCase, snake_case, kebab-case, Trim whitespace, Sort lines, Unique lines, Slugify, Base64 encode/decode, URL encode/decode, Word count, Wrap in code block, плюс AI actions. **Слишком много для скана глазами.**
+
+Плюс проблемы конкретных actions:
+
+1. **«Fix keyboard layout»** — название непрозрачное. Я (автор) сам забываю что это делает. Кейс: набрал `eytkflcrjt` думая что в EN-раскладке, оказалось RU; action детектирует и переводит обратно. Полезное, но для **повседневного** flow редко срабатывает — должно быть в palette, не в default списке.
+
+2. **«Trim whitespace»** — отдельное использование почти не нужно; реально хочется trim **в комплекте с очисткой форматирования**. Объединяем с CleanFormatting в один **«Paste as text»** engine.
+
+3. **Title Case / Sentence case / camelCase / snake_case / kebab-case** — слишком специальные, ниша. Не должны жить в default списке. В palette → пользователь явно добавляет если нужно.
+
+4. **URL encode / URL decode** — семантически принадлежат **URL tab**, не Plain text. Перенести.
+
+5. **«Wrap in code block»** — без escaping спецсимволов (`\` `"` `'`) — половинчатое решение. Либо доработать (escape для bash / JSON / Swift), либо унести в Code tab. Делаем обе вещи: переносим в Code tab и **дробим на несколько engines**:
+   - `engine.escape_shell` — для shell strings
+   - `engine.escape_json` — для JSON string literals
+   - `engine.escape_swift` — для Swift string literals
+   - `engine.wrap_md_code` — оборачивает в Markdown code block с escape backticks (это собственно «обернуть для документации»)
+
+6. **AI actions с префиксом «AI:»** — теряется информация какой provider используется. «AI: summarize» одинаково может быть Claude / GPT / Ollama. Вместо префикса AI — **badge с именем провайдера**: «Claude: summarize», «GPT-5: summarize», «Ollama: summarize». Это сразу видно cloud vs local.
+
+### Curated default set per content type
+
+**Plain text** (default visible):
+
+```
+   Paste as text                       (clean formatting + trim)
+   Paste as is                          (identity, всегда первый, locked)
+✨ Claude: summarize                    (AI provider in badge)
+✨ Claude: translate
+✨ Claude: fix grammar
+   UPPERCASE
+   lowercase
+   Sort lines
+   Unique lines
+   Word / char count
+   ★ Generate QR code
+[+ Add more actions…]                    palette button at bottom
+```
+
+Default visible ≈ 10 actions. Чисто визуально умещается без скролла на 600 pt окне.
+
+**Что переезжает в palette:**
+
+- Fix keyboard layout (всё ещё useful, но opt-in)
+- Title Case / Sentence case
+- camelCase / snake_case / kebab-case
+- Trim whitespace отдельно (не нужен — есть в Paste as text)
+- Clean formatting отдельно (не нужен — есть в Paste as text)
+- Slugify
+- Base64 encode / decode
+- HTML entities encode / decode
+
+**URL tab** (default visible):
+
+```
+   Paste as is
+   Strip tracking parameters
+   Just domain
+   ★ Generate QR code
+✨ Claude: explain link
+   URL encode
+   URL decode
+[+ Add more actions…]
+```
+
+URL encode/decode переехали сюда из Plain text.
+
+**Code tab** (default visible):
+
+```
+   Paste as is
+   Paste as text
+   Wrap in Markdown code block          (with backtick escape)
+   Tabs → 4 spaces
+   4 spaces → tab
+   Escape for shell string
+   Escape for JSON string
+✨ Claude: explain code
+✨ Claude: fix bugs
+[+ Add more actions…]
+```
+
+«Wrap in code block» стал **«Wrap in Markdown code block»** — название однозначное, плюс действительно эскейпит ``` ` ``` внутри content (заменяет на ```` `` ````).
+
+**JSON tab** (default visible):
+
+```
+   Paste as is
+   Pretty-print
+   Minify
+   Extract keys
+✨ Claude: explain JSON structure
+[+ Add more actions…]
+```
+
+«Flatten» / «Remove nulls» / «CSV from JSON» — в palette.
+
+**Table tab, Markdown tab, Rich text tab, Image tab, Files tab** — аналогично, по 4–6 default + остальное в palette.
+
+### Palette picker UI
+
+Клик на **[+ Add more actions…]** открывает sheet:
+
+```
+┌─ Add action to Plain text ─────────────────────────────────┐
+│                                                            │
+│ Search [                                            🔍 ]   │
+│                                                            │
+│ ─ AI (configured providers) ─────────────────────────      │
+│   ✨ + New AI action with Claude                            │
+│   ✨ + New AI action with GPT-5                             │
+│   ✨ + New AI action with Ollama (local)                    │
+│   ✨ + New AI action with Custom provider                   │
+│                                                            │
+│ ─ Text engines (39 available) ──────────────────────       │
+│   ⌨ Fix keyboard layout                                    │
+│        Detects mistyped text in wrong layout and corrects. │
+│        e.g. "eytkflcrjt" → "немного" or vice versa.        │
+│   Aa Title Case                                            │
+│        "hello world" → "Hello World"                       │
+│   Aa Sentence case                                         │
+│   _  snake_case                                            │
+│   -  kebab-case                                            │
+│   Aa camelCase                                             │
+│   ✂  Trim whitespace                                       │
+│   🧹 Clean formatting only (no trim)                       │
+│   🐌 Slugify                                               │
+│   ⛓  Base64 encode                                          │
+│   ⛓  Base64 decode                                          │
+│   ↔  HTML entities encode / decode                          │
+│   🔍 Regex replace                                         │
+│   ... (still в группе)                                     │
+│                                                            │
+│ ─ Side-effects ─────────────────────────────────────       │
+│   📁 Reveal file in Finder (for files content)              │
+│   🌐 Open URL in browser                                   │
+│                                                            │
+│                                  [Cancel]   [Add]          │
+└────────────────────────────────────────────────────────────┘
+```
+
+Группировка:
+- **AI с providers** — отдельный block сверху, каждая запись = create new AI action с конкретным provider preset'ом. Скрывает factory presets вроде «Claude: summarize» — их пользователь уже видит в default list, тут он создаёт **свои** AI actions.
+- **Engines** сгруппированы по категории (Text / URL / JSON / Code / Image / Table / Markdown).
+- Каждая запись engine — заголовок + краткое описание + (optional) пример («`hello world` → `Hello World`»). Помогает помнить что делает action.
+- Search bar сверху — фильтрует по title или описанию. Live, мгновенно.
+- Серым показываются engines уже добавленные в этот content tab (можно добавить второй экземпляр, но визуальный hint «уже есть один»).
+
+Клик **[Add]** на выбранный engine → создаёт descriptor с `isPreset: false`, default applicableTypes = текущий content tab, открывает ActionEditorSheet (правка №6) для настройки → Save → action появляется в списке.
+
+### Provider-aware naming для AI actions
+
+Сейчас (после правки №6/7) AI action в списке отображается как:
+
+```
+⋮⋮ ☑ ✨ AI: summarize         [Edit] [Run]
+```
+
+Префикс «AI:» — generic, не несёт информации.
+
+Меняем на provider badge:
+
+```
+⋮⋮ ☑ [Claude] summarize         [Edit] [Run]
+⋮⋮ ☑ [GPT-5] translate          [Edit] [Run]
+⋮⋮ ☑ [Ollama] fix grammar       [Edit] [Run]
+⋮⋮ ☑ [Custom] explain           [Edit] [Run]
+```
+
+Badge — небольшая капсула слева от названия, цветная (по провайдеру):
+- Claude — оранжевая (Anthropic accent)
+- GPT — зелёная (OpenAI accent)
+- Gemini — синяя (Google accent)
+- Grok — чёрная
+- Mistral — фиолетовая
+- DeepSeek — индиго
+- Ollama / LM Studio / llama.cpp / Custom — серая (local — нейтральный)
+
+Текст внутри badge — 10 pt monospaced, capsule background с альфа 0.15 от accent цвета. Само action title — нормального стиля.
+
+Когда provider не настроен (action ссылается на unconfigured provider после export/import) — badge становится красной «[?]» и при hover показывает «Provider not configured».
+
+Default factory presets (bundled) ссылаются на **«Default provider»**, не на конкретный — badge показывает **[AI]** до конфигурации, после конфигурации первого provider'а — обновляется на конкретный.
+
+### `PasteAsTextEngine`
+
+Новый engine объединяющий два самых частых текстовых operation'а:
+
+```swift
+struct PasteAsTextEngine: Engine {
+    static let id = "engine.paste_as_text"
+
+    func apply(item: ClipboardItem, params: [String: AnyCodable]) -> ApplyOutcome {
+        // 1. Снять форматирование — превратить в plain text используя
+        //    приоритетный representation (UTF-8 plain) либо fallback
+        //    через NSAttributedString.string
+        let plain = item.plainText() ?? ""
+        // 2. Trim whitespace — leading/trailing spaces, tabs, blank lines
+        let trimmed = plain.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 3. Параметры (default включены):
+        let collapseInnerWhitespace = params.bool("collapseInner", default: false)
+        let normalizeQuotes = params.bool("normalizeQuotes", default: false)
+        var result = trimmed
+        if collapseInnerWhitespace {
+            result = result.replacingMultipleSpacesWithSingle()
+        }
+        if normalizeQuotes {
+            result = result.replacingSmartQuotesWithStraight()
+        }
+        return .preview(makeTextItem(result, from: item))
+    }
+}
+```
+
+Параметры в editor sheet:
+
+```
+Engine: Paste as text
+
+Strip formatting  ☑ (always on)
+Trim whitespace   ☑ (always on)
+Collapse inner whitespace  ☐  ("a   b" → "a b")
+Normalize quotes  ☐         ("smart" → "straight")
+```
+
+Первые две операции hardcoded и недоступны для отключения (это суть «paste as text»). Остальные две — опциональные параметры.
+
+Это самый частый use case: пришла строка из Word/Slack/Notion с inline форматированием и trailing newline — пользователь хочет чистый текст без артефактов. Сейчас это требует выбора 2-х actions подряд (Clean formatting → Trim whitespace) либо ручного запуска одного с надеждой на второй.
+
+### Удалить из списка default presets
+
+После curation:
+
+- `Clean formatting` (был CleanFormattingAction) — удалить, его функция в Paste as text. Engine остаётся в `engines.json` для возможности использовать отдельно через palette.
+- `Trim whitespace` отдельный — то же. Engine остаётся в palette.
+- `Fix keyboard layout` — преcет остаётся, но `isPreset: true` + `enabled: false` по дефолту. Пользователь явно enable'ит если нужно. Или добавляет через palette.
+- `Title Case` / `Sentence case` / `camelCase` / `snake_case` / `kebab-case` — то же, presets есть, но `enabled: false` по дефолту.
+- `Slugify`, `Base64 encode/decode`, `HTML entities` — то же, в palette.
+
+`presets.json` обновляется. `enabled: false` для перенесённых — корректный default, не удаляем descriptor (иначе пользователь не увидит их через palette).
+
+Migration: при загрузке v2 → v3 (новая subversion ConfigVersion) — список default-visible enables перечитывается из bundled `presets.json`, **существующие user-enabled / renamed sostояния** не трогаются. То есть если пользователь успел enable'ить Title Case в v2 — он остаётся enabled в v3.
+
+### Provider badge implementation
+
+В SwiftUI:
+
+```swift
+struct ProviderBadge: View {
+    let providerKind: ProviderKind?  // nil → "AI" generic
+    var body: some View {
+        let (label, color) = labelAndColor()
+        Text(label)
+            .font(.system(size: 10, weight: .medium, design: .monospaced))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.15))
+            .foregroundStyle(color)
+            .clipShape(Capsule())
+    }
+    private func labelAndColor() -> (String, Color) {
+        guard let kind = providerKind else { return ("AI", .gray) }
+        switch kind {
+        case .anthropic: return ("Claude", .orange)
+        case .openai:    return ("GPT", .green)
+        case .gemini:    return ("Gemini", .blue)
+        case .grok:      return ("Grok", .black)
+        case .mistral:   return ("Mistral", .purple)
+        case .deepseek:  return ("DeepSeek", .indigo)
+        case .ollama, .lmstudio, .llamaCpp, .custom:
+            return (kind.displayName, .gray)
+        }
+    }
+}
+```
+
+Совместимо с light/dark — color через semantic colors.
+
+### Что не входит
+
+- **Reordering palette items** — отдельная задача. Сейчас порядок в palette — фиксированный (alphabetical внутри категории).
+- **Pinned palette** — закрепить часто используемые в верху palette. Нужно после статистики использования, но не в первой реализации.
+- **Per-action stats** («использовался 47 раз за последние 30 дней») — было бы хорошо для curation, но сначала собираем `enabledFlags` user-input'ом, статистика позже.
+- **Smart suggestions** на основе clipboard content — например при копировании JSON предлагать добавить «JSON pretty» если его нет в enabled. AI feature, отдельная правка.
+
+### Зависимости
+
+- Применяется одной волной с правками №5/№6/№7 (это уточнения той же переработки Settings).
+- Опирается на правку №4 (multi-provider AI) — provider badge показывает имена из `AIProviderRegistry`. Без неё все AI actions становятся «[Claude]» по умолчанию.
+
+### Размер изменений
+
+- `Resources/Actions/presets.json`: правка ~30 default-enabled flags (большая часть presets перестают быть default-enabled).
+- `Resources/Actions/engines.json`: +3 engine (escape_shell, escape_json, escape_swift) + переименование wrap_md_code + добавление PasteAsTextEngine.
+- `Actions.swift` / Engines.swift: +60 строк (PasteAsTextEngine, EscapeShellEngine, EscapeJSONEngine, EscapeSwiftEngine).
+- `SettingsWindow.swift`: +120 строк (PalettePicker sheet, search filter, «+ Add more actions…» button, ProviderBadge view).
+- `ActionConfig.swift`: +10 строк (config version bump v2 → v3, partial migration).
+
+Итого: ~190 Swift + ~60 строк JSON.
+
+---
+
+## Правка №9 (iteration 2) — Rich Text tab: настоящий rich sample, rich-preserving Result, curated set
+
+**Статус:** запланирована. Уточняет правку №8 для Rich text специфически + добавляет архитектурный pattern «rich-aware AI action». ~200 строк (включая bundled RTF sample, Result pane rich render, MD round-trip для AI).
+
+**Затрагивает:** `ActionConfig.swift` (SettingsSamples — rich sample как RTF, не markdown-в-плейне), `Resources/SettingsSamples/rich-sample.rtf` (новый файл), `SettingsWindow.swift` (Result pane для rich text — рендерит AttributedString через `Text(AttributedString)`), `Actions.swift` / `Engines.swift` (новый `engine.rich_to_html`, новый flag `preserveRichFormatting` в `engine.ai_prompt`), `RichTextHelpers.swift` (новый — NSAttributedString ↔ Markdown round-trip).
+
+### Что не так
+
+**Sample input — фейк:**
+
+Сейчас sample для Rich text — это:
+
+```swift
+case .richText:
+    text = "Some **rich** text with *italic* and a [link](https://example.com)"
+```
+
+Это **plain text с markdown markers**, не настоящий rich text. У `ClipboardItem` пустой `representations` и нет `public.rtf`, поэтому `RichTextToMarkdownAction` (читающий через `representations["public.rtf"]`) не сработает — действие просто покажет original, как бы намекая что «нечего конвертировать». Это сбивает с толку: для пользователя «rich text» это **bold, italic, links, colors** — а ему показывают markdown-исходник. Несоответствие между Tab названием и Tab содержимым.
+
+**Result pane — text-only:**
+
+Result pane сейчас рендерит `previewText` через `Text(...)`. Если action возвращает rich item (с RTF representation) — formatting теряется в превью, пользователь не видит сохранилось ли оно.
+
+**Список actions перегружен:**
+
+Сейчас в Rich text tab видны все actions применимые к `.richText` context: Paste as is, Clean formatting, Trim, UPPERCASE, lowercase, Rich → Markdown, плюс все AI actions, плюс Generate QR (потому что richText содержит plain text representation). 10+ позиций.
+
+Реально полезных в rich text — 5–6: те что **сохраняют форматирование** или **намеренно убирают его целиком**.
+
+### Curated default set для Rich text
+
+```
+   Paste as is                       (полная сохранность форматирования)
+   Paste as text                     (целенаправленно убрать форматирование)
+   Rich → Markdown                   (преобразовать в MD markup)
+   Rich → HTML                       (преобразовать в HTML)
+✨ [Claude] translate (rich)         (перевести, сохранив форматирование)
+✨ [Claude] fix grammar (rich)       (исправить, сохранив форматирование)
+[+ Add more actions…]
+```
+
+6 actions. Каждое имеет понятную причину быть в default списке:
+
+- **Paste as is** — semantic anchor, всегда первый.
+- **Paste as text** — самый частый кейс «вставить без артефактов оригинала».
+- **Rich → Markdown** — для документации, GitHub README, технических заметок.
+- **Rich → HTML** — для email, web-form WYSIWYG, для копипасты в HTML editor.
+- **Claude translate / fix grammar** — AI actions с **сохранением форматирования**. Это и есть основное «суперсила» rich text mode.
+
+Что **в palette** (не в default):
+
+- Strip styles, keep structure (убрать цвета/шрифты, оставить bold/italic/links/headings)
+- Convert to plain text (это уже есть в Paste as text но опционально)
+- Apply specific font / change font size
+- Convert color theme (light → dark or vice versa)
+- Extract links list
+- Word count (с учётом structure)
+
+### Настоящий Rich sample
+
+Bundled файл `Sources/DrPaste/Resources/SettingsSamples/rich-sample.rtf`:
+
+Содержимое (как text для напоминания о структуре, реальный RTF будет binary):
+
+```
+Welcome to DrPaste
+
+DrPaste — это press-and-hold clipboard manager для macOS, дизайн которого
+вдохновлён жестами, а не панелями. Зажми ⌥⌘V и держи — появится HUD со
+всей историей и доступными actions.
+
+Что есть в этом примере:
+
+  • Заголовок и подзаголовки (h1, h2)
+  • Bold выделение и italic emphasis
+  • Гиперссылка: https://github.com/ilya000/DrPaste
+  • Inline `code` оформление моноширинным шрифтом
+  • Список с маркерами и нумерацией
+
+  1. Press and hold ⌥⌘V
+  2. Navigate with arrow keys
+  3. Release to paste
+
+Цветовой акцент: этот текст выделен accent color чтобы продемонстрировать
+что Rich text может нести стилистическую информацию которая теряется при
+plain paste.
+```
+
+В RTF файле этот текст выглядит так:
+- «Welcome to DrPaste» — h1 (24 pt semibold)
+- «DrPaste — это press-and-hold...» — body (13 pt regular), с inline **bold** на «press-and-hold» и *italic* на «жестами»
+- «Что есть в этом примере:» — h2 (15 pt semibold)
+- Список — bullet list с indent
+- «`code`» — inline monospaced (Menlo 12 pt) background light grey
+- Numbered list 1/2/3
+- Link «https://github.com/ilya000/DrPaste» — синий accent + underline
+- Последний параграф — accent color (semantic — будет адаптироваться к light/dark)
+
+RTF файл создаётся один раз через TextEdit + правки, или программно через NSAttributedString → `.rtf` data → запись в Resources. Я ставлю на программный путь — он repeatable, легко поправить позже:
+
+```swift
+// Helper в build-time или offline:
+func generateRichSample() -> Data {
+    let s = NSMutableAttributedString()
+
+    // h1
+    s.append(NSAttributedString(string: "Welcome to DrPaste\n", attributes: [
+        .font: NSFont.systemFont(ofSize: 24, weight: .semibold)
+    ]))
+
+    s.append(NSAttributedString(string: "\nDrPaste — это ", attributes: [.font: NSFont.systemFont(ofSize: 13)]))
+    s.append(NSAttributedString(string: "press-and-hold", attributes: [
+        .font: NSFont.boldSystemFont(ofSize: 13)
+    ]))
+    s.append(NSAttributedString(string: " clipboard manager для macOS, дизайн которого вдохновлён ", attributes: [.font: NSFont.systemFont(ofSize: 13)]))
+    s.append(NSAttributedString(string: "жестами", attributes: [
+        .font: NSFontManager.shared.convert(NSFont.systemFont(ofSize: 13), toHaveTrait: .italicFontMask)
+    ]))
+    s.append(NSAttributedString(string: ", а не панелями.\n\n", attributes: [.font: NSFont.systemFont(ofSize: 13)]))
+
+    // h2
+    s.append(NSAttributedString(string: "Что есть в этом примере:\n\n", attributes: [
+        .font: NSFont.systemFont(ofSize: 15, weight: .semibold)
+    ]))
+
+    // bullet list
+    let bullets = [
+        "Заголовок и подзаголовки (h1, h2)",
+        "Bold выделение и italic emphasis",
+        "Гиперссылка ниже",
+        "Inline `code` оформление",
+        "Список с маркерами и нумерацией"
+    ]
+    for b in bullets {
+        s.append(NSAttributedString(string: "  • \(b)\n", attributes: [.font: NSFont.systemFont(ofSize: 13)]))
+    }
+    s.append(NSAttributedString(string: "\n"))
+
+    // link
+    s.append(NSAttributedString(string: "Source: ", attributes: [.font: NSFont.systemFont(ofSize: 13)]))
+    s.append(NSAttributedString(string: "https://github.com/ilya000/DrPaste\n", attributes: [
+        .font: NSFont.systemFont(ofSize: 13),
+        .link: URL(string: "https://github.com/ilya000/DrPaste")!,
+        .foregroundColor: NSColor.systemBlue,
+        .underlineStyle: NSUnderlineStyle.single.rawValue
+    ]))
+    s.append(NSAttributedString(string: "\n"))
+
+    // numbered list
+    let steps = ["Press and hold ⌥⌘V", "Navigate with arrow keys", "Release to paste"]
+    for (i, step) in steps.enumerated() {
+        s.append(NSAttributedString(string: "  \(i+1). \(step)\n", attributes: [.font: NSFont.systemFont(ofSize: 13)]))
+    }
+    s.append(NSAttributedString(string: "\n"))
+
+    // inline code
+    let codeAttrs: [NSAttributedString.Key: Any] = [
+        .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+        .backgroundColor: NSColor.controlBackgroundColor
+    ]
+    s.append(NSAttributedString(string: "Inline ", attributes: [.font: NSFont.systemFont(ofSize: 13)]))
+    s.append(NSAttributedString(string: "code", attributes: codeAttrs))
+    s.append(NSAttributedString(string: " formatting demonstrates monospaced rendering.\n\n", attributes: [.font: NSFont.systemFont(ofSize: 13)]))
+
+    // accent paragraph
+    s.append(NSAttributedString(string: "Цветовой акцент: этот текст выделен accent color чтобы продемонстрировать что Rich text может нести стилистическую информацию которая теряется при plain paste.", attributes: [
+        .font: NSFont.systemFont(ofSize: 13),
+        .foregroundColor: NSColor.controlAccentColor
+    ]))
+
+    return s.rtf(from: NSRange(location: 0, length: s.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])!
+}
+```
+
+Этот генератор запускается один раз — produced RTF файл коммитится в `Resources/SettingsSamples/rich-sample.rtf`. Если нужно поменять — перегенерировать.
+
+`SettingsSamples.sample(for: .richText)` строит `ClipboardItem` так:
+
+```swift
+case .richText:
+    let rtfURL = Bundle.module.url(forResource: "rich-sample", withExtension: "rtf")!
+    let rtfData = try! Data(contentsOf: rtfURL)
+    let attr = try! NSAttributedString(data: rtfData, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil)
+    let plain = attr.string
+
+    // Сохраняем RTF blob в settings playground storage и оборачиваем в ClipboardItem
+    let relPath = playgroundBlobsDir.appendingPathComponent("rich-sample.rtf")
+    try? rtfData.write(to: relPath)
+
+    return ClipboardItem(
+        id: UUID(),
+        semantic: .richText,
+        createdAt: Date(),
+        representations: [
+            "public.rtf": "rich-sample.rtf",
+            "public.utf8-plain-text": "rich-sample.txt"  // fallback plain
+        ],
+        typesOrdered: ["public.rtf", "public.utf8-plain-text"],
+        previewText: plain,
+        previewImageRel: nil,
+        ...
+    )
+```
+
+Теперь sample имеет **настоящий RTF representation** — все rich-aware actions могут с ним работать корректно.
+
+### Result pane — rich-aware рендеринг
+
+Result pane сейчас:
+
+```swift
+TextEditor(text: $resultText)        // или Text(resultText)
+```
+
+Меняется на:
+
+```swift
+switch resultItem.semantic {
+case .richText:
+    RichTextPreview(attributedString: loadAttributedString(from: resultItem))
+case .image:
+    ImagePreview(image: loadImage(from: resultItem))
+case .files:
+    FilesPreview(files: loadFiles(from: resultItem))
+default:
+    Text(resultItem.previewText ?? "")
+        .font(.system(size: 12))
+}
+```
+
+`RichTextPreview` использует SwiftUI `Text(AttributedString)`:
+
+```swift
+struct RichTextPreview: View {
+    let attributedString: AttributedString
+    var body: some View {
+        ScrollView {
+            Text(attributedString)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+        }
+        .background(Color(NSColor.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private func loadAttributedString(from item: ClipboardItem) -> AttributedString {
+    guard let rel = item.representations["public.rtf"],
+          let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
+          let nsAttr = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil) else {
+        return AttributedString(item.previewText ?? "")
+    }
+    return AttributedString(nsAttr)
+}
+```
+
+NSAttributedString → AttributedString конверсия — native macOS 12+, поддерживает основные attributes (font, foreground/background color, link, underline). Без потерь для нашего use case.
+
+### Rich-preserving AI engine
+
+Главная техническая задача — AI translate / fix grammar **должны сохранять форматирование**.
+
+**Подход:** Markdown round-trip.
+
+1. На входе rich text → конвертируем NSAttributedString → Markdown (через `engine.rich_to_md` логику или новый helper)
+2. Отправляем Markdown в AI с префиксом prompt: `"Preserve all Markdown formatting (bold **, italic *, links [text](url), code blocks, lists) exactly as is. Only modify the text content."`
+3. AI возвращает Markdown с переведённым content
+4. Конвертируем Markdown → NSAttributedString (через `NSAttributedString(markdown:)` — native macOS 12+ API)
+5. Сохраняем как rich item, RTF representation генерится из NSAttributedString
+
+В `engine.ai_prompt` добавляется параметр:
+
+```
+☑ Preserve rich formatting (Markdown round-trip)
+```
+
+Default — **true** когда engine применяется к `.richText` semantic, **false** для `.plain`. Пользователь может override в editor.
+
+Реализация:
+
+```swift
+struct AIPromptEngineAction: ClipboardAction {
+    let descriptor: CustomActionDescriptor
+
+    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
+        let preserveRich = descriptor.parameters.bool("preserveRichFormatting", default: false)
+        let isRich = context.contains(.richText) && preserveRich
+
+        var inputText = item.previewText ?? ""
+        let systemAddition: String
+
+        if isRich {
+            // Конвертируем rich → markdown
+            inputText = RichTextHelpers.attributedStringToMarkdown(loadAttributedString(from: item))
+            systemAddition = "\nThe input is in Markdown format. Preserve all Markdown markup exactly (bold **, italic *, links [text](url), code `inline`, code blocks ```, headings #, lists -/1.). Only modify the text content, never the markup."
+        } else {
+            systemAddition = ""
+        }
+
+        let fullPrompt = descriptor.parameters.string("promptTemplate") + systemAddition
+        let aiResult = try await provider.complete(prompt: inputText, system: fullPrompt, model: provider.defaultModel)
+
+        if isRich {
+            // Конвертируем markdown → rich
+            let resultAttr = try NSAttributedString(markdown: aiResult)
+            let resultItem = makeRichTextItem(resultAttr, from: item)
+            return .preview(resultItem)
+        } else {
+            return .preview(makeTextItem(aiResult, from: item))
+        }
+    }
+}
+```
+
+Это означает: один и тот же AI action автоматически работает в plain-mode (для .plain context) и в rich-mode (для .richText context). Не нужно дублировать descriptor.
+
+### Bundled factory presets «(rich)» variants
+
+В `presets.json` для Rich text tab — отдельные descriptors с уже включённым `preserveRichFormatting: true`:
+
+```json
+[
+  {
+    "id": "preset.ai.translate.rich",
+    "engineID": "engine.ai_prompt",
+    "title": "translate (rich)",
+    "applicableTypes": ["richText"],
+    "parameters": {
+      "promptTemplate": "Translate the input to Russian. If the user provides text in Russian, translate to English instead.",
+      "preserveRichFormatting": true
+    },
+    "isPreset": true
+  },
+  {
+    "id": "preset.ai.fix_grammar.rich",
+    "engineID": "engine.ai_prompt",
+    "title": "fix grammar (rich)",
+    "applicableTypes": ["richText"],
+    "parameters": {
+      "promptTemplate": "Fix grammar and typos in the input. Do not change meaning or tone. Reply with the corrected text only.",
+      "preserveRichFormatting": true
+    },
+    "isPreset": true
+  }
+]
+```
+
+Title в editor / list — короткий `translate (rich)`. Это даёт пользователю явный сигнал «это rich-aware version». Plain-text вариант остаётся отдельным preset'ом `preset.ai.translate.plain` без суффикса.
+
+Альтернатива — один descriptor с `preserveRichFormatting: auto` который автоматически переключается по context. Думаю — оба варианта валидны, остановимся на **explicit «(rich)» variant**: пользователь видит **намерение** в имени, не магию.
+
+### NSAttributedString ↔ Markdown helper
+
+Apple даёт `NSAttributedString(markdown:)` для парсинга MD в attributed string (macOS 12+). Обратного — нет native API.
+
+Конвертация attributed → markdown — пишем сами:
+
+```swift
+enum RichTextHelpers {
+    static func attributedStringToMarkdown(_ attr: NSAttributedString) -> String {
+        var result = ""
+        var lastWasNewline = true
+        attr.enumerateAttributes(in: NSRange(location: 0, length: attr.length)) { attrs, range, _ in
+            let text = attr.attributedSubstring(from: range).string
+            let font = attrs[.font] as? NSFont
+            let isBold = font?.fontDescriptor.symbolicTraits.contains(.bold) ?? false
+            let isItalic = font?.fontDescriptor.symbolicTraits.contains(.italic) ?? false
+            let isMonospace = font?.fontDescriptor.symbolicTraits.contains(.monoSpace) ?? false
+            let isHeading1 = (font?.pointSize ?? 0) >= 22
+            let isHeading2 = (font?.pointSize ?? 0) >= 14 && (font?.pointSize ?? 0) < 22 && isBold
+            let isLink = attrs[.link] as? URL
+
+            var segment = text
+            if isBold && isItalic { segment = "***\(segment)***" }
+            else if isBold { segment = "**\(segment)**" }
+            else if isItalic { segment = "*\(segment)*" }
+
+            if isMonospace { segment = "`\(segment)`" }
+
+            if let link = isLink { segment = "[\(text)](\(link.absoluteString))" }
+
+            if isHeading1 && lastWasNewline { segment = "# \(segment)" }
+            else if isHeading2 && lastWasNewline { segment = "## \(segment)" }
+
+            result += segment
+            lastWasNewline = segment.hasSuffix("\n")
+        }
+        return result
+    }
+}
+```
+
+Это упрощённый emitter. Не покрывает все edge cases (вложенные lists, tables, blockquotes), но для типичного rich-paste из Slack/Word/Gmail/Notion — работает достаточно well.
+
+Дальнейшие улучшения (future):
+- Использовать `swift-markdown` от Apple для надёжного **парсинга**, а emitter тоже на нём
+- Использовать `SwiftDown` package для bidirectional
+- На крайний случай — sending raw NSAttributedString RTF data в провайдеры что поддерживают (но это provider-specific и не работает с большинством)
+
+### Engine «Rich → HTML»
+
+Новый engine `engine.rich_to_html`. Использует built-in API:
+
+```swift
+struct RichToHTMLEngineAction: ClipboardAction {
+    func apply(item: ClipboardItem, context: ContentContext) -> ApplyOutcome {
+        guard let rel = item.representations["public.rtf"],
+              let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
+              let attr = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil) else {
+            return .failed(original: item, reason: "No RTF representation found", recovery: nil)
+        }
+
+        guard let htmlData = try? attr.data(from: NSRange(location: 0, length: attr.length),
+                                            documentAttributes: [.documentType: NSAttributedString.DocumentType.html]),
+              let htmlString = String(data: htmlData, encoding: .utf8) else {
+            return .failed(original: item, reason: "HTML conversion failed", recovery: nil)
+        }
+
+        return .preview(makeTextItem(htmlString, from: item))
+    }
+}
+```
+
+Apple даёт нативную RTF → HTML конверсию через `NSAttributedString.data(from:documentAttributes:)` с `.documentType: .html`. Работает корректно для большинства rich content.
+
+### Curated set summary для всех «text-content» tabs
+
+После правки #9 и в продолжение #8:
+
+| Tab | Default visible | В palette |
+|---|---|---|
+| Plain text | Paste as text, Paste as is, [Claude] summarize/translate/fix, UPPERCASE, lowercase, Sort, Unique, Word count, ★ QR | 25+ engines |
+| Rich text | Paste as is, Paste as text, Rich → MD, Rich → HTML, [Claude] translate (rich), [Claude] fix grammar (rich) | strip styles, change font, theme convert, extract links, ... |
+| URL | Paste as is, Strip tracking, Just domain, ★ QR, [Claude] explain, URL encode, URL decode | shorten, expand, query params table, ... |
+| JSON | Paste as is, Pretty, Minify, Extract keys, [Claude] explain | Flatten, Remove nulls, CSV→JSON, JSON→YAML, ... |
+| Table | Paste as is, Transpose, CSV→JSON, CSV→MD | sort by column, sum, count, ... |
+| Markdown | Paste as is, MD → plain, MD → HTML, Extract headings | strip code blocks, extract links, TOC, ... |
+| Code | Paste as is, Paste as text, Wrap in MD code block, Tabs→Spaces, Spaces→Tabs, Escape for shell, Escape for JSON, [Claude] explain, [Claude] fix bugs | escape Swift, strip comments, count complexity, ... |
+| Image | Paste as is, OCR, Decode QR, Strip metadata, Resize 1920, Grayscale | rotate, invert, sepia, compress JPEG, base64 URI, ... |
+| Files | Paste as is, Copy paths, Filenames only, Reveal in Finder, MD links | bash list, HTML links, size, SHA-256, parent folder, ... |
+
+Каждый default список — 5–10 actions. Тонкий, осмысленный, без шума.
+
+### Что не входит
+
+- **Bidirectional Markdown library** на основе swift-markdown — отдельная работа, наш простой emitter покроет 90% использования. Замена когда станет очевидно мало.
+- **Inline preview formatting changes** в Result pane real-time во время AI streaming — отдельная правка, требует streaming response architecture.
+- **Format-aware diff** между input и output для rich actions — было бы круто видеть точно что изменилось, но heavy lift.
+- **Custom RTF templates** для bundled sample (несколько вариантов на выбор — Slack-like, Word-like, Gmail-like) — over-engineering для PoC.
+
+### Зависимости
+
+- **Сильно зависит от правки №7** (engine architecture) — нужен `engine.ai_prompt` с параметрами, `engine.rich_to_html`.
+- **Зависит от правки №8** (curated presets) — bundled `presets.json` обновляется здесь же.
+- **Зависит от правки №4** (multi-provider AI) — provider должен быть resolved через registry, не hardcoded Anthropic.
+- Применяется одной волной с #5/6/7/8.
+
+### Размер изменений
+
+- Новый `Resources/SettingsSamples/rich-sample.rtf`: ~3 KB binary (один раз сгенерирован)
+- `ActionConfig.swift` (SettingsSamples): ~30 строк (rich sample loader)
+- `SettingsWindow.swift` (Result pane semantic switch + RichTextPreview): ~80 строк
+- Новый `RichTextHelpers.swift` (attributed ↔ markdown): ~100 строк
+- `Engines.swift` (новый RichToHTMLEngineAction + preserveRichFormatting param в AIPromptEngineAction): ~80 строк
+- `presets.json`: +6 entries (4 rich-specific + corrections)
+
+Итого: ~290 строк + binary RTF asset.
+
+---
+
+## Правка №10 (iteration 2) — Полная курация default-наборов + Wiki markup + Spanish как default translate target
+
+**Статус:** запланирована. Финализирует curation для всех content tabs (правки №8/9 описали Plain text и Rich text — этот пункт закрывает остальные), добавляет один новый engine (Wiki markup), правит prompt template для translate. ~80 строк (в основном данные `presets.json` + один новый engine).
+
+**Затрагивает:** `Resources/Actions/presets.json` (default-enabled flags + новые presets для каждого tab), `Resources/Actions/engines.json` (новый `engine.rich_to_wiki`), `Engines.swift` (реализация Wiki markup конвертера), `presets.json` (translate AI presets теперь Spanish-default).
+
+### 1. Rich Text → Wiki markup
+
+Новый engine `engine.rich_to_wiki`. Целевой формат — **MediaWiki syntax** (Wikipedia, MediaWiki-based wikis):
+
+- `'''bold'''`
+- `''italic''`
+- `[[link]]` или `[url text]`
+- `== Heading 2 ==`, `=== Heading 3 ===`
+- `* bullet item`
+- `# numbered item`
+- `<code>inline</code>`
+- `<pre>block</pre>`
+
+Implementation — close cousin к моему `attributedStringToMarkdown` из правки №9, но с другим markup mapping:
+
+```swift
+enum RichTextHelpers {
+    static func attributedStringToWiki(_ attr: NSAttributedString) -> String {
+        var result = ""
+        var lastWasNewline = true
+        attr.enumerateAttributes(in: NSRange(location: 0, length: attr.length)) { attrs, range, _ in
+            let text = attr.attributedSubstring(from: range).string
+            let font = attrs[.font] as? NSFont
+            let isBold = font?.fontDescriptor.symbolicTraits.contains(.bold) ?? false
+            let isItalic = font?.fontDescriptor.symbolicTraits.contains(.italic) ?? false
+            let isMonospace = font?.fontDescriptor.symbolicTraits.contains(.monoSpace) ?? false
+            let size = font?.pointSize ?? 13
+            let isH1 = size >= 22 && isBold
+            let isH2 = size >= 17 && size < 22 && isBold
+            let isH3 = size >= 14 && size < 17 && isBold
+            let isLink = attrs[.link] as? URL
+
+            var segment = text
+            if isBold && isItalic { segment = "'''''\(segment)'''''" }
+            else if isBold { segment = "'''\(segment)'''" }
+            else if isItalic { segment = "''\(segment)''" }
+
+            if isMonospace { segment = "<code>\(segment)</code>" }
+
+            if let link = isLink {
+                segment = "[\(link.absoluteString) \(text)]"
+            }
+
+            if isH1 && lastWasNewline { segment = "= \(segment) =" }
+            else if isH2 && lastWasNewline { segment = "== \(segment) ==" }
+            else if isH3 && lastWasNewline { segment = "=== \(segment) ===" }
+
+            result += segment
+            lastWasNewline = segment.hasSuffix("\n")
+        }
+        return result
+    }
+}
+```
+
+Параметр engine'а (опциональный, default MediaWiki):
+
+```
+Wiki dialect    [ MediaWiki        ▼ ]
+                ├─ MediaWiki (Wikipedia)
+                ├─ DokuWiki
+                └─ Confluence
+```
+
+DokuWiki / Confluence — присутствуют как опции но в первой реализации работает только MediaWiki, остальные показывают `.failed(reason: "Wiki dialect not yet implemented")`. Архитектурно готово к расширению, реализация отложена.
+
+**В curated default set Rich text** теперь:
+
+```
+   Paste as is
+   Paste as text
+   Rich → Markdown
+   Rich → HTML
+   Rich → Wiki markup                  ← новый
+✨ [Claude] translate (rich)
+✨ [Claude] fix grammar (rich)
+[+ Add more actions…]
+```
+
+7 actions. Всё ещё компактно.
+
+### 2. Spanish как default target language для translate
+
+Сейчас (правка №9 draft) preset translate содержит:
+
+```
+"promptTemplate": "Translate the input to Russian. If the user provides text in Russian, translate to English instead."
+```
+
+Меняем на **Spanish ↔ English**:
+
+```
+"promptTemplate": "Translate the input to Spanish. If the user provides text in Spanish, translate to English instead."
+```
+
+Логика: Spanish — самый распространённый non-English язык в мире (≈ 500M+ native speakers), pre-installed в большинстве macOS дистрибуций, типичный default target для translate apps. Русский, сербский, и другие пользователи могут **переопределить prompt** в editor sheet:
+
+1. Открыть `translate (rich)` через [Edit]
+2. Изменить `Spanish` на `Russian` в prompt template
+3. Опционально — duplicate preset через [⎘ Duplicate to customize…], создать «translate to Russian (rich)» отдельно от Spanish-варианта, держать оба
+
+Также имеет смысл создать **template** в presets.json для quick-add нескольких целевых языков через palette. Не enabled по дефолту, но доступны:
+
+```json
+{
+  "id": "preset.ai.translate_ru.rich",
+  "engineID": "engine.ai_prompt",
+  "title": "translate to Russian (rich)",
+  "enabled": false,
+  "parameters": {
+    "promptTemplate": "Translate the input to Russian. Preserve formatting.",
+    "preserveRichFormatting": true
+  },
+  "isPreset": true
+}
+```
+
+Аналогично — preset'ы для French, German, Chinese, Japanese, Korean, Arabic. Все `enabled: false` по дефолту, доступны через palette. Пользователь enable'ит нужные.
+
+Это решает проблему «обязательно нужен EN ↔ местный» для широкого круга пользователей без необходимости каждому писать prompt самостоятельно.
+
+### 3. Финализация curated sets для всех content tabs
+
+Полные default-enabled списки. Всё остальное — в palette.
+
+#### Plain text (10 default)
+
+```
+   Paste as text                       (clean format + trim)
+   Paste as is
+✨ [Claude] summarize
+✨ [Claude] translate (Spanish ↔ EN)
+✨ [Claude] fix grammar
+   UPPERCASE
+   lowercase
+   Sort lines
+   Word / char count
+   ★ Generate QR code
+[+ Add more actions…]
+```
+
+В palette: Fix keyboard layout, Title Case, Sentence case, camelCase, snake_case, kebab-case, Slugify, Trim только, Clean format только, Base64 enc/dec, HTML entities enc/dec, Unique lines, Regex replace, …
+
+#### Rich text (7 default)
+
+```
+   Paste as is
+   Paste as text
+   Rich → Markdown
+   Rich → HTML
+   Rich → Wiki markup
+✨ [Claude] translate (rich, Spanish ↔ EN)
+✨ [Claude] fix grammar (rich)
+[+ Add more actions…]
+```
+
+В palette: Strip styles keep structure, Change font, Theme convert (light ↔ dark), Extract links list, Word count for rich, …
+
+#### URL (6 default)
+
+```
+   Paste as is
+   Strip tracking parameters
+   Just domain
+   ★ Generate QR code
+✨ [Claude] explain link
+   URL decode (readable form)
+[+ Add more actions…]
+```
+
+В palette: URL encode (обратное), Query params as table, Markdown link, HTML link, …
+
+(URL encode редко нужен интерактивно — обычно decode. Поэтому только decode в default; encode — в palette.)
+
+#### JSON (6 default)
+
+```
+   Paste as is
+   Pretty-print
+   Minify
+   Extract keys
+✨ [Claude] explain JSON structure
+✨ [Claude] fix JSON              (typical: missing comma, smart quotes, trailing comma)
+[+ Add more actions…]
+```
+
+В palette: Flatten, Remove nulls, JSON → YAML, JSON → CSV, Type schema generation, …
+
+«Fix JSON» — частый кейс (broken JSON из логов / Slack-формата / WSL output). Стоит держать в default.
+
+#### Table / CSV (6 default)
+
+```
+   Paste as is
+   Transpose
+   CSV → JSON
+   CSV → Markdown table
+✨ [Claude] summarize table
+   Sort by first column
+[+ Add more actions…]
+```
+
+В palette: CSV → HTML, Sort by second/N column, Sum column, Count rows, Group by, Pivot, …
+
+#### Markdown (6 default)
+
+```
+   Paste as is
+   Paste as text
+   Markdown → HTML
+   Markdown → plain
+   Extract headings (TOC)
+✨ [Claude] polish prose
+[+ Add more actions…]
+```
+
+В palette: Strip code blocks, Extract links list, MD → Wiki, MD → RST, Lint MD style, …
+
+#### Code (7 default)
+
+```
+   Paste as is
+   Paste as text
+   Wrap in Markdown code block        (with backtick escape)
+   Tabs ↔ spaces                       (toggle engine — autodetect direction)
+✨ [Claude] explain code
+✨ [Claude] fix bugs
+✨ [Claude] add inline comments
+[+ Add more actions…]
+```
+
+«Tabs ↔ spaces» — объединённый engine с autodetect: если в input больше tabs — converts to spaces (configurable indent size), если больше spaces — converts to tabs. Это убирает два symmetric actions из правки №8 в один полезный.
+
+В palette: Escape for shell, Escape for JSON string, Escape for Swift, Strip comments, Count complexity (LOC), Detect language hint, …
+
+#### Image (6 default)
+
+```
+   Paste as is
+   OCR (extract text)
+   Decode QR
+   Strip metadata (EXIF/GPS)
+   Resize to max 1920 px
+   Grayscale
+[+ Add more actions…]
+```
+
+В palette: Rotate 90° CW/CCW, Flip H/V, Sepia, Noir, Invert, Compress to JPEG 80%, Base64 data URI, PNG ↔ JPEG ↔ HEIC convert, …
+
+#### Files (5 default)
+
+```
+   Paste as is
+   Copy paths as text
+   Filenames only
+   Markdown links
+   Reveal in Finder
+[+ Add more actions…]
+```
+
+В palette: Bash-quoted list, HTML links, Size info, SHA-256 hash, Parent folder, Open with…, …
+
+### Подведение баланса
+
+| Tab | Default count |
+|---|---|
+| Plain text | 10 |
+| Rich text | 7 |
+| URL | 6 |
+| JSON | 6 |
+| Table | 6 |
+| Markdown | 6 |
+| Code | 7 |
+| Image | 6 |
+| Files | 5 |
+| **Всего default-enabled** | **59 actions across 9 tabs** |
+| В palette | ≈ 60+ engines |
+
+Плотность ~6 actions per tab — чистый scan-friendly список без скролла. Total engines ≈ 120 (включая будущие dialect / format variants).
+
+### Принципы curation (для будущих правок)
+
+1. **Default-enabled должны быть actions которые осознанно делает 80%+ пользователей в этом content type.** Не «потенциально интересно», а «реально нужно регулярно».
+2. **Никакой строгий лимит** — некоторые типы (Plain text, Code) объективно имеют больше core needs. 5–10 — норма.
+3. **Paste as is всегда первый.** Это semantic anchor.
+4. **Paste as text — почти всегда второй** (где applicable: Plain text, Rich text, Markdown, Code).
+5. **AI actions помечены ✨ префиксом**, provider badge показывается separately (правка №8).
+6. **Side-effects** (Reveal in Finder, Open URL) — только если они **доминирующий use case** для этого type. Files — да (Reveal). URL — нет (Open URL менее частый чем strip tracking / QR / etc).
+7. **Format conversions** — включаем только самые востребованные direction'ы. CSV → JSON — да. JSON → CSV — в palette (редкое направление в реальной работе).
+8. **Symmetric pairs** (encode/decode) — оставляем только частое направление в default. URL decode > URL encode. Base64 в palette (редкое в interactive flow).
+
+### Bundled presets.json структура
+
+Финальный формат:
+
+```json
+{
+  "version": 1,
+  "presets": [
+    {
+      "id": "preset.identity",
+      "engineID": "engine.identity",
+      "title": "Paste as is",
+      "enabled": true,
+      "defaultPosition": 0,
+      "applicableTabs": ["plain", "richText", "url", "json", "table", "markdown", "code", "image", "files"],
+      "locked": true,
+      "isPreset": true
+    },
+    {
+      "id": "preset.paste_as_text",
+      "engineID": "engine.paste_as_text",
+      "title": "Paste as text",
+      "enabled": true,
+      "defaultPosition": 1,
+      "applicableTabs": ["plain", "richText", "markdown", "code"],
+      "isPreset": true
+    },
+    {
+      "id": "preset.ai.translate_es.plain",
+      "engineID": "engine.ai_prompt",
+      "title": "translate",
+      "enabled": true,
+      "applicableTabs": ["plain"],
+      "parameters": {
+        "promptTemplate": "Translate the input to Spanish. If the user provides text in Spanish, translate to English instead. Reply with the translation only.",
+        "preserveRichFormatting": false
+      },
+      "isPreset": true
+    },
+    {
+      "id": "preset.ai.translate_ru.plain",
+      "engineID": "engine.ai_prompt",
+      "title": "translate to Russian",
+      "enabled": false,
+      "applicableTabs": ["plain"],
+      "parameters": {
+        "promptTemplate": "Translate the input to Russian. Reply with the translation only.",
+        "preserveRichFormatting": false
+      },
+      "isPreset": true
+    }
+  ]
+}
+```
+
+Поле `enabled: true/false` определяет default-visibility. `applicableTabs` — где появляется. `locked: true` — нельзя delete/drag (только для identity).
+
+### Что не входит
+
+- **Stats-based curation** — динамически перетаскивать редко используемые actions в palette. Нужна сбор статистики, отдельная правка.
+- **Per-locale defaults** — autodetect системный язык и enabling translate to соответствующий target. Хорошо, но complexity / surface area большая. Сейчас default Spanish для всех.
+- **Wiki markup parser** (Wiki → Rich) — обратное направление. Делается отдельно если будет запрос.
+- **Multi-language batch translate** — `["en", "ru", "es", "de"]` одним вызовом. Pipeline feature, future.
+
+### Зависимости
+
+- Применяется одной волной с #5/6/7/8/9 — все они переформатируют Settings + action model совместно.
+- Не имеет других зависимостей.
+
+### Размер изменений
+
+- `Resources/Actions/engines.json`: +1 entry (engine.rich_to_wiki) + удаление engine.tabs_to_spaces, engine.spaces_to_tabs (заменены на engine.tabs_spaces_toggle).
+- `Engines.swift`: +60 строк (RichToWikiEngineAction + TabsSpacesToggleEngineAction).
+- `Resources/Actions/presets.json`: переработка всего файла, ~120 строк (59 default-enabled + ~60 в palette).
+- `RichTextHelpers.swift`: +50 строк (attributedStringToWiki).
+- `ActionConfig.swift`: ~5 строк (поле applicableTabs в descriptor если не было).
+
+Итого: ~115 Swift + ~120 строк JSON.
+
+---
+
+## Правка №11 (iteration 2) — iCloud sync для настроек: actions, presets, preferences
+
+**Статус:** запланирована. UI как placeholder сейчас (как Launch on Login из правки №3), функционал — после code signing. Архитектурно ~300 строк. Меняет философию Export/Import — теперь это fallback для cross-account / sharing, а не основной способ переносить настройки.
+
+**Затрагивает:** новый `iCloudSync.swift` (CloudKitContainer wrapper + ubiquity container access + reconciliation logic), `SettingsWindow.swift` (sync status section в General tab), `ActionConfig.swift` (timestamp-aware save/load + conflict resolution), Info.plist (iCloud entitlements — позже при signing), `AppDelegate` (background sync observer).
+
+### Use case
+
+У Ильи (и типичного power user) — несколько Mac'ов: рабочий ноутбук, домашний iMac, possibly mac mini как сервер. Сейчас настройки DrPaste — actions, prompt templates, переименования, custom AI configurations — живут в `~/Library/Application Support/DrPaste/`, **локально per-device**. После одной правки в Settings нужно либо вручную Export → AirDrop / Dropbox → Import, либо мириться что на втором Mac'е настройки старые.
+
+iCloud sync через **общий Apple ID** должен делать это автоматически: правишь preset «translate to Russian» на ноутбуке → через 5-30 секунд тот же preset появляется на iMac. Никакого manual transfer.
+
+### Что синхронизируется
+
+| Данное | Синхронизация | Хранилище |
+|---|---|---|
+| `actions.json` (presets, customTitles, actionOrder, enabledFlags, customActions) | **да** | iCloud Drive ubiquity container |
+| `providers.json` (provider configs включая ID и base URL, без секретов) | **да** | iCloud Drive ubiquity container |
+| **API keys** | **да** | **iCloud Keychain** (`kSecAttrSynchronizable: true`) |
+| User preferences (fontScale, soundsEnabled per cue, soundVolume) | **да** | NSUbiquitousKeyValueStore |
+| Hotkey rebindings (когда появится UI для них) | **да** | NSUbiquitousKeyValueStore |
+| Clipboard history (`index.json` + blobs) | **НЕТ** | local |
+| Action playground samples (custom user-input samples in Settings) | **да** | iCloud Drive (small JSON) |
+| AX permission state | **НЕТ** (per-device system) | n/a |
+| Mode override (Full vs Limited force) | **НЕТ** (per-device, env-dependent) | local |
+
+### API ключи через iCloud Keychain
+
+Ключи хранятся в **iCloud Keychain** через `kSecAttrSynchronizable: true` атрибут — стандартный механизм Apple для секретов синхронизирующихся между устройствами:
+
+```swift
+import Security
+
+enum APIKeyStorage {
+    static func save(_ key: String, for providerID: String, syncToiCloud: Bool) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "com.ilya000.DrPaste.provider",
+            kSecAttrAccount as String: providerID,
+            kSecValueData as String: key.data(using: .utf8)!,
+            kSecAttrSynchronizable as String: syncToiCloud,
+            kSecAttrAccessible as String: syncToiCloud
+                ? kSecAttrAccessibleAfterFirstUnlock        // required for synchronizable
+                : kSecAttrAccessibleWhenUnlocked
+        ]
+        SecItemDelete(query as CFDictionary)
+        SecItemAdd(query as CFDictionary, nil)
+    }
+}
+```
+
+**Безопасность:**
+
+- **End-to-end encrypted Apple'ом.** Шифрование на устройстве пользователя secret'ом производным от Apple ID password + device passcode. Apple **не имеет ключей** для decrypt.
+- **Sync только между устройствами одного Apple ID** с активным iCloud Keychain. Никаких third parties.
+- **Require iCloud Keychain enabled** в System Settings → Apple ID → iCloud → Passwords & Keychain. У power user'ов обычно уже включён (Safari logins / Wi-Fi passwords / прочее уже там живут).
+- **Не передаются Apple support'у или восстановительным механизмам** при потере пароля — если потерял Apple ID password без recovery key, ключи становятся недоступны (это feature, не bug).
+
+Это **тот же уровень защиты** что используется для всех credit cards / Safari passwords / Wi-Fi keys в iCloud — стандартный pattern Apple ecosystem.
+
+**Per-device revoke trade-off:**
+
+С `kSecAttrSynchronizable: true` удаление ключа на Mac A пропагируется на все устройства через iCloud Keychain. Это означает:
+
+- **Plus:** добавил ключ один раз → доступен на всех Mac'ах автоматически.
+- **Plus:** revoke ключа везде одним действием (важно при краже устройства или утечке).
+- **Минус:** нельзя «удалить только с этого Mac'а» через Settings UI — для этого надо сначала отключить sync.
+
+UI компромисс — кнопка «Remove API key» в provider editor предлагает выбор:
+
+```
+Remove API key for Anthropic Claude?
+
+⦿ Remove from all my Macs (recommended for revocation)
+○ Remove from this Mac only — disable iCloud sync first
+
+                          [Cancel]   [Remove]
+```
+
+Default — remove everywhere. Для power user'ов с особым use case — explicit per-device путь через disable sync first.
+
+### Почему clipboard history не синхронизируется
+
+1. **Privacy.** Clipboard содержит пароли, токены, личные документы. Sync умножает attack surface.
+2. **Размер.** При активном использовании 50–100 items × средний размер 5–50 KB → 250 KB-5 MB на день. За месяц сотни MB. iCloud storage пользователя — не для этого.
+3. **Churn.** Clipboard обновляется секундами. Constant sync = load на iCloud Drive и батарею.
+4. **Полезность сомнительна.** Скопировал на ноутбуке 30 секунд назад — нужно ли видеть это в iMac истории через минуту? Чаще нет — clipboard очень контекстуален.
+
+Если когда-нибудь сделаем — opt-in toggle с warning'ом про privacy.
+
+### Почему clipboard history не синхронизируется
+
+1. **Privacy.** Clipboard содержит пароли, токены, личные документы. Синхронизация умножает attack surface.
+2. **Размер.** При активном использовании 50–100 items × средний размер 5–50 KB → 250 KB-5 MB на день. За месяц это сотни MB. iCloud storage пользователя — не для этого.
+3. **Churn.** Clipboard обновляется каждые секунды. Constant sync создаст load на iCloud Drive и батарею.
+4. **Полезность сомнительна.** Я скопировал что-то на ноутбуке 30 секунд назад — нужно ли мне видеть это в истории iMac через минуту? Чаще всего нет — clipboard очень контекстуальная штука.
+
+Если когда-нибудь сделаем — отдельный opt-in toggle с warning'ом про privacy.
+
+### Архитектура — два механизма параллельно
+
+**1. NSUbiquitousKeyValueStore** — для маленьких preferences (fontScale, sound toggles, volume, mode preference, …). Лимит 1 MB суммарно, key-value, instant propagation (5–30 секунд). Идеально для UI state.
+
+**2. iCloud Drive ubiquity container** — для `actions.json` и `providers-public.json` (provider configs без ключей). Файловая sync, atomic file replacement. До 200 KB файлы → быстрый upload.
+
+```
+~/Library/Mobile Documents/iCloud~com~ilya000~DrPaste/Documents/
+  actions.json
+  providers-public.json
+  samples.json              ← custom playground samples (опционально)
+```
+
+Локальные `actions.json` / `providers.json` остаются — это working copy. Sync logic копирует между local Application Support и iCloud Drive ubiquity container.
+
+### Sync engine
+
+```swift
+final class iCloudSyncManager {
+    static let shared = iCloudSyncManager()
+
+    @Published private(set) var status: SyncStatus = .disabled
+    @Published private(set) var lastSyncDate: Date?
+    @Published private(set) var lastError: String?
+
+    enum SyncStatus {
+        case disabled                   // iCloud sync off
+        case unavailable(reason: String) // entitlement missing, signed out, etc.
+        case idle                       // synced, waiting
+        case syncing
+        case conflict(local: Date, remote: Date)
+        case error(String)
+    }
+
+    func enable() async { ... }
+    func disable() { ... }
+    func sync() async { ... }
+    func resolveConflict(_ resolution: ConflictResolution) async { ... }
+
+    enum ConflictResolution {
+        case keepLocal       // local wins, remote overwritten
+        case keepRemote      // remote wins, local overwritten (with backup)
+        case merge           // attempt automatic merge per-key
+    }
+}
+```
+
+**Sync workflow:**
+
+```
+1. App launch / config change / NSMetadataQuery file-change notification
+   ↓
+2. Compute local file SHA256 + modification time
+3. Read remote (ubiquity container) file SHA256 + modification time
+   ↓
+4. Decision tree:
+   - Local same as remote → idle (do nothing)
+   - Only local exists → upload local
+   - Only remote exists → download remote, replace local
+   - Both exist:
+     ├─ Same hash → idle
+     ├─ Local newer + last_synced_hash == remote hash → upload local
+     ├─ Remote newer + last_synced_hash == local hash → download remote
+     └─ Both diverged from last_synced_hash → CONFLICT
+       ├─ Auto-resolve via merge (per-key последний-wins по timestamps)
+       └─ If merge fails → present UI to user, pause sync
+```
+
+**Per-key timestamps:** правка добавляет в `ActionConfig` для каждого field tracking modification time. При merge sub-field берется from device которое модифицировало позже.
+
+```swift
+struct ActionConfig: Codable {
+    var version: Int = 4         // bump за timestamps
+    var modifications: [String: Date] = [:]   // key path → timestamp
+    var customTitles: [String: String] = [:]
+    var actionOrder: [String: [String]] = [:]
+    var enabledFlags: [String: Bool] = [:]
+    var customActions: [CustomActionDescriptor] = []
+    ...
+}
+```
+
+Merge:
+
+```swift
+func merge(_ local: ActionConfig, _ remote: ActionConfig) -> ActionConfig {
+    var result = local
+    for key in Set(local.customTitles.keys).union(remote.customTitles.keys) {
+        let localTS = local.modifications["customTitles.\(key)"] ?? .distantPast
+        let remoteTS = remote.modifications["customTitles.\(key)"] ?? .distantPast
+        if remoteTS > localTS {
+            result.customTitles[key] = remote.customTitles[key]
+            result.modifications["customTitles.\(key)"] = remoteTS
+        }
+    }
+    // аналогично для enabledFlags, actionOrder, customActions
+    ...
+    return result
+}
+```
+
+Это решает 95% multi-device кейсов автоматически. Conflict UI триггерится только если timestamps идентичны или невалидны.
+
+### Conflict resolution UI
+
+Если auto-merge не справился — sheet:
+
+```
+┌─ iCloud sync conflict ──────────────────────────────────────┐
+│                                                             │
+│ Your DrPaste settings differ between this Mac and iCloud.   │
+│                                                             │
+│ This Mac (modified 2 min ago):                              │
+│   • 14 custom action titles                                 │
+│   • 5 enabled AI actions                                    │
+│   • Action order customized for 3 tabs                      │
+│                                                             │
+│ iCloud (modified 5 min ago, from "MacBook Pro"):            │
+│   • 12 custom action titles                                 │
+│   • 6 enabled AI actions                                    │
+│   • Action order customized for 4 tabs                      │
+│                                                             │
+│ Choose:                                                     │
+│   ⦿ Keep this Mac's settings, upload to iCloud              │
+│   ○ Use iCloud settings, overwrite this Mac                 │
+│     (a backup of current settings is kept)                  │
+│   ○ Merge automatically (newer change per setting wins)     │
+│                                                             │
+│                              [Cancel]   [Apply]             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+«Cancel» оставляет sync приостановленным до явного решения — sync indicator показывает оранжевый «paused: conflict».
+
+### Settings UI — General tab
+
+Новая section в General tab:
+
+```
+┌─ iCloud sync ──────────────────────────────────────────────┐
+│                                                            │
+│ ☐ Sync settings via iCloud           (coming soon)         │
+│                                                            │
+│ When enabled, your action presets, AI provider configs,    │
+│ API keys, and preferences sync across all Macs signed in   │
+│ to the same Apple ID. Clipboard history stays local.       │
+│                                                            │
+│ Status:    ● Idle — last synced 3 min ago                  │
+│ Storage:   18 KB used of available iCloud space            │
+│                                                            │
+│ [Force sync now]    [Show conflict log]                    │
+│                                                            │
+│ ☑ Include API keys (via iCloud Keychain)                   │
+│   API keys are end-to-end encrypted by Apple. Requires     │
+│   iCloud Keychain to be enabled in System Settings.        │
+│                                                            │
+└────────────────────────────────────────────────────────────┘
+```
+
+«Include API keys» — отдельный sub-toggle. Default ON если iCloud sync overall on и iCloud Keychain доступен. Можно выключить если пользователь хочет ключи per-device (странный кейс, но опция есть для control freak'ов).
+
+Если iCloud Keychain выключен в System Settings — sub-toggle серый, ниже подпись «Enable iCloud Keychain in System Settings → Apple ID → iCloud to use this feature».
+
+Toggle, status indicator (●idle / ⚙syncing / ⚠conflict / ✕error), last sync timestamp, used storage, force-sync button, conflict log button.
+
+Disabled (greyed out) **до code signing** — как с Launch on Login (правка №3). После signing — full functionality. Тот же принцип placeholder-toggle-with-coming-soon что зафиксирован в правке №3.
+
+### Entitlements (требуют code signing)
+
+В Info.plist / entitlements file:
+
+```xml
+<key>com.apple.developer.icloud-container-identifiers</key>
+<array>
+    <string>iCloud.com.ilya000.DrPaste</string>
+</array>
+<key>com.apple.developer.icloud-services</key>
+<array>
+    <string>CloudDocuments</string>
+</array>
+<key>com.apple.developer.ubiquity-container-identifiers</key>
+<array>
+    <string>iCloud.com.ilya000.DrPaste</string>
+</array>
+```
+
+Plus `NSUbiquitousContainers` declaration. Это требует:
+1. Developer ID / Apple Distribution certificate
+2. iCloud container registered в developer portal
+3. Provisioning profile с iCloud capability
+
+То есть весь iCloud machinery невозможен без signing. **UI placeholder сейчас, functional implementation после signing milestone.**
+
+### Export / Import после iCloud
+
+После правки iCloud sync — Export / Import (Backlog #8 итерации 1 / правка №4 итерации 2) **остаётся**, но смещается use case:
+
+| Use case | Раньше | После #11 |
+|---|---|---|
+| «Перенести настройки между моими Mac'ами» | Export → AirDrop → Import | iCloud sync (auto, включая ключи) |
+| «Поделиться preset'ом с другом» | Export → отправить файл | Export → отправить файл (всегда без ключей) |
+| «Backup перед экспериментами» | Export → сохранить | Export → сохранить |
+| «Импорт community action pack» | Import → JSON | Import → JSON |
+| «Migration на новый Mac впервые» | Export → Import на новом | Включи iCloud sync — авто, всё переедет |
+
+Export — для cross-account / cross-platform sharing. **Export всегда без API ключей** — отправлять friend'у файл с твоим Anthropic key никогда не должно быть случайно возможно. Это инвариант не зависящий от iCloud sync настроек. iCloud — для one-user-multiple-devices.
+
+### Multi-platform implications
+
+iCloud sync — Apple-only. Это **намеренное ограничение**: DrPaste и так macOS-only. Если когда-нибудь будет Windows / Linux build — там нет ни Keychain, ни iCloud, ни нашего ecosystem. Cross-platform sync можно делать через generic JSON file + user-supplied storage (Dropbox/Drive/GitHub Gist), но это отдельная архитектура. Сейчас iCloud — best path для целевой аудитории.
+
+### Storage budget
+
+`actions.json` после полного customization — обычно 5–50 KB. `providers-public.json` — 1–5 KB. NSUbiquitousKeyValueStore preferences — < 1 KB. Total per-user — обычно < 100 KB.
+
+Apple iCloud free tier — 5 GB. Наш consumption — 0.002% от free tier. Не нагружаем хранилище пользователя визуально. Quota — не concern.
+
+### Notifications
+
+При успешной sync операции — silent. UI просто показывает updated lastSyncDate.
+
+При первой sync на новом устройстве — `UNUserNotification` с message:
+
+```
+DrPaste synced 14 custom actions, 3 AI providers, and your API keys
+from iCloud. You're ready to go.
+```
+
+Если sub-toggle «Include API keys» был выключен:
+
+```
+DrPaste synced 14 custom actions and 3 AI providers from iCloud.
+Add API keys in Settings → AI Providers to enable AI actions.
+```
+
+Дальше — silent. Notification только для onboarding moments.
+
+При conflict — bouncy menu bar icon (как для AX warnings в Limited Mode) + entry в status menu «iCloud sync needs attention…».
+
+### Что не входит
+
+- **Action pack subscriptions** (auto-update от GitHub registry) — отдельная фича.
+- **Cross-account collaboration** (shared action library) — over-engineering для PoC.
+- **Conflict log как полный history** — сейчас только last conflict. Можно расширить с full audit trail.
+- **Granular per-tab sync selection** (выбрать какие content tabs синхронизировать) — для v1 sync либо on либо off, единственный sub-toggle это API keys.
+- **Sync between user accounts** — phenotypically невозможно через iCloud без shared CloudKit zone. Out of scope.
+
+### Зависимости
+
+- **Зависит от правки №3** (Launch on login placeholder pattern) — используется тот же UX подход «disabled toggle + coming soon» до code signing.
+- **Связана с правкой №4** (multi-provider AI) — синхронизировать список providers, но без ключей. Конкретно — `providers-public.json` исключает API keys через тот же mechanism что Export/Import.
+- **Связана с правкой №7** (action engines / descriptors) — сама `actions.json` структура которая будет синхронизироваться.
+- **НЕ зависит** от других правок итерации 2 в плане архитектуры — может быть применена отдельной волной после signing milestone.
+
+### Размер изменений
+
+- Новый `iCloudSync.swift`: ~200 строк (manager, status, merge logic)
+- `ActionConfig.swift`: +40 строк (per-key timestamps, merge function, version bump v3→v4 + migration)
+- `SettingsWindow.swift` → General tab: +60 строк (iCloud section, status indicator, conflict sheet)
+- Info.plist / Entitlements: добавление iCloud entitlements (1–2 строки, активны только после signing)
+- `AppDelegate`: +30 строк (NSMetadataQuery observer, app-launch sync trigger)
+
+Итого: ~330 строк Swift + entitlements.
+
+---
+
+## Правка №12 (iteration 2) — HUD: corner radius иногда пропадает (intermittent)
+
+**Статус:** запланирована. Bug fix, ~30–60 строк (точная диагностика после reproduction).
+
+**Затрагивает:** `HUD.swift` (HudPanel — конфигурация window, HudHostingView — настройка layer'а), потенциально `Resources/AppIcon.svg` если связано с window shape mask.
+
+### Симптом
+
+При открытии HUD панели углы окна **иногда** закруглены (как ожидалось), **иногда** прямые. Поведение нестабильное — может работать в одной сессии, не работать в следующей. После открытия-закрытия HUD несколько раз состояние «закруглены / прямые» может меняться.
+
+### Возможные причины (диагностика будет при реализации)
+
+1. **NSVisualEffectView vs layer corner radius race.** HUD использует `.hudWindow` material через NSVisualEffectView. Vibrant material имеет собственный layer который рендерится поверх SwiftUI content. Если SwiftUI `.clipShape(RoundedRectangle)` применяется только к content, а vibrant layer не клипуется — углы прямые. Когда macOS пересчитывает window mask — иногда углы исправляются, иногда нет.
+
+2. **`window.contentView?.wantsLayer` отсутствует или сбрасывается.** Если contentView не имеет layer'а — corner radius на нём не работает. SwiftUI обычно добавляет layer автоматически, но в нашем случае content host'ится через `NSHostingView` внутри NSPanel — bootstrap order может быть нестабильным.
+
+3. **Window backing scale factor mismatch.** При перемещении между mon'ами (Retina ↔ non-Retina) или при изменении DPI — layer corner radius может потерять mask.
+
+4. **NSPanel style mask не включает rounded corners по умолчанию.** Если style mask меняется (например при transition между HUD modes — gesture vs key window), corner radius layer может слетать.
+
+5. **isOpaque / backgroundColor не настроены consistent.** Если window становится opaque в каком-то момент (например при ⌥⌘X swap-paste flow) — corner clipping визуально пропадает за фоном.
+
+### Решение — robust corner clipping
+
+Стандартный paranoid pattern для NSPanel с rounded corners:
+
+```swift
+final class HudPanel: NSPanel {
+    init(allowsKey: Bool) {
+        super.init(contentRect: ..., styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
+        // Standard ones
+    }
+
+    override func awakeFromNib() {
+        super.awakeFromNib()
+        configureRoundedCorners()
+    }
+
+    override func layoutIfNeeded() {
+        super.layoutIfNeeded()
+        configureRoundedCorners()  // re-apply on each layout
+    }
+
+    private func configureRoundedCorners() {
+        guard let cv = contentView else { return }
+        cv.wantsLayer = true
+        cv.layer?.cornerRadius = 14
+        cv.layer?.cornerCurve = .continuous       // smooth Apple-style continuous corners
+        cv.layer?.masksToBounds = true
+        // Также для всех subview которые имеют свой layer (vibrant view)
+        cv.subviews.forEach { sub in
+            sub.layer?.cornerRadius = 14
+            sub.layer?.cornerCurve = .continuous
+            sub.layer?.masksToBounds = true
+        }
+    }
+}
+```
+
+Ключевые моменты:
+- **`cornerCurve = .continuous`** — даёт Apple-style smooth corners (squircles) вместо круглых. Это что использует System UI (notifications, alerts).
+- **Re-apply при каждом `layoutIfNeeded`** — защита от race condition'ов когда macOS пересоздаёт layer внутри content view'а.
+- **Рекурсивно для subview** — vibrant material живёт в собственной NSVisualEffectView с layer'ом, без mask на нём ничего не работает.
+
+### Альтернатива — SwiftUI-based rounded shape
+
+Если AppKit-level mask flaky — переносим rounded clipping полностью в SwiftUI:
+
+```swift
+struct HudView: View {
+    var body: some View {
+        ZStack {
+            VisualEffectBackground()  // NSViewRepresentable обёртка над NSVisualEffectView
+            content
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.1), lineWidth: 0.5)
+        )
+    }
+}
+```
+
+Window остаётся transparent borderless, SwiftUI отвечает за всё визуальное оформление. Это обходит layer race conditions потому что SwiftUI managment'ит свой rendering pipeline.
+
+Минус — небольшое падение perf при тяжёлом vibrant material под SwiftUI clip (re-rendering на каждый scroll/animation). На M1+ незаметно. На Intel Mac'ах может быть на 1–2 fps slower при анимациях, но HUD анимаций мало.
+
+### Решение
+
+Сначала проверяем **AppKit-level fix** с `cornerCurve = .continuous` + `layoutIfNeeded` re-apply. Если intermittent issue остаётся — переходим к SwiftUI-based clip.
+
+### Reproduction steps для verification
+
+1. Открыть HUD `⌥⌘V` 5 раз подряд, дождаться полного открытия каждый раз. Все 5 должны быть закруглены.
+2. Открыть HUD во время display sleep (когда экран засыпает и просыпается) — типичный triggering момент для layer race.
+3. Между monitor'ами разного DPI (если есть) — переместить HUD на secondary display, переоткрыть.
+4. После System Theme change (light → dark live preview) — переоткрыть HUD.
+
+### Зависимости
+
+Никаких — изолированный bug fix.
+
+### Размер изменений
+
+- `HUD.swift` (HudPanel): ~30 строк (cornerCurve, layoutIfNeeded override, recursive sublayer setup)
+- Опционально (если AppKit fix не помогает): добавление VisualEffectBackground NSViewRepresentable: ~30 строк
+
+Итого: ~30–60 строк.
+
+---
+
+## Правка №13 (iteration 2) — HUD: большие изображения ломают layout
+
+**Статус:** запланирована. Bug fix важный для UX, ~80–120 строк.
+
+**Затрагивает:** `HUD.swift` (image preview pane), `ClipboardModel.swift` (thumbnail generation на snapshot, если ещё нет), `PreviewSynthesizer` (создание `previewImageRel` для image items).
+
+### Симптом
+
+Когда в clipboard попадает большая картинка (например 4K скриншот 3840×2160, фото с iPhone 4032×3024, или картинка скопированная из Safari 1920×1080+) — HUD пытается отобразить её в **native size**. Поведение:
+
+- HUD окно либо разрастается до размеров экрана (если SwiftUI не имеет ограничений)
+- Либо содержимое расползается за пределы окна (если frame ограничен но `Image` `.resizable` не применён)
+- Либо preview pane занимает 90% площади HUD, выталкивая actions bar за пределы
+- Медленный рендер на каждом keystroke (re-layout при каждой смене selection)
+- Большой memory footprint — каждый раз когда selection меняется, full-size NSImage перерисовывается
+
+### Корень проблемы
+
+Сейчас image preview, вероятно, делает что-то вроде:
+
+```swift
+Image(nsImage: loadImage(from: item))
+```
+
+Без `.resizable()`, без `.aspectRatio(.fit)`, без `.frame(maxWidth/maxHeight)`. SwiftUI берёт intrinsic size картинки — 3840×2160 pt — и пытается всё это нарисовать. Layout не справляется.
+
+### Решение — двухслойный fix
+
+**1. Thumbnail generation на snapshot time**
+
+В `ClipboardWatcher.snapshotPasteboard` (или в `PreviewSynthesizer.synthesize`) — если semantic .image и dimensions > N px (например > 600 в большей стороне), генерируем thumbnail. Сохраняем как отдельный файл `images/<uuid>-preview.png` с max dimension 600 pt при 2x scale (т.е. 1200 actual px — достаточно для Retina HUD без artefacts).
+
+```swift
+extension PreviewSynthesizer {
+    static func synthesize(types: [String], pasteboard: NSPasteboard, semantic: SemanticKind, store: ClipboardStore) -> (text: String?, imageRel: String?) {
+        ...
+        if semantic == .image, let imgData = pasteboard.data(forType: .tiff) ?? pasteboard.data(forType: .png),
+           let fullImage = NSImage(data: imgData) {
+            let thumbnail = makeThumbnail(fullImage, maxDimension: 600)  // 600 pt
+            let thumbnailRel = store.writeImageBlob(thumbnail.tiffRepresentation!, suffix: "-preview")
+            return (text: nil, imageRel: thumbnailRel)
+        }
+        ...
+    }
+
+    static func makeThumbnail(_ source: NSImage, maxDimension: CGFloat) -> NSImage {
+        let originalSize = source.size
+        let scale = min(maxDimension / originalSize.width, maxDimension / originalSize.height, 1.0)
+        if scale >= 1.0 { return source }  // image already small
+        let newSize = NSSize(width: originalSize.width * scale, height: originalSize.height * scale)
+        let thumbnail = NSImage(size: newSize)
+        thumbnail.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        source.draw(in: NSRect(origin: .zero, size: newSize), from: .zero, operation: .copy, fraction: 1.0)
+        thumbnail.unlockFocus()
+        return thumbnail
+    }
+}
+```
+
+`ClipboardItem.previewImageRel` теперь указывает на thumbnail. Full image остаётся как representation в blob (`representations["public.png"]` etc.) — нужен для paste. HUD рендерит preview через `previewImageRel` без касания full-size data.
+
+**2. SwiftUI Image preview с constraints**
+
+В HUD image preview:
+
+```swift
+struct ImagePreviewPane: View {
+    let item: ClipboardItem
+    var body: some View {
+        Group {
+            if let rel = item.previewImageRel,
+               let nsImg = loadImage(rel: rel) {
+                Image(nsImage: nsImg)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: 480, maxHeight: 280)   // HUD ограничения
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.primary.opacity(0.1), lineWidth: 0.5)
+                    )
+            } else {
+                emptyPlaceholder
+            }
+        }
+    }
+}
+```
+
+`.resizable()` + `.aspectRatio(.fit)` + `.frame(maxWidth/maxHeight)` — стандартный комбо для контролируемого rendering.
+
+**3. Dimensions / size info под preview**
+
+Когда показывается thumbnail — полезно знать что это thumbnail и какова реальная картинка:
+
+```
+[ thumbnail здесь ]
+3840 × 2160 px · 4.2 MB · PNG
+```
+
+Маленький лейбл 10 pt secondaryLabelColor под изображением. Загружается из `ClipboardItem` metadata — `originalImageSize` и `originalImageFileSize` поля добавляются.
+
+### Edge cases
+
+- **Animated GIFs.** Текущий код вряд ли поддерживает GIF animation в preview. Делаем thumbnail из первого frame'а, под preview подпись «Animated GIF · 24 frames · 2.1 MB». Animation в preview не запускаем — это лишнее визуальное отвлечение в HUD.
+- **CMYK / non-sRGB color spaces.** При снижении размера через `NSImage.draw` color space сохраняется. Если оригинальная картинка очень большая в CMYK (например print-ready PDF rasterization) — thumbnail тоже CMYK. Это нормально, SwiftUI рендерит корректно через ColorSync.
+- **PDF в clipboard (как изображение).** Иногда PDF попадает в pasteboard как .pdf type. Preview — рендер первой страницы через CGPDFDocument → NSImage → thumbnail. Уже работает для регулярных image кейсов, расширяем на PDF type.
+- **Vector content (SVG).** Если клип SVG (редко в pasteboard) — рендер через WKWebView → snapshot → thumbnail. Edge case, опционально.
+- **Очень маленькие картинки (icon 16×16).** Не upscale'им, оставляем как есть с center alignment. `.frame(maxWidth: 480, maxHeight: 280)` правильно центрирует.
+
+### Memory cost
+
+Thumbnail file: 600×400 at 2x = 1200×800 PNG. PNG-compressed photo ~ 200-400 KB. Per-item overhead.
+
+При 200 items в истории: 40-80 MB на thumbnails. Приемлемо для современных Mac'ов с 16+ GB RAM. SSD storage — 40-80 MB → не concern.
+
+Cleanup: при удалении item из history thumbnail тоже удаляется (через ClipboardStore.deleteItem).
+
+### Размер ограничений HUD pane (числа для калибровки)
+
+Текущий HUD ~ 600×400 pt. Image preview pane занимает central row ~ 480 px wide × ~ 280 px tall (after учёта header, actions bar, footer). Это финальные frame constraints в .frame(maxWidth/maxHeight).
+
+При font scale > 1.0 (правка #6 итерации 1) — HUD растёт пропорционально. Image preview пропорционально тоже:
+
+```swift
+.frame(maxWidth: 480 * fontScale, maxHeight: 280 * fontScale)
+```
+
+Хотя картинка не «масштабируется по font», она занимает relative footprint в окне.
+
+### Зависимости
+
+- Никаких архитектурных. Изолированный bug fix + улучшение preview UX.
+
+### Размер изменений
+
+- `ClipboardModel.swift` (PreviewSynthesizer.synthesize): +40 строк (thumbnail generation)
+- `ClipboardItem`: +2 поля (originalImageSize, originalImageFileSize) для info-label
+- `ClipboardStore`: +10 строк (writeImageBlob с suffix support)
+- `HUD.swift` (image preview pane): +30 строк (constraints + size label)
+- Migration: existing items без previewImageRel — фоновое thumbnail generation при первом open HUD после update
+
+Итого: ~80–100 строк.
+
+---
+
+## Правка №14 (iteration 2) — Backspace в HUD: удалить item из истории + обновить легенду
+
+**Статус:** запланирована. Маленькая правка ~60 строк. Полезность очень высокая (повседневная очистка истории от случайных копий — паролей, временного мусора).
+
+**Затрагивает:** `HotkeyEngine.swift` (новый delegate-метод `hotkeyEngineDidDeleteFocused()` + интерсепт Backspace в обоих engine'ах), `HUD.swift` (footer legend — добавить `⌫ Delete`), `AppDelegate` (обработчик delete — `ClipboardStore.deleteItem` + reposition selectedIndex). `ClipboardStore.deleteItem(id:)` уже есть от Backlog #6 итерации 1 (Clear history использует тот же mechanism).
+
+### Use case
+
+Часто в clipboard попадает контент который не должен жить в истории:
+
+- Пароль скопированный из 1Password / Bitwarden — не хочется чтобы он остался в clipboard manager'е навсегда.
+- Временный токен / ключ для одноразового использования.
+- Гигантская картинка которая случайно скопировалась.
+- Кусок текста с personal info из email.
+- Просто мусор от accidental copy.
+
+Сейчас удаление — только через Recent submenu → entire Clear history (всё одним махом) или ручное редактирование `index.json` (никто этого не делает). Per-item delete отсутствует.
+
+**Backspace в HUD = одноклавишное удаление focused item.** Это самая частая операция уборки. Пользователь должен иметь к ней мгновенный доступ внутри уже открытого HUD без необходимости лазить в System tray.
+
+### Поведение
+
+1. Пользователь зажал `⌥⌘V`, HUD открылся, навигировал стрелками до некоторого item.
+2. Нажал **Backspace** (`kVK_Delete` = 51, не `kVK_ForwardDelete`).
+3. Item удаляется из `ClipboardStore` (blob storage + thumbnails чистятся, `index.json` обновляется атомарно).
+4. Курсор перемещается:
+   - На **следующий** item (если есть items после удалённого)
+   - Иначе на **предыдущий** (если был последний в списке)
+   - Если history стала пустой → закрываем HUD автоматически (нечего показывать)
+5. Воспроизводится sound — новый `delete` cue (короткий «pop», `NSSound.Name("Bottle")` fallback). Без визуального toast и без undo.
+6. Никакого confirmation alert / sheet — это destructive, но recoverable «случайно нажал → скопирую снова». UX-приоритет — скорость, не paranoia.
+
+### Почему нет undo
+
+Рассматривал session-scoped undo через ⌘Z + toast. Решение — **не делаем**:
+
+- Clipboard items по природе re-populate'ятся естественно — если удалил что-то нужное, скопируешь снова за 2 секунды.
+- Undo + toast добавляют complexity (HudState fields, UI animation, ⌘Z интерсепт) ради marginal benefit.
+- Audio feedback (delete sound) достаточно для acknowledgement что delete произошёл — пользователь сразу слышит результат.
+- Без toast / undo flow остаётся максимально linear и предсказуемым: нажал Backspace → item исчез → курсор переехал → продолжаешь работать.
+
+Принцип: **скорость + recoverability через естественные средства > artificial safety nets**.
+
+### Edge case — Backspace в search режиме (когда появится)
+
+Пока в HUD нет search input'а. Когда появится (отдельная правка), Backspace в search field должен работать как обычный Backspace (delete char), не trigger'ить delete item. Это решится через keyboard focus — если NSTextField has focus, system handles Backspace как edit, наш intercept не срабатывает.
+
+Сейчас (без search) — HUD не имеет text fields, Backspace всегда delete item.
+
+### Footer legend update
+
+Текущий footer (по правкам итерации 1):
+
+```
+   ↑↓ Navigate history    ←→ Switch action    +/- Font size    Enter Paste    Esc Cancel
+```
+
+Новый:
+
+```
+   ↑↓ History   ←→ Action   ⌫ Delete   +/- Font   ⏎ Paste   Esc Cancel
+```
+
+(сокращения чтобы вместить всё в одну строку).
+
+При hover на `⌫ Delete` через AX hint или tooltip — «Remove this clipboard item from history».
+
+При font scale большом — footer переносится в две строки. Не критично.
+
+### HotkeyEngine изменения
+
+В обоих engine'ах (EventTapEngine и CarbonHotKeyEngine):
+
+```swift
+// EventTapEngine.handle:
+if hudIsActive {
+    if kc == CGKeyCode(kVK_Delete) {  // = 51 (Backspace)
+        delegate?.hotkeyEngineDidDeleteFocused()
+        return nil  // глотаем event чтобы не дошёл до frontmost app
+    }
+    // ... остальные key handlers
+}
+```
+
+В Limited Mode (Carbon) — Carbon hotkey'ы не регистрируем для Delete отдельно, потому что Carbon hotkey требует modifier. Для Limited Mode используем `NSEvent.addLocalMonitorForEvents(matching: .keyDown)` пока HUD открыт — отлавливает Delete без необходимости в global hotkey.
+
+```swift
+if mode == .limited && hudIsActive {
+    NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+        if event.keyCode == 51 {  // Backspace
+            self.delegate?.hotkeyEngineDidDeleteFocused()
+            return nil
+        }
+        return event
+    }
+}
+```
+
+Local monitor только в Limited Mode, потому что в Full Gesture Mode (EventTap) мы уже глобально слушаем все key events.
+
+### Delegate update
+
+```swift
+protocol HotkeyEngineDelegate: AnyObject {
+    func hotkeyEngineDidSummon(reason: SummonReason)
+    func hotkeyEngineDidQuickCopy()
+    func hotkeyEngineDidRelease()
+    func hotkeyEngineDidNavigate(_ direction: NavDirection)
+    func hotkeyEngineDidCancel()
+    func hotkeyEngineDidRequestFontChange(_ change: FontChange)
+    func hotkeyEngineDidDeleteFocused()       // new
+}
+```
+
+### AppDelegate handler
+
+```swift
+nonisolated func hotkeyEngineDidDeleteFocused() {
+    Task { @MainActor in
+        guard let state = hudState, let item = state.currentItem else { return }
+        let position = state.selectedIndex
+        // Remove from store immediately (blob + index)
+        store.deleteItem(id: item.id)
+        // Reposition cursor
+        if state.history.isEmpty {
+            closeHUD()
+            return
+        }
+        state.selectedIndex = min(position, state.history.count - 1)
+        // Sound feedback
+        SoundFeedback.play(.delete)
+    }
+}
+```
+
+Без undo buffer'а — delete immediate и final. `store.deleteItem` уже чистит blob storage и обновляет index атомарно.
+
+### Sound feedback — новый cue
+
+В правке #10 итерации 1 уже было 5 sound cues. Добавляем шестой:
+
+```swift
+enum SoundCue: String {
+    case copySuccess = "copy-success"
+    case copyFailure = "copy-failure"
+    case pasteSuccess = "paste-success"
+    case pasteFailure = "paste-failure"
+    case typeTick = "type-tick"
+    case delete = "delete"            // new
+}
+```
+
+System fallback: `NSSound.Name("Bottle")` — короткий «pop», ассоциируется с trash. Или `Submarine` если предпочтительнее acoustic.
+
+Опционально toggle в Settings → General → Sound feedback section: `☑ Delete from history` (default on).
+
+### Что не входит
+
+- **Multi-select delete.** Выбрать несколько и удалить разом. Нужен Shift+Click / range selection — отдельный больший UX. Out of scope.
+- **Undo / restore** — намеренно убрано из дизайна (см. выше).
+- **Delete confirmation для "important" items.** Например items с password-like content. Heuristic'и хрупки. Out of scope.
+- **Clear history через Backspace в menu** — отдельно от per-item delete.
+
+### Зависимости
+
+- Опирается на `ClipboardStore.deleteItem(id:)` — уже существует (от Backlog #6 итерации 1).
+- Опирается на `SoundFeedback.play(.delete)` — добавляется новый cue в правке #10 итерации 1.
+- HotkeyEngine изменения совместимы с правкой №9 итерации 1 (Full vs Limited Mode).
+
+### Размер изменений
+
+- `HotkeyEngine.swift`: +25 строк (key interception для Backspace в обоих engine'ах + delegate method)
+- `HUD.swift`: +5 строк (footer legend — одна новая запись)
+- `AppDelegate`: +15 строк (hotkeyEngineDidDeleteFocused handler)
+- `SoundFeedback.swift`: +5 строк (delete cue)
+- `Resources/Sounds/delete.aiff` (опционально, иначе system fallback Bottle)
+
+Итого: ~50 строк Swift.
+
+---
+
+## Правка №15 (iteration 2) — HUD header: компактная одна строка + close-X + content meta row
+
+**Статус:** запланирована. UI правка средняя ~150 строк. Состоит из трёх связанных частей: компактификация header'а, кнопка close (safety net), новая строка content meta.
+
+**Затрагивает:** `HUD.swift` (HudView.headerSection полностью пересобирается, новый ContentMetaRow view, close button handler), `ClipboardModel.swift` (`ContentMeta` helper с lazy async compute и in-memory cache), `AppDelegate` (close button → closeHUD path), опционально `SourceResolver` (короткий формат app names).
+
+### Часть 1 — Компактный header в одну строку
+
+Текущий header (по правкам итерации 1):
+
+```
+[icon 24pt]  DrPaste                                                         
+             47 items in history                                             
+             Copied from Safari — OpenAI Documentation                       
+```
+
+Три строки. Занимает ~ 60 pt вертикали. Много места для статической информации.
+
+Новый — **одна строка**:
+
+```
+[icon 16pt] DrPaste  ·  47  ·  Safari "OpenAI Docs"                    [×]
+```
+
+Layout:
+
+- **Icon** 16 pt (вместо 24 pt) слева
+- **«DrPaste»** semibold 13 pt
+- Разделитель ` · ` (middle dot со spaces) secondaryLabelColor
+- **Item count** — просто число «47», без слова "items" (контекст и так ясен из иконки/положения)
+- Разделитель ` · `
+- **Source** — кратко (см. ниже), truncationMode = .tail если не помещается
+- **Spacer**
+- **Close button (×)** справа — SF Symbol `xmark.circle.fill`, 14 pt, secondaryLabel → primaryLabel на hover
+
+Всё в одной HStack высотой ~ 22 pt. Экономия ~ 40 pt вертикали vs текущая раскладка.
+
+### Source — короткий формат
+
+Текущий `SourceResolver` отдаёт строку вроде:
+
+```
+"Copied from Safari — OpenAI Platform Documentation"
+```
+
+Это полная форма. Для compact header — сокращаем:
+
+| Что есть | Compact display |
+|---|---|
+| app name + window title | `Safari "OpenAI Docs"` (window title в кавычках, truncate до 25 chars) |
+| только app name | `Safari` |
+| app name + длинный URL/path | `Safari "openai.com/docs..."` (truncate до 25, suffix `...`) |
+| nothing resolved | (ничего не отображаем — спейсер пустой между count и close) |
+
+Реализация в `SourceResolver`:
+
+```swift
+extension SourceResolver {
+    static func resolve(verbose: Bool = false) -> SourceInfo {
+        ...
+        let appShort = info.appName ?? info.bundleID?.components(separatedBy: ".").last?.capitalized ?? "Unknown"
+        let title = info.windowTitle ?? info.documentTitle
+        let titleShort = title.map { String($0.prefix(25)) + ($0.count > 25 ? "…" : "") }
+
+        info.compactSummary = titleShort.map { "\(appShort) \"\($0)\"" } ?? appShort
+        info.verboseSummary = title.map { "Copied from \(appShort) — \($0)" } ?? "Copied from \(appShort)"
+        return info
+    }
+}
+```
+
+В HUD header используется `compactSummary`. Verbose форма остаётся доступной для tooltip на hover header'а (если будет нужно). Также useful для Recent menu в Status item (правка #6 итерации 1).
+
+### Часть 2 — Close button (×)
+
+```
+                                                                       [×]
+```
+
+Кнопка крестик в правом верхнем углу header'а. **Always visible**, безусловно — не только когда HUD `залип`, а всегда. Это safety net пользователя: «всегда есть надёжный mouse-route чтобы убрать окно с экрана».
+
+**Поведение:**
+
+- **Клик** → закрыть HUD без commit (как `Esc`). Тот же путь что `hotkeyEngineDidCancel`.
+- **Hover** → курсор становится pointing-hand, иконка яркеет (secondaryLabelColor → primaryLabelColor).
+- **Не имеет keyboard shortcut** — Esc уже делает то же самое. Кнопка для **mouse-only пути** на случай keyboard race conditions.
+- **Не закрывает app/Quit** — только HUD. Status item остаётся, hotkey'и работают, следующий ⌥⌘V снова открывает.
+
+**Implementation:**
+
+```swift
+Button {
+    appDelegate.closeHUD(reason: .userCancel)
+} label: {
+    Image(systemName: "xmark.circle.fill")
+        .symbolRenderingMode(.hierarchical)
+        .font(.system(size: 14))
+        .foregroundStyle(.secondary)
+}
+.buttonStyle(.plain)
+.onHover { hovering in
+    NSCursor.pointingHand.set()  // или .arrow на out
+}
+.accessibilityLabel("Close DrPaste")
+.help("Close (Esc)")
+```
+
+`.symbolRenderingMode(.hierarchical)` даёт двух-tone visual: внешний круг secondary + крестик primary. Стандарт SF Symbols.
+
+Tooltip `"Close (Esc)"` — для discoverability что Esc делает то же самое.
+
+**Решает проблему «залипания» HUD.** В правке #12 итерации 2 (corner radius) могут быть race condition'ы где HUD не реагирует на keyboard. Close button — orthogonal путь через NSButton click handler, всегда работает.
+
+### Часть 3 — Content meta row (новая, лёгкая)
+
+Под header'ом (или встроена в preview pane header) — маленькая строка с metadata по focused item:
+
+```
+[icon] DrPaste · 47 · Safari "OpenAI Docs"                                [×]
+       Plain text · 245 words · 1.5 KB
+       ─────────────────────────────────────────────────
+       [preview pane: actual content]
+```
+
+Поле — secondaryLabelColor, 11 pt. Точки разделители ` · `. Левый padding выравнен с началом «DrPaste» (после icon column).
+
+### Что показываем для каждого типа
+
+| Semantic | Meta пример | Заметки |
+|---|---|---|
+| `.text` (plain) | `Plain text · 245 words · 1.5 KB` | word/char count |
+| `.richText` | `Rich text · 245 words · 12 KB · 3 styles` | "styles" = approximate distinct font/size combos |
+| `.url` | `URL · example.com` | хост из URL |
+| `.email` | `Email · hello@example.com` | full email |
+| `.json` | `JSON · 47 keys · 3.2 KB` | если parse'ится; "JSON · invalid · 3.2 KB" если нет |
+| `.code` | `Code · 184 lines · Swift` | language hint heuristic |
+| `.markdown` | `Markdown · 4 headings · 245 words` | |
+| `.table` | `Table · 12 rows · 5 cols` | детект через TSV/CSV split |
+| `.image` | `PNG · 1280 × 720 · 845 KB` | dimensions + format + size (из правки #13) |
+| `.pdf` | `PDF · 12 pages · 2.4 MB` | page count через CGPDFDocument |
+| `.files` | `5 files · 4.2 MB total` | расчёт через FileManager attributesOfItem |
+| `.unknown` | `Unknown · 2.1 KB` | только size |
+
+### Lazy computation + caching
+
+**Критическое требование:** не нагружать систему. Не должно тормозить если узнавание занимает заметное время.
+
+**Архитектура:**
+
+```swift
+struct ContentMeta {
+    let summary: String
+    let computedAt: Date
+}
+
+final class ContentMetaCache {
+    static let shared = ContentMetaCache()
+    private var cache: [UUID: ContentMeta] = [:]   // item.id → meta
+    private let queue = DispatchQueue(label: "DrPaste.ContentMeta", qos: .userInitiated)
+
+    func meta(for item: ClipboardItem, completion: @escaping (ContentMeta?) -> Void) {
+        if let cached = cache[item.id] {
+            completion(cached); return
+        }
+        queue.async {
+            let result = self.compute(for: item)
+            DispatchQueue.main.async {
+                self.cache[item.id] = result
+                completion(result)
+            }
+        }
+    }
+
+    func invalidate(for id: UUID) { cache.removeValue(forKey: id) }
+
+    private func compute(for item: ClipboardItem) -> ContentMeta? {
+        // Сам compute с timeout-budget'ом
+        let budget: TimeInterval = 0.05  // 50 ms
+        let start = Date()
+
+        switch item.semantic {
+        case .text:
+            return computeTextMeta(item, budget: budget, start: start)
+        case .json:
+            return computeJSONMeta(item, budget: budget, start: start)
+        case .image:
+            // Уже есть в ClipboardItem.originalImageSize/originalImageFileSize (правка #13)
+            return ContentMeta(summary: formatImageSummary(item), computedAt: Date())
+        // ...
+        }
+    }
+}
+```
+
+**Принципы:**
+
+1. **Compute только когда нужно** — при focusing на item в HUD, не при snapshot'е. Большинство items пользователь никогда не focus'ит → не тратим CPU зря.
+2. **Async + main thread completion** — UI рисует placeholder `…` пока meta вычисляется, обновляется когда придёт.
+3. **In-memory cache** — после первого compute meta живёт пока приложение запущено. По выходу — забывается. Не сохраняем в `index.json` (это derived data, можно пересчитать).
+4. **Cache invalidation** — при `deleteItem` (правка #14) убираем из кэша.
+5. **Budget time** — внутри compute функции отслеживаем `Date().timeIntervalSince(start)`; если приближаемся к budget'у — обрезаем работу и возвращаем partial result с суффиксом `~` или `+`.
+
+### Подробнее по типам
+
+**Plain text (`.text`)** — самый частый:
+
+```swift
+private func computeTextMeta(_ item: ClipboardItem, budget: TimeInterval, start: Date) -> ContentMeta {
+    let text = item.previewText ?? ""
+    let byteSize = text.utf8.count
+
+    // Малые тексты — точный count.
+    if text.count < 100_000 {
+        let words = text.split { $0.isWhitespace || $0.isNewline }.count
+        let chars = text.count
+        let lines = text.components(separatedBy: .newlines).count
+        return ContentMeta(summary: "Plain text · \(words) words · \(chars) chars · \(lines) lines", computedAt: Date())
+    }
+    // Большие — approximate через sampling.
+    let sample = text.prefix(10_000)
+    let sampleWords = sample.split { $0.isWhitespace || $0.isNewline }.count
+    let estimatedWords = Int(Double(sampleWords) * Double(text.count) / Double(sample.count))
+    return ContentMeta(summary: "Plain text · ~\(estimatedWords) words · \(formatBytes(byteSize))", computedAt: Date())
+}
+```
+
+100 KB — типичный threshold между instant и noticeable lag.
+
+**JSON (`.json`)** — наиболее затратный:
+
+```swift
+private func computeJSONMeta(_ item: ClipboardItem, budget: TimeInterval, start: Date) -> ContentMeta {
+    let text = item.previewText ?? ""
+    if text.utf8.count > 1_000_000 {
+        return ContentMeta(summary: "JSON · large (\(formatBytes(text.utf8.count)))", computedAt: Date())
+    }
+    guard let data = text.data(using: .utf8),
+          let json = try? JSONSerialization.jsonObject(with: data) else {
+        return ContentMeta(summary: "JSON · invalid · \(formatBytes(text.utf8.count))", computedAt: Date())
+    }
+    let topLevelKeys: Int
+    if let dict = json as? [String: Any] {
+        topLevelKeys = dict.count
+    } else if let arr = json as? [Any] {
+        topLevelKeys = arr.count
+    } else {
+        topLevelKeys = 0
+    }
+    let label = topLevelKeys > 0 ? "\(topLevelKeys) \(topLevelKeys == 1 ? "key" : "keys")" : "scalar"
+    return ContentMeta(summary: "JSON · \(label) · \(formatBytes(text.utf8.count))", computedAt: Date())
+}
+```
+
+1 MB — порог, выше которого даже не parse'им — slow для main thread.
+
+**Files (`.files`)**:
+
+```swift
+private func computeFilesMeta(_ item: ClipboardItem, budget: TimeInterval, start: Date) -> ContentMeta {
+    let paths = item.fileURLs ?? []
+    let count = paths.count
+    var totalBytes: Int64 = 0
+    let startTime = Date()
+    for path in paths {
+        if Date().timeIntervalSince(startTime) > budget { break }
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: path.path),
+           let size = attrs[.size] as? Int64 {
+            totalBytes += size
+        }
+    }
+    return ContentMeta(summary: "\(count) \(count == 1 ? "file" : "files") · \(formatBytes(Int(totalBytes))) total", computedAt: Date())
+}
+```
+
+`attributesOfItem` — синхронный, обычно < 1 ms на файл, но при сетевых mount'ах может быть slow. Budget защищает.
+
+**Image (`.image`)** — данные уже есть в `ClipboardItem` (originalImageSize / originalImageFileSize) от правки #13:
+
+```swift
+private func formatImageSummary(_ item: ClipboardItem) -> String {
+    let dims: String
+    if let size = item.originalImageSize {
+        dims = "\(Int(size.width)) × \(Int(size.height))"
+    } else {
+        dims = "?"
+    }
+    let bytes = item.originalImageFileSize.map(formatBytes) ?? "?"
+    let format = item.imageFormat ?? "image"
+    return "\(format) · \(dims) · \(bytes)"
+}
+```
+
+Instant — никаких heavy ops.
+
+**Code (`.code`)** — language detection через heuristic:
+
+```swift
+private func detectLanguage(_ text: String) -> String {
+    if text.contains("func ") && text.contains("var ") && text.contains("->") { return "Swift" }
+    if text.contains("def ") && text.contains(":") { return "Python" }
+    if text.contains("function ") || text.contains("=>") { return "JavaScript" }
+    if text.contains("public class") || text.contains("import java.") { return "Java" }
+    if text.contains("#include") && text.contains("std::") { return "C++" }
+    if text.contains("#include") { return "C" }
+    if text.contains("fn ") && text.contains("let ") { return "Rust" }
+    if text.contains("package ") && text.contains("func ") { return "Go" }
+    return "code"
+}
+```
+
+Грубая эвристика. Достаточно для UI hint. Точная детекция (через TreeSitter и подобные) — отдельная правка если будет нужно.
+
+### Размещение в UI
+
+Header'ом владеет HudView. Под header'ом (но над preview pane) — новый ContentMetaRow:
+
+```swift
+struct HudView: View {
+    ...
+    var body: some View {
+        VStack(spacing: 0) {
+            compactHeader            // одна строка
+            contentMetaRow           // одна строка, dynamic
+            Divider()
+            previewPane              // основной content
+            actionsBar
+            footerKeyhints
+        }
+    }
+
+    @ViewBuilder
+    private var contentMetaRow: some View {
+        HStack(spacing: 0) {
+            if let meta = state.contentMeta {
+                Text(meta.summary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            } else {
+                Text("…")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 2)
+    }
+}
+```
+
+При смене selection — `state.contentMeta = nil` (показывается «…»), запрос в `ContentMetaCache.shared.meta(for: item)`, по completion → `state.contentMeta = result`. SwiftUI rebuild'ит row реактивно.
+
+### Что не входит
+
+- **Per-tab content meta customization** — настраивать какие поля показывать для какого типа. Out of scope.
+- **Click on meta для drill-down** (например click на «12 pages» → preview всех страниц PDF). Out of scope.
+- **Live update meta** для items которые меняются (не наш кейс — clipboard items immutable после snapshot).
+- **Heavy analysis** (например `[Claude] explain content` в meta row) — это actions, не meta.
+
+### Зависимости
+
+- **Зависит от правки №13** (image metadata `originalImageSize` / `originalImageFileSize` уже в ClipboardItem).
+- **Зависит от правки №14** (deleteItem → invalidate meta cache).
+- **Зависит от существующего SourceResolver** (расширяется на compactSummary + verboseSummary).
+- Не имеет других зависимостей.
+
+### Размер изменений
+
+- `HUD.swift`: ~60 строк (compactHeader rewrite, close button, contentMetaRow view, HudState.contentMeta property)
+- `ClipboardModel.swift` (новый ContentMetaCache + helpers): ~120 строк
+- `SourceResolver.swift`: ~20 строк (compactSummary)
+- `AppDelegate`: ~10 строк (closeHUD wiring для button click + invalidate meta cache)
+
+Итого: ~210 строк Swift. Включая ~120 строк lazy compute logic — основная часть «не должно тормозить» требования.
+
+---
+
+## Правка №16 (iteration 2) — ⌥⌘X (Cut & Replace) bug: HUD «зависает» / не реагирует
+
+**Статус:** запланирована. Bug fix критичный для UX. ~120–180 строк защитного кода и state machine refactor.
+
+**Затрагивает:** `PasteSimulator.swift` (synthCut с правильной обработкой modifier'ов), `HotkeyEngine.swift` (фильтрация own synthetic events, atomic state machine вместо boolean), `AppDelegate` (cut&replace flow с verification + watchdog timeout).
+
+### Симптом
+
+При нажатии **⌥⌘X**:
+- Иногда работает корректно (selection вырезается, HUD открывается)
+- Иногда HUD «зависает» — не реагирует ни на стрелки, ни на Esc, ни на release ⌥⌘. Окно либо невидимое, либо visible но frozen
+- Нажатие **⌥⌘V** «отвисает» HUD — окно появляется в нормальном состоянии, дальше работает
+
+### Reproduction
+
+Помогает воспроизвести:
+- Быстрые повторные ⌥⌘X (несколько раз в секунду)
+- ⌥⌘X в приложениях с heavy main-thread (Slack во время загрузки канала, browsers во время рендера большого DOM)
+- ⌥⌘X при отсутствии selection (нечего вырезать)
+- ⌥⌘X сразу после resume from sleep
+- ⌥⌘X между monitor'ами разного DPI
+
+### Гипотезы корня
+
+**Гипотеза 1: Modifier state mixup при posting synthetic ⌘X.**
+
+Пользователь физически держит ⌥⌘. Мы посылаем CGEvent ⌘X — но физический ⌥ всё ещё down. Зависимо от того, как frontmost app читает modifier state (через `CGEvent.flags` или через `NSEvent.modifierFlags`), он может получить:
+
+- Наш synthetic event с `flags = .maskCommand` (хотим: чистый ⌘X)
+- Или системная модель flags = .maskCommand | .maskAlternate (физический ⌥ + наш synth ⌘) → app видит ⌥⌘X, не Cut
+
+При втором — app никак не реагирует (⌥⌘X у большинства приложений не bound), clipboard не обновляется, watcher не подхватывает, HUD открывается без нового item (или с пустой историей если был empty), state machine «думает» что HUD open, но визуально пустой / непонятный.
+
+**Гипотеза 2: Recursion — наш собственный synthetic ⌘X срабатывает наш же EventTap.**
+
+EventTap слушает все keyDown events глобально. Posting CGEvent ⌘X тоже keyDown event. Он может вернуться обратно в наш tap handler. Если он распознаётся как ⌥⌘X (см. Гипотезу 1 — модификаторы сливаются) — наш handler срабатывает recursively, вызывает второй cut+open flow, state machine путается.
+
+**Гипотеза 3: Race condition между simulateCut и openHUD.**
+
+Сейчас flow:
+
+```swift
+PasteSimulator.simulateCut()                          // posts ⌘X synth events
+DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+    self.openHUD()                                    // через 80 ms
+}
+```
+
+80 ms — эмпирическое число. На быстрой машине достаточно, но при загруженной системе app ещё не обработал ⌘X, clipboard.changeCount не успел измениться, watcher polls (0.5s) ещё не tick'нул → openHUD рендерит old state. Пользователь видит «не то».
+
+Плюс есть `watcher.forceTick()` который мы должны вызвать до openHUD — но если он сам блокирующий или возвращает рано — openHUD рендерит stale.
+
+**Гипотеза 4: HUD opens но не становится visible.**
+
+NSPanel.orderFront может silently fail если другое app перехватило focus в момент open. Особенно при focus stealing protection в macOS. State machine помечает `hudIsActive = true`, EventTap дальше intercept'ит все клавиши, но пользователь не видит окна → keystroke'и проглатываются «в чёрную дыру».
+
+**Гипотеза 5: HUD флэшит и сразу закрывается.**
+
+Один из этих flow:
+- HUD opens → user release'ит ⌥⌘ слишком быстро → release-handler думает что commit → закрывает HUD без визуального feedback.
+- Карбон-engine vs EventTap-engine конфликт — оба пытаются обрабатывать release одновременно.
+
+### Многослойный fix
+
+**Слой 1: правильная обработка modifier'ов при synthetic ⌘X**
+
+В `PasteSimulator.simulateCut`:
+
+```swift
+static func simulateCut() {
+    let src = CGEventSource(stateID: .combinedSessionState)
+    src?.setLocalEventsFilterDuringSuppressionState(
+        [], state: .eventSuppressionStateRemoteMouseDrag)
+
+    // 1. Сохраняем текущее физическое состояние модификаторов через NSEvent
+    let wereOptHeld = NSEvent.modifierFlags.contains(.option)
+
+    // 2. Если ⌥ физически зажат — "приподнимаем" его programmatically на время synth
+    if wereOptHeld {
+        let optUp = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_Option), keyDown: false)
+        optUp?.flags = []
+        optUp?.post(tap: .cghidEventTap)
+        Thread.sleep(forTimeInterval: 0.005)  // 5 ms settling
+    }
+
+    // 3. Posting ⌘X
+    let cmdDown = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_Command), keyDown: true)
+    cmdDown?.flags = .maskCommand
+    let xDown = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_X), keyDown: true)
+    xDown?.flags = .maskCommand
+    let xUp = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_X), keyDown: false)
+    xUp?.flags = .maskCommand
+    let cmdUp = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_Command), keyDown: false)
+
+    // Mark events as ours so EventTap не recursively обработает
+    [cmdDown, xDown, xUp, cmdUp].forEach { event in
+        event?.setIntegerValueField(.eventSourceUserData, value: DrPasteSyntheticMarker)
+    }
+
+    cmdDown?.post(tap: .cghidEventTap)
+    xDown?.post(tap: .cghidEventTap)
+    xUp?.post(tap: .cghidEventTap)
+    cmdUp?.post(tap: .cghidEventTap)
+
+    // 4. Восстанавливаем ⌥ down (если был up'нут в шаге 2)
+    if wereOptHeld {
+        Thread.sleep(forTimeInterval: 0.005)
+        let optDown = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_Option), keyDown: true)
+        optDown?.flags = .maskAlternate
+        optDown?.post(tap: .cghidEventTap)
+    }
+}
+
+private let DrPasteSyntheticMarker: Int64 = 0x44525041535445  // "DRPASTE" ASCII
+```
+
+Это **гарантирует app видит чистый ⌘X**, не ⌥⌘X.
+
+Опционально: использовать `CGEventSource(stateID: .privateState)` чтобы наши events не сливались с физическим keyboard state. Но `.privateState` имеет свои edge cases — некоторые apps игнорируют события из non-combined source.
+
+**Слой 2: фильтрация собственных synthetic events в EventTap**
+
+```swift
+private func handle(event: CGEvent) -> Unmanaged<CGEvent>? {
+    // Проверяем marker
+    let userData = event.getIntegerValueField(.eventSourceUserData)
+    if userData == DrPasteSyntheticMarker {
+        return Unmanaged.passUnretained(event)  // skip, не наш business
+    }
+    // ... остальной handler
+}
+```
+
+Это **разрывает recursion** — наши synthetic ⌘X / ⌘V / ⌘C никогда не интерпретируются нашим же кодом как hotkey.
+
+**Слой 3: atomic state machine вместо boolean**
+
+Сейчас `hudIsActive: Bool` — не отражает intermediate states.
+
+```swift
+enum HudPhase {
+    case idle           // HUD not active
+    case opening        // openHUD called, awaiting visibility
+    case open           // HUD visible, user navigating
+    case closing        // commit/cancel in progress
+}
+
+@MainActor
+final class HudStateMachine {
+    private(set) var phase: HudPhase = .idle
+    private var openingDeadline: Date?
+
+    func transition(to next: HudPhase) {
+        // Логирование, валидация переходов
+        let valid: Bool
+        switch (phase, next) {
+        case (.idle, .opening), (.opening, .open), (.opening, .idle),
+             (.open, .closing), (.closing, .idle):
+            valid = true
+        default:
+            valid = false
+        }
+        guard valid else {
+            log("Invalid transition: \(phase) → \(next)")
+            return
+        }
+        phase = next
+        if next == .opening {
+            openingDeadline = Date().addingTimeInterval(0.5)  // 500ms watchdog
+        } else {
+            openingDeadline = nil
+        }
+    }
+
+    func tickWatchdog() {
+        // Каждые 100 ms на main loop проверяем не застряли ли в .opening
+        if phase == .opening, let deadline = openingDeadline, Date() > deadline {
+            log("HUD opening stuck > 500ms, force reset to .idle")
+            transition(to: .idle)
+            // Notify HotkeyEngine что HUD больше не active
+            hotkeyEngine.setHudActive(false)
+        }
+    }
+}
+```
+
+В EventTap логика проверки `hudIsActive` заменяется на:
+
+```swift
+let isActive = stateMachine.phase == .open
+// или для full handling
+let interceptInput = stateMachine.phase == .open || stateMachine.phase == .closing
+```
+
+Watchdog запускается на main loop через timer 100 ms (lightweight). Если transition в `.opening` зависает > 500 ms — auto-reset в `.idle`, EventTap прекращает intercept, пользователь может нормально печатать.
+
+**Слой 4: HUD visibility verification**
+
+После `openHUD()`:
+
+```swift
+private func openHUD() {
+    stateMachine.transition(to: .opening)
+    hudPanel?.orderFront(nil)
+    hudPanel?.makeKey()
+
+    // Verify через 50 ms что окно реально появилось
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+        if let panel = self.hudPanel, panel.isVisible {
+            self.stateMachine.transition(to: .open)
+        } else {
+            // Окно не появилось — retry или закрыть state
+            self.log("HUD orderFront did not produce visible window")
+            self.stateMachine.transition(to: .idle)
+            // Опционально retry один раз
+            self.hudPanel?.orderFront(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                if let panel = self.hudPanel, panel.isVisible {
+                    self.stateMachine.transition(to: .opening)
+                    self.stateMachine.transition(to: .open)
+                }
+            }
+        }
+    }
+}
+```
+
+Двух-stage check + retry — защита от focus stealing protection.
+
+**Слой 5: cut & replace flow с clipboard change verification**
+
+Сейчас:
+
+```swift
+PasteSimulator.simulateCut()
+DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { openHUD() }
+```
+
+Меняется на event-driven verification:
+
+```swift
+nonisolated func hotkeyEngineDidSummon(reason: SummonReason) {
+    Task { @MainActor in
+        guard reason == .cutAndReplace else {
+            self.openHUD()
+            return
+        }
+        let before = NSPasteboard.general.changeCount
+        PasteSimulator.simulateCut()
+
+        // Poll до 250 ms ждём изменение clipboard
+        let pollStart = Date()
+        let pollInterval: TimeInterval = 0.02
+        while Date().timeIntervalSince(pollStart) < 0.25 {
+            try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+            if NSPasteboard.general.changeCount > before {
+                // Cut сработал
+                self.watcher.forceTick()
+                self.openHUD()
+                return
+            }
+        }
+
+        // Timeout — cut не сработал (нет selection / app blocked)
+        SoundFeedback.play(.copyFailure)
+        // НЕ открываем HUD, не оставляем state в ожидании
+        // Юзер сам поймёт что nothing happened
+    }
+}
+```
+
+Это решает:
+- **Empty selection case** — cut ничего не сделал, HUD не открывается зря.
+- **Loaded app case** — ждём до 250 ms пока app обработает ⌘X, не 80 ms heuristic.
+- **State leak** — если cut не сработал, не зависаем в .opening.
+
+### Diagnostic logging
+
+Для будущих bug reports — лог state transitions, modifier checks, и synthetic event posting:
+
+```swift
+private let logFile = FileHandle... // ~/Library/Logs/DrPaste/diagnostic.log
+
+enum DiagLog {
+    static func log(_ message: String, level: Level = .info) {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let line = "[\(timestamp)] \(level) \(message)\n"
+        // ... запись с rotation
+    }
+}
+```
+
+С пунктом в Settings → General → Diagnostics:
+- `☐ Enable diagnostic logging` (default off — иначе spam)
+- `[Show diagnostic log…]` — открывает файл в Console.app или Finder
+
+Включается только когда пользователь явно репортит баг.
+
+### Что не входит
+
+- **AX-based cut implementation** (вместо CGEvent simulation) — более radical refactor. Делаем CGEvent fix первым, AX как fallback если CGEvent остаётся flaky.
+- **Replay attempt при failure** — если cut не сработал, не пробуем ещё раз через 200 ms. Просто silent fail + sound. Retries — отдельная правка.
+- **Different timeout** для different apps — некоторые apps медленнее (Slack может > 300 ms). 250 ms покрывает 95% случаев, остальные просто silent fail.
+- **Visual feedback на cut failure** в menu bar icon — статус item не флэшит при failure. Только sound. Visual flash — отдельная правка если будет нужно.
+
+### Зависимости
+
+- **Связана с правкой №9 итерации 1** (Full vs Limited Mode) — фиксы должны работать в обоих engine'ах. CarbonHotKey не имеет recursion-проблемы (не глобальный sniffer), но modifier-state и race conditions те же.
+- **Использует** `SoundFeedback.play(.copyFailure)` из правки #10 итерации 1 — добавляет cue для silent failures.
+- **Орthогонально** правке #14 (Backspace delete) — bugs независимые.
+
+### Размер изменений
+
+- `PasteSimulator.swift`: ~60 строк (modifier handling + event marker)
+- `HotkeyEngine.swift`: ~40 строк (event filter + state machine integration)
+- Новый `HudStateMachine.swift`: ~80 строк (atomic transitions + watchdog timer)
+- `AppDelegate`: ~50 строк (verified open + poll-based cut flow)
+- Опциональный `DiagLog.swift`: ~40 строк (если включаем diagnostic logging)
+
+Итого: ~230 Swift + diagnostic logging опционально.
 
 ---
 

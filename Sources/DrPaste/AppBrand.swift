@@ -15,11 +15,10 @@ import SwiftUI
 
 enum AppBrand {
     static let name: String = "DrPaste"
-    static let version: String = "0.1.0"
+    static let version: String = "0.4.0"
     static let tagline: String = "Press, browse, paste — the Paste gesture, extended"
 
-    static let githubURL = "https://github.com/iLya-Os/DrPaste"
-    static let supportURL = "https://github.com/iLya-Os/DrPaste/issues"
+    static let githubURL = "https://github.com/ilya000/DrPaste"
 
     /// Цветная иконка для HUD header / About panel.
     static var nsIcon: NSImage {
@@ -79,8 +78,6 @@ enum AppBrand {
 
         // Clickable links
         appendLink(to: body, label: "Source code", url: githubURL)
-        body.append(NSAttributedString(string: "\n"))
-        appendLink(to: body, label: "Support", url: supportURL)
         body.append(NSAttributedString(string: "\n\n"))
 
         body.append(NSAttributedString(string: "Acknowledgements\n", attributes: [
