@@ -131,10 +131,12 @@ final class TransformationRuntimeTests: XCTestCase {
     }
 
     func testWordCountFormats() throws {
+        // "one two three\nfour five" — characters count is 23
+        // (4 + 4 + 5 + 1 newline + 5 + 4).
         let out = try TransformationRuntime.apply(engine: .wordCount,
                                                   input: "one two three\nfour five",
                                                   params: [:])
-        XCTAssertEqual(out, "5 words, 22 characters, 2 lines")
+        XCTAssertEqual(out, "5 words, 23 characters, 2 lines")
     }
 
     // MARK: - JSON

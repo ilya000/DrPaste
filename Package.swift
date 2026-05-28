@@ -13,16 +13,11 @@ let package = Package(
             resources: [
                 .process("Resources")
             ]
+        ),
+        .testTarget(
+            name: "DrPasteTests",
+            dependencies: ["DrPaste"],
+            path: "Tests/DrPasteTests"
         )
-        // Test target temporarily disabled — requires full Xcode.app for XCTest
-        // module (Command Line Tools alone don't ship it reliably). Tests live
-        // in Tests/DrPasteTests/ and are ready to run on any machine with
-        // Xcode installed; re-enable this section when iterating on tests:
-        //
-        // ,.testTarget(
-        //     name: "DrPasteTests",
-        //     dependencies: ["DrPaste"],
-        //     path: "Tests/DrPasteTests"
-        // )
     ]
 )
