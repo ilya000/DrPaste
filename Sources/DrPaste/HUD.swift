@@ -6,12 +6,11 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  HUD overlay — единая imp для gesture и summon mode (отличаются только
-//  styleMask панели + Limited Mode banner). Поддержка ApplyOutcome.failed
-//  через inline notice (Backlog #2), source label под header (Backlog #1),
-//  AttributedString rich text preview (Правка #3), accent через NSColor,
-//  font scaling, dynamic visibleRowCount + chevrons, scroll actions с
-//  автоцентрированием.
+//  HUD overlay — single implementation for both gesture and summon modes
+//  (only the panel styleMask and the Limited Mode banner differ). Renders an
+//  inline notice for ApplyOutcome.failed, the source label under the header,
+//  AttributedString rich-text preview, system accent colors, font scaling,
+//  dynamic visibleRowCount with chevrons, and an auto-centering action row.
 //
 
 import AppKit
@@ -27,18 +26,18 @@ final class HudState: ObservableObject {
     @Published var actionIndex: Int = 0
     @Published var actions: [ClipboardAction] = []
 
-    /// Последний результат action.apply — драйвит preview и UI failure notice.
+    /// Most recent action.apply result — drives the preview and the inline failure notice.
     @Published var outcome: ApplyOutcome? = nil
     @Published var isPreviewLoading: Bool = false
     @Published var mode: HudMode = .gesture
     @Published var engineLabel: String = ""
 
-    /// Content meta для focused item — лениво вычисляется через ContentMetaCache (Правка #15).
+    /// Content meta for the focused item — computed lazily via ContentMetaCache.
     @Published var contentMeta: String? = nil
 
-    /// Optional provider — позволяет HUD получить custom title для action
-    /// (правка #6 lite — пользователь может переименовать built-in).
-    /// Закладывается через AppDelegate.showPanel при создании view.
+    /// Optional provider that lets the HUD look up a user-customized title for
+    /// an action (built-ins can be renamed). Wired in by AppDelegate.showPanel
+    /// when the view is created.
     var actionTitleProvider: ((String, String) -> String)? = nil
 
     private static let fontScaleKey = "drpaste.hud.fontScale"
@@ -93,9 +92,9 @@ final class HudPanel: NSPanel {
     override var canBecomeKey: Bool { allowsKey }
     override var canBecomeMain: Bool { false }
 
-    // Правка #12: defensive corner radius — re-apply при каждом layout,
-    // recursively на subview'ы (vibrant material имеет собственный layer).
-    // cornerCurve = .continuous даёт Apple-style squircle.
+    // Defensive corner radius: re-apply on every layout, recursively over
+    // subviews (vibrant material owns its own layer). cornerCurve = .continuous
+    // gives the Apple-style squircle.
     override func layoutIfNeeded() {
         super.layoutIfNeeded()
         applyRoundedCorners()
@@ -137,11 +136,11 @@ final class HudHostingView<Content: View>: NSHostingView<Content> {
 
 struct HudView: View {
     @ObservedObject var state: HudState
-    let onPick: (Int, Int) -> Void               // (itemIdx, actionIdx) — обновить preview
+    let onPick: (Int, Int) -> Void               // (itemIdx, actionIdx) — refresh the preview
     let onCommit: () -> Void                      // release / Enter / dbl-click
     let onOpenAccessibility: () -> Void
     let onRecoveryAction: (RecoveryAction) -> Void
-    let onClose: () -> Void                       // Правка #15: close button mouse-route
+    let onClose: () -> Void                       // routed from the header close button
 
     @State private var hoveredItemID: UUID? = nil
     @State private var hoveredActionID: String? = nil
@@ -172,7 +171,7 @@ struct HudView: View {
         .frame(width: 720, height: state.mode == .summon ? 440 : 400)
     }
 
-    // MARK: header (Правка #15 — компактная одна строка + close button)
+    // MARK: header — compact single row plus a close button
 
     private var compactHeader: some View {
         HStack(spacing: 6) {
@@ -221,7 +220,7 @@ struct HudView: View {
         }
     }
 
-    /// Краткая форма source: app + window title (truncate до 25 char)
+    /// Short form of the source: app + window title (truncated to 25 chars).
     private var compactSourceLabel: String? {
         guard let item = state.currentItem else { return nil }
         guard let app = item.sourceAppName ?? item.sourceBundleID?
@@ -234,8 +233,8 @@ struct HudView: View {
         return app
     }
 
-    /// Relative timestamp ("just now", "5m ago", "2h ago") для recent items,
-    /// absolute date/time для старых (>1 day). Tooltip всегда показывает полную дату.
+    /// Relative timestamp ("just now", "5m ago", "2h ago") for recent items,
+    /// absolute date/time for older items (>1 day). Tooltip always shows the full date.
     private var compactTimestampLabel: String? {
         guard let item = state.currentItem else { return nil }
         let interval = Date().timeIntervalSince(item.createdAt)
@@ -247,14 +246,14 @@ struct HudView: View {
             let days = Int(interval / 86400)
             return "\(days)d ago"
         }
-        // Старше недели — точная дата
+        // Older than a week — show the exact date.
         let formatter = DateFormatter()
         formatter.dateStyle = .short
         formatter.timeStyle = .none
         return formatter.string(from: item.createdAt)
     }
 
-    /// Полный timestamp для tooltip на hover (всегда абсолютный).
+    /// Full timestamp shown in the hover tooltip (always absolute).
     private var absoluteTimestampLabel: String? {
         guard let item = state.currentItem else { return nil }
         let formatter = DateFormatter()
@@ -263,8 +262,8 @@ struct HudView: View {
         return "Copied \(formatter.string(from: item.createdAt))"
     }
 
-    /// Content meta row (Правка #15 — небольшая строка с metadata о focused item).
-    /// Расположена непосредственно над preview pane, в правой колонке content area.
+    /// Content meta row — a small line with metadata about the focused item.
+    /// Sits directly above the preview pane in the right column of the content area.
     private var contentMetaRow: some View {
         HStack(spacing: 0) {
             if let meta = state.contentMeta {
@@ -301,7 +300,7 @@ struct HudView: View {
                 historyColumn.frame(width: 260, alignment: .leading)
                 Divider().opacity(0.2)
                 VStack(alignment: .leading, spacing: 4) {
-                    contentMetaRow                  // meta теперь NAD preview pane
+                    contentMetaRow                  // meta row above the preview pane
                     previewPane
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
@@ -401,7 +400,7 @@ struct HudView: View {
     @ViewBuilder
     private var previewPane: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Failure notice сверху если outcome.failed (Backlog #2)
+            // Failure notice on top when outcome is .failed.
             if case .failed(_, let reason, let recovery) = state.outcome {
                 failureNotice(reason: reason, recovery: recovery)
             }
@@ -428,8 +427,8 @@ struct HudView: View {
 
     @ViewBuilder
     private var previewContent: some View {
-        // Все случаи показывают item content. Failed/side-effect/alternativeCommit
-        // показывают original — пользователь видит что было бы вставлено.
+        // Every outcome renders item content. Failed / sideEffect / alternativeCommit
+        // show the original so the user sees what would actually be pasted.
         let item: ClipboardItem? = {
             switch state.outcome {
             case .preview(let i):                return i
@@ -451,16 +450,17 @@ struct HudView: View {
                     .font(.system(size: sz(12), design: .monospaced))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.disabled)
-                    .padding(.horizontal, 6)        // защита от corner-radius clipping
+                    .padding(.horizontal, 6)        // safeguard against corner-radius clipping
                     .padding(.vertical, 2)
             }
         case .richText:
-            ScrollView {
-                richTextView(item)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-            }
+            // RichTextPreviewView wraps its own NSScrollView; nesting it inside a
+            // SwiftUI ScrollView collapses it to zero height because the parent
+            // gives infinite height to a child that reports zero intrinsic size.
+            richTextView(item)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
         case .image, .pdf:
             ImagePreview(item: item)
                 .padding(.horizontal, 6)
@@ -487,7 +487,7 @@ struct HudView: View {
     }
 
     private func filesList(_ item: ClipboardItem) -> [String]? {
-        // Парсим из representations или previewText
+        // Parse from representations or previewText.
         if item.semantic == .files, let s = item.previewText {
             return s.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
         }
@@ -642,18 +642,20 @@ struct HudView: View {
         return BuiltinActionIcons.iconName(for: action.id)
     }
 
-    /// Provider badge for AI actions (#9). Returns label, color, and SF Symbol.
+    /// Provider badge for AI actions. Returns label, color, and SF Symbol.
+    /// Resolves dynamically — actions with empty / nil providerID follow the current default.
     private func providerBadge(for action: ClipboardAction)
         -> (label: String, color: Color, icon: String)?
     {
         guard let ai = action as? AIAction else { return nil }
-        // Resolve provider kind через registry
         let resolvedKind: ProviderKind? = {
-            if let id = ai.providerID,
+            if let id = ai.providerID, !id.isEmpty,
                let cp = AIProviderRegistry.shared.config.providers.first(where: { $0.id == id }) {
                 return cp.kind
             }
+            // Fall through to default provider for nil / empty providerID.
             if let defaultID = AIProviderRegistry.shared.config.defaultProviderID,
+               !defaultID.isEmpty,
                let cp = AIProviderRegistry.shared.config.providers.first(where: { $0.id == defaultID }) {
                 return cp.kind
             }
@@ -681,7 +683,7 @@ struct HudView: View {
         HStack(spacing: 12) {
             keyHint("↑↓", "history")
             keyHint("←→", "actions")
-            keyHint("⌫", "delete")             // Правка #14
+            keyHint("⌫", "delete")
             if state.mode == .gesture {
                 keyHint("release", "paste")
             } else {
@@ -744,9 +746,9 @@ struct VisualEffect: NSViewRepresentable {
 
 // MARK: - Image preview
 
-/// Provider badge (#9, #10) — маленький SF Symbol icon слева от title в action chip.
-/// Использует branded color provider'а. Параметр text оставлен для совместимости (показывается
-/// в Settings tooltip).
+/// Provider badge — a small SF Symbol icon shown to the left of the title in
+/// the action chip. Uses the provider's branded color. The `text` parameter
+/// is kept for backward compatibility and is shown in the Settings tooltip.
 struct ProviderBadgeView: View {
     let text: String
     let color: Color
@@ -763,19 +765,74 @@ struct ProviderBadgeView: View {
     }
 }
 
-/// Image preview pane (Правка #13) — thumbnail + constraints + dimensions label.
-/// Никогда не рендерит full-size NSImage — только cached thumbnail (max 600 pt).
+/// Image preview pane — thumbnail with size constraints and a dimensions label.
+/// Never renders the full-size NSImage; uses the cached thumbnail (max 600 pt).
 struct ImagePreview: View {
     let item: ClipboardItem
 
-    /// #8 fix: загружаем через Data (а не NSImage(contentsOf:)) чтобы обходить
-    /// NSImage URL-cache. Это критично для transformed items (grayscale/invert/etc) —
-    /// новый файл может иметь тот же URL-like ключ, NSImage возвращает stale.
+    /// Load via Data (not NSImage(contentsOf:)) to bypass the NSImage URL cache.
+    /// This matters for transformed items (grayscale/invert/etc.) — a new file
+    /// can have the same URL-like key and NSImage would otherwise return stale data.
+    ///
+    /// For .pdf items captured before the on-snapshot thumbnail render was
+    /// added: if `previewImageRel` is missing, fall back to rendering the first
+    /// page lazily here. Result is cached in imagesDir under a deterministic
+    /// name keyed on the PDF blob path so subsequent renders are instant.
     private var loadedImage: NSImage? {
-        guard let rel = item.previewImageRel,
-              let data = try? Data(contentsOf: AppStorage.imagesDir.appendingPathComponent(rel))
+        if let rel = item.previewImageRel,
+           let data = try? Data(contentsOf: AppStorage.imagesDir.appendingPathComponent(rel)) {
+            return NSImage(data: data)
+        }
+        if item.semantic == .pdf {
+            return lazyPDFThumbnail()
+        }
+        return nil
+    }
+
+    private func lazyPDFThumbnail() -> NSImage? {
+        guard let rel = item.representations["com.adobe.pdf"] else { return nil }
+        let pdfURL = AppStorage.blobsDir.appendingPathComponent(rel)
+        let cacheURL = AppStorage.imagesDir.appendingPathComponent(rel + ".thumb.png")
+        // Hit the deterministic per-PDF cache first.
+        if let data = try? Data(contentsOf: cacheURL), let img = NSImage(data: data) {
+            return img
+        }
+        guard let pdfData = try? Data(contentsOf: pdfURL) else { return nil }
+        return renderPDFInline(data: pdfData, cacheTo: cacheURL)
+    }
+
+    /// First-page render that writes the resulting PNG to `cacheURL` so
+    /// subsequent loads short-circuit.
+    private func renderPDFInline(data: Data, cacheTo cacheURL: URL) -> NSImage? {
+        guard let provider = CGDataProvider(data: data as CFData),
+              let doc = CGPDFDocument(provider),
+              let page = doc.page(at: 1)
         else { return nil }
-        return NSImage(data: data)
+        let pageRect = page.getBoxRect(.cropBox)
+        guard pageRect.width > 0, pageRect.height > 0 else { return nil }
+        let maxSide: CGFloat = 600
+        let scale = min(maxSide / pageRect.width, maxSide / pageRect.height, 2.0)
+        let targetSize = CGSize(width: pageRect.width * scale,
+                                height: pageRect.height * scale)
+        let cs = CGColorSpaceCreateDeviceRGB()
+        let bi = CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let ctx = CGContext(data: nil,
+                                  width: Int(targetSize.width),
+                                  height: Int(targetSize.height),
+                                  bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: cs, bitmapInfo: bi)
+        else { return nil }
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fill(CGRect(origin: .zero, size: targetSize))
+        ctx.interpolationQuality = .high
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.translateBy(x: -pageRect.origin.x, y: -pageRect.origin.y)
+        ctx.drawPDFPage(page)
+        guard let cg = ctx.makeImage() else { return nil }
+        let rep = NSBitmapImageRep(cgImage: cg)
+        guard let png = rep.representation(using: .png, properties: [:]) else { return nil }
+        try? png.write(to: cacheURL)
+        return NSImage(data: png)
     }
 
     var body: some View {

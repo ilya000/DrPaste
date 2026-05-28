@@ -6,9 +6,9 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Keychain-based API key storage (Правка #4).
-//  kSecAttrSynchronizable: false по умолчанию — sync через iCloud Keychain
-//  включается в Правке #11 когда подпишемся и реализуем iCloud sync.
+//  Keychain-backed API key storage with a plain-JSON fallback for unsigned
+//  builds. kSecAttrSynchronizable defaults to false; iCloud Keychain sync is
+//  reserved for when the app ships signed.
 //
 
 import Foundation
@@ -20,12 +20,40 @@ enum APIKeyStorage {
         AppStorage.dataDir.appendingPathComponent("provider-keys-fallback.json")
     }
 
-    /// Сохранить API key. Сначала пытается Keychain (best practice),
-    /// fallback на plain JSON file если Keychain недоступен (unsigned build, sandbox issues).
-    /// JSON файл — не идеально но позволяет dev-сборкам работать.
+    /// UserDefaults key for the "skip Keychain" preference. When true, all
+    /// save / load / remove operations route through the plain-JSON fallback
+    /// file and Keychain is never touched. Default false (Keychain first).
+    static let fallbackOnlyDefaultsKey = "drpaste.api_keys.use_fallback_only"
+
+    /// True when the user has chosen to bypass Keychain entirely. Reads the
+    /// flag on every access so toggling in Settings takes effect immediately.
+    ///
+    /// Rationale: unsigned builds suffer a Keychain login-password prompt on
+    /// every binary hash change (i.e. every rebuild) because Keychain's ACL
+    /// is tied to the calling app's code signature. With this flag set, keys
+    /// live at `~/Library/Application Support/DrPaste/provider-keys-fallback.json`
+    /// with 0o600 (user-only) file permissions — same protection level as
+    /// `~/.aws/credentials` or `~/.kube/config`. Acceptable for local-personal
+    /// use; switch back to Keychain once the app ships signed and notarized.
+    static var fallbackOnly: Bool {
+        UserDefaults.standard.bool(forKey: fallbackOnlyDefaultsKey)
+    }
+
+    static func setFallbackOnly(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: fallbackOnlyDefaultsKey)
+    }
+
+    /// Saves an API key. Tries Keychain first (best practice). Falls back to a
+    /// plain JSON file when Keychain is unavailable (unsigned builds, sandbox
+    /// issues). The JSON file is not ideal but lets development builds work.
     @discardableResult
     static func save(_ key: String, for providerID: String, syncToICloud: Bool = false) -> Bool {
         guard !key.isEmpty else { return false }
+        // Skip Keychain entirely when the user opted out of it (e.g. unsigned
+        // build to avoid the per-launch password prompt).
+        if fallbackOnly {
+            return saveFallback(key, for: providerID)
+        }
         let data = Data(key.utf8)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -42,17 +70,22 @@ enum APIKeyStorage {
             : kSecAttrAccessibleWhenUnlocked
         let status = SecItemAdd(add as CFDictionary, nil)
         if status == errSecSuccess {
-            // Если Keychain принял — удалим fallback запись если она была
+            // Keychain accepted the key — drop any stale fallback entry.
             removeFallback(providerID: providerID)
             return true
         }
-        // Fallback на plain JSON
+        // Fall back to plain JSON.
         NSLog("DrPaste: Keychain save failed (status \(status)), using fallback file storage.")
         return saveFallback(key, for: providerID)
     }
 
-    /// Прочитать API key из Keychain, fallback на JSON file.
+    /// Reads an API key from Keychain, falling back to the JSON file.
+    /// When the user has opted out of Keychain (`fallbackOnly == true`), only
+    /// the JSON file is consulted so no Keychain ACL prompt can fire.
     static func load(for providerID: String) -> String? {
+        if fallbackOnly {
+            return loadFallback(providerID: providerID)
+        }
         for sync in [false, true] {
             let query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
@@ -72,9 +105,16 @@ enum APIKeyStorage {
         return loadFallback(providerID: providerID)
     }
 
-    /// Удалить ключ из Keychain (обе варианта sync) + fallback file.
+    /// Removes the key from Keychain (both sync variants) and from the fallback file.
+    /// In fallback-only mode the Keychain delete is skipped — Keychain access
+    /// from an unsigned binary triggers the same password prompt we are
+    /// trying to avoid.
     @discardableResult
     static func remove(for providerID: String) -> Bool {
+        if fallbackOnly {
+            removeFallback(providerID: providerID)
+            return true
+        }
         var anyRemoved = false
         for sync in [false, true] {
             let query: [String: Any] = [
@@ -90,7 +130,7 @@ enum APIKeyStorage {
         return anyRemoved
     }
 
-    // MARK: - JSON fallback (для unsigned builds где Keychain недоступен)
+    // MARK: - JSON fallback (used by unsigned builds where Keychain is unavailable)
 
     private static func readFallbackMap() -> [String: String] {
         guard let data = try? Data(contentsOf: fallbackURL),

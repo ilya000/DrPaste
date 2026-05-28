@@ -6,28 +6,29 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  ClipboardAction protocol + ApplyOutcome enum (Backlog #2) +
-//  base local actions. Дополнительные categorized actions —
-//  в FileActions.swift, URLActions.swift, TextActions.swift,
-//  JSONActions.swift, TableActions.swift, MarkdownActions.swift,
-//  CodeActions.swift, ImageActions.swift.
+//  ClipboardAction protocol + ApplyOutcome enum + base local actions.
+//  Categorized actions live in FileActions.swift, URLActions.swift,
+//  TextActions.swift, JSONActions.swift, TableActions.swift,
+//  MarkdownActions.swift, CodeActions.swift, ImageActions.swift.
 //
 
 import Foundation
 
-// MARK: - Outcome model (Backlog #2 + #4 + #7)
+// MARK: - Outcome model
 
 enum ApplyOutcome {
-    /// Обычная transformation — preview обновляется, на commit пишется в pasteboard и paste-ится.
+    /// Standard transformation — the HUD preview is refreshed; on commit the
+    /// result is written to the pasteboard and pasted.
     case preview(ClipboardItem)
-    /// Action не смог применить (нет AI key, malformed input, требует AX).
-    /// HUD показывает original + inline notice с reason и optional recovery action.
-    /// На commit пишется original (paste-as-is).
+    /// Action could not run (missing AI key, malformed input, AX required).
+    /// HUD shows the original plus an inline notice with the reason and an
+    /// optional recovery action. On commit the original is written (paste-as-is).
     case failed(original: ClipboardItem, reason: String, recovery: RecoveryAction?)
-    /// Side-effect (Reveal in Finder, Open URL) — на commit выполняется action и закрывается HUD.
+    /// Side effect (Reveal in Finder, Open URL). On commit the closure runs
+    /// and the HUD closes.
     case sideEffect(description: String, perform: () -> Void)
-    /// Alternative commit (Type Slowly, в будущем typeFast) — на commit вместо ⌘V
-    /// запускается специальный simulator.
+    /// Alternative commit (Type Slowly, and later typeFast). On commit the
+    /// platform-specific simulator runs instead of ⌘V.
     case alternativeCommit(ClipboardItem, style: CommitStyle)
 }
 
@@ -71,8 +72,8 @@ func makeTextItem(_ text: String, from item: ClipboardItem) -> ClipboardItem {
     var copy = item
     copy.semantic = .text
     copy.previewText = text
-    // Empty representations — PasteboardWriter использует fallback на previewText
-    // (это transformed item, raw representations устарели).
+    // Empty representations cause PasteboardWriter to fall back to previewText
+    // — this is a transformed item, the raw representations are stale.
     copy.representations = [:]
     copy.typesOrdered = []
     copy.previewImageRel = nil
@@ -97,45 +98,9 @@ struct CleanFormattingAction: ClipboardAction {
     }
 }
 
-struct UppercaseAction: ClipboardAction {
-    let id = "builtin.uppercase"
-    let title = "UPPERCASE"
-    let isLocal = true
-    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        context.contains(.plain)
-    }
-    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        .preview(makeTextItem((item.previewText ?? "").uppercased(), from: item))
-    }
-}
-
-struct LowercaseAction: ClipboardAction {
-    let id = "builtin.lowercase"
-    let title = "lowercase"
-    let isLocal = true
-    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        context.contains(.plain)
-    }
-    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        .preview(makeTextItem((item.previewText ?? "").lowercased(), from: item))
-    }
-}
-
-struct TrimWhitespaceAction: ClipboardAction {
-    let id = "builtin.trim"
-    let title = "Trim whitespace"
-    let isLocal = true
-    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        context.contains(.plain)
-    }
-    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        let lines = (item.previewText ?? "").split(separator: "\n", omittingEmptySubsequences: false)
-        let result = lines.map { $0.trimmingCharacters(in: .whitespaces) }
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return .preview(makeTextItem(result, from: item))
-    }
-}
+// UppercaseAction / LowercaseAction / TrimWhitespaceAction migrated to
+// DefaultTransformationSeed under the same `builtin.uppercase`,
+// `builtin.lowercase`, `builtin.trim` IDs.
 
 // MARK: - Layout repair
 
@@ -154,9 +119,10 @@ struct LayoutRepairAction: ClipboardAction {
 
 // MARK: - Registry
 
-/// ActionRegistry хранит зарегистрированные actions + конфигурацию (Backlog #8):
-/// enabledFlags для built-in (по action.id) и custom AI actions из ActionConfig.
-/// При applicable() фильтрует и по applicability контекста, и по enabled flag.
+/// ActionRegistry holds the registered actions and their configuration:
+/// enabledFlags for built-ins (keyed by action.id) and custom AI actions from
+/// ActionConfig. applicable() filters by both context applicability and the
+/// per-action enabled flag.
 final class ActionRegistry: ObservableObject {
 
     @Published private(set) var actions: [ClipboardAction] = []
@@ -166,37 +132,65 @@ final class ActionRegistry: ObservableObject {
                 config.save()
                 rebuildCustomAI()
                 rebuildCustomTransformations()
-                // Re-register hotkey'и если изменились
-                if oldValue.actionHotkeys != config.actionHotkeys {
+                // Drop hotkeys whose action no longer exists (descriptor removed,
+                // factory action renamed, action pack unloaded, etc.). Must run
+                // after rebuilds so user.* actions reflect current config.
+                pruneOrphanedActionHotkeys()
+                // Reload hotkeys if the bound set OR any enabled-state changed —
+                // disabling an action must unbind its hotkey even though
+                // actionHotkeys itself did not change.
+                if oldValue.actionHotkeys != config.actionHotkeys
+                    || Self.enabledFingerprint(oldValue) != Self.enabledFingerprint(config) {
                     Task { @MainActor in ActionHotkeyManager.shared.reload() }
                 }
             }
         }
     }
 
-    /// AI provider устарел — теперь AIAction резолвит provider через AIProviderRegistry.shared
-    /// по providerID descriptor'а. Поле оставлено для backward compat call sites.
+    /// Snapshot of every action's enabled state — used to detect toggling so
+    /// `ActionHotkeyManager` can rebind / unbind direct-trigger hotkeys.
+    private static func enabledFingerprint(_ cfg: ActionConfig) -> [String: Bool] {
+        var m: [String: Bool] = [:]
+        for d in cfg.customAI { m[d.id] = d.enabled }
+        for d in cfg.customTransformations { m[d.id] = d.enabled }
+        for (k, v) in cfg.enabledFlags { m[k] = v }
+        return m
+    }
+
+    /// Deprecated: AIAction now resolves its provider through
+    /// AIProviderRegistry.shared using the descriptor's providerID. This field
+    /// remains for backward-compatible call sites.
     var aiProvider: AIProvider?
 
     init() {
-        // Built-in core actions. AppDelegate registers additional action packs.
+        // Built-in core actions that cannot be expressed as transformation
+        // descriptors (Identity is the pinned anchor; LayoutRepair needs the
+        // Cyrillic keymap + spell-check scoring; CleanFormatting strips RTF).
+        // Everything else lives in DefaultTransformationSeed.
         actions = [
             IdentityAction(),
             LayoutRepairAction(),
-            CleanFormattingAction(),
-            TrimWhitespaceAction(),
-            UppercaseAction(),
-            LowercaseAction()
+            CleanFormattingAction()
         ]
     }
 
-    /// #9: On first launch (or upgrade with new defaults), seed default AI actions
-    /// into config.customAI as regular editable entries.
-    /// MUST be called by AppDelegate AFTER init, before rebuildCustomAI().
-    /// Not called from init() to avoid didSet side-effects on partially-initialized state.
+    /// On first launch (or upgrade with new defaults), seed bundled AI and
+    /// transformation actions into the config. Called by AppDelegate AFTER
+    /// `init`, before the rebuild step, to avoid didSet side-effects on
+    /// partially-initialized state.
     func runFirstLaunchSeeds() {
-        guard config.seedAIVersion < DefaultAISeed.currentSeedVersion else { return }
         var copy = config
+        var changed = false
+
+        if seedAI(into: &copy)             { changed = true }
+        if seedTransformations(into: &copy) { changed = true }
+
+        if changed { config = copy }
+    }
+
+    /// Returns true if any AI seeds were appended or migrated.
+    private func seedAI(into copy: inout ActionConfig) -> Bool {
+        guard copy.seedAIVersion < DefaultAISeed.currentSeedVersion else { return false }
 
         // Migrate per-action hotkeys from old factory IDs to new seeded IDs.
         for (oldID, newID) in DefaultAISeed.hotkeyIDMigration {
@@ -206,14 +200,58 @@ final class ActionRegistry: ObservableObject {
             }
         }
 
-        // Seed defaults that aren't already present (avoid duplicates on upgrade).
+        // Append defaults that are not already present.
         for desc in DefaultAISeed.defaults() {
             if !copy.customAI.contains(where: { $0.id == desc.id }) {
                 copy.customAI.append(desc)
             }
         }
+
+        // v2 migration: previously seeded entries had providerID hardcoded to
+        // "anthropic". Reset to "" (follow default) for seeded user.* IDs whose
+        // providerID still matches the original hardcoded value. User-customized
+        // entries (manually changed to a different provider) are left alone.
+        if copy.seedAIVersion < 2 {
+            let seededIDs = Set(DefaultAISeed.defaults().map { $0.id })
+            for idx in copy.customAI.indices {
+                let entry = copy.customAI[idx]
+                if seededIDs.contains(entry.id) && entry.providerID == "anthropic" {
+                    copy.customAI[idx].providerID = ""
+                }
+            }
+        }
         copy.seedAIVersion = DefaultAISeed.currentSeedVersion
-        config = copy
+        return true
+    }
+
+    /// Seeds bundled transformation defaults. Migrates pre-existing
+    /// `enabledFlags[id]` and `customTitles[id]` into the descriptor so the
+    /// switch from hardcoded `builtin.*` action structs to descriptors is
+    /// invisible to users who had already customized those actions.
+    private func seedTransformations(into copy: inout ActionConfig) -> Bool {
+        guard copy.seedTransformationVersion < DefaultTransformationSeed.currentSeedVersion else { return false }
+
+        for seedDesc in DefaultTransformationSeed.defaults() {
+            // Skip if already present — preserves user edits across upgrades.
+            guard !copy.customTransformations.contains(where: { $0.id == seedDesc.id }) else { continue }
+
+            var d = seedDesc
+            // Inherit the user's prior enabled flag for this ID, if any.
+            if let flag = copy.enabledFlags[d.id] {
+                d.enabled = flag
+                copy.enabledFlags.removeValue(forKey: d.id)
+            } else {
+                d.enabled = CuratedDefaults.isEnabledByDefault(d.id)
+            }
+            // Inherit any prior custom title set via the legacy customTitles map.
+            if let custom = copy.customTitles[d.id], !custom.isEmpty {
+                d.title = custom
+                copy.customTitles.removeValue(forKey: d.id)
+            }
+            copy.customTransformations.append(d)
+        }
+        copy.seedTransformationVersion = DefaultTransformationSeed.currentSeedVersion
+        return true
     }
 
     func register(_ action: ClipboardAction) {
@@ -224,7 +262,7 @@ final class ActionRegistry: ObservableObject {
         actions.append(contentsOf: batch)
     }
 
-    /// Все actions с учётом enabled flag.
+    /// All actions filtered by the enabled flag.
     var allEnabled: [ClipboardAction] {
         actions.filter { isEnabled($0.id) }
     }
@@ -234,9 +272,9 @@ final class ActionRegistry: ObservableObject {
         return reorder(filtered, forContentType: item.semantic)
     }
 
-    /// Применяет пользовательский order для данного content type (правка #5).
-    /// Identity (Paste as is) всегда первый. Остальное по actionOrder.
-    /// Actions без entry в order идут после в исходном порядке.
+    /// Applies the user-defined order for a given content type. Identity
+    /// (Paste as is) is always first; the rest follow actionOrder. Actions
+    /// without an entry in actionOrder appear after, in their original order.
     func reorder(_ list: [ClipboardAction], forContentType kind: SemanticKind) -> [ClipboardAction] {
         let savedOrder = config.actionOrder[kind.rawValue] ?? []
         guard !savedOrder.isEmpty else { return moveIdentityFirst(list) }
@@ -246,7 +284,7 @@ final class ActionRegistry: ObservableObject {
         for id in savedOrder {
             if let a = byID.removeValue(forKey: id) { result.append(a) }
         }
-        // Оставшиеся — в default order
+        // Append actions that were not in the saved order, preserving default order.
         for a in list where byID[a.id] != nil {
             result.append(a)
             byID.removeValue(forKey: a.id)
@@ -264,8 +302,8 @@ final class ActionRegistry: ObservableObject {
         return copy
     }
 
-    /// Сохранить custom order для content type. Identity автоматически удаляется
-    /// из массива — она всегда первая на render.
+    /// Saves the user-defined action order for a content type. Identity is
+    /// dropped from the array because it is always pinned first at render time.
     func setActionOrder(_ ids: [String], for kind: SemanticKind) {
         var copy = config
         let filtered = ids.filter { $0 != "builtin.identity" }
@@ -277,20 +315,39 @@ final class ActionRegistry: ObservableObject {
         config = copy
     }
 
-    /// Built-in default — enabled if action ID is in curated subset (правка #8 lite).
-    /// Если в config флаг есть — используем его (пользовательский override).
-    /// Иначе — bundled default из CuratedDefaults.
+    /// Unified enabled lookup across all action sources.
+    /// - Custom AI / custom transformation descriptors carry their own `enabled` flag.
+    /// - Built-in actions use `config.enabledFlags[id]` with curated-default fallback.
     func isEnabled(_ actionID: String) -> Bool {
+        if let desc = config.customAI.first(where: { $0.id == actionID }) {
+            return desc.enabled
+        }
+        if let desc = config.customTransformations.first(where: { $0.id == actionID }) {
+            return desc.enabled
+        }
         if let flag = config.enabledFlags[actionID] { return flag }
         return CuratedDefaults.isEnabledByDefault(actionID)
     }
 
+    /// Unified enable/disable across all action sources.
     func setEnabled(_ enabled: Bool, for actionID: String) {
-        config.enabledFlags[actionID] = enabled
+        var copy = config
+        if let idx = copy.customAI.firstIndex(where: { $0.id == actionID }) {
+            copy.customAI[idx].enabled = enabled
+            config = copy
+            return
+        }
+        if let idx = copy.customTransformations.firstIndex(where: { $0.id == actionID }) {
+            copy.customTransformations[idx].enabled = enabled
+            config = copy
+            return
+        }
+        copy.enabledFlags[actionID] = enabled
+        config = copy
     }
 
-    /// Display title с учётом custom override (правка #6 lite).
-    /// Используется в HUD action chips и в Settings playground.
+    /// Display title with custom override applied. Used by HUD action chips and
+    /// by the Settings playground.
     func displayTitle(forActionID actionID: String, defaultTitle: String) -> String {
         config.customTitles[actionID] ?? defaultTitle
     }
@@ -307,25 +364,35 @@ final class ActionRegistry: ObservableObject {
 
     // MARK: - Custom AI
 
-    /// Перестраивает AI actions из текущего config.customAI.
-    /// Удаляет старые user.* и регистрирует новые из descriptors.
-    /// Provider резолвится через AIProviderRegistry.shared по descriptor.providerID.
+    /// Rebuilds AI actions from current config.customAI.
+    /// Empty providerID means "use the default provider" — resolved dynamically at apply time
+    /// by AIAction.resolveProvider() so changing the default in Settings instantly propagates
+    /// to every default-bound action without re-saving anything.
+    ///
+    /// All descriptors are registered regardless of `enabled` so that disabled
+    /// custom AI rows stay visible in the Settings list (parity with built-in
+    /// actions, which never disappear when toggled off). Runtime filtering for
+    /// disabled descriptors happens in `applicable(for:context:)` via
+    /// `isEnabled(_:)`, and in `ActionHotkeyManager.reload` for direct triggers.
     func rebuildCustomAI() {
+        // Drop all user.* entries (both AI and transformations). rebuildCustomTransformations
+        // runs immediately after via didSet and re-adds the transformation actions.
         actions.removeAll { $0.id.hasPrefix("user.") }
-        for desc in config.customAI where desc.enabled {
+        for desc in config.customAI {
             let kinds = Set(desc.applicableTypes.compactMap { SemanticKind(rawValue: $0) })
+            let resolvedProviderID: String? = desc.providerID.isEmpty ? nil : desc.providerID
             let action = AIAction(
                 id: desc.id,
                 title: desc.title,
                 promptTemplate: desc.promptTemplate,
-                providerID: desc.providerID,
+                providerID: resolvedProviderID,
                 applicableTypes: kinds.isEmpty ? [.text, .richText, .markdown] : kinds
             )
             actions.append(action)
         }
     }
 
-    /// Добавляет / обновляет custom AI descriptor.
+    /// Adds or updates a custom AI descriptor.
     func upsertCustomAI(_ descriptor: CustomAIDescriptor) {
         var copy = config
         if let idx = copy.customAI.firstIndex(where: { $0.id == descriptor.id }) {
@@ -342,13 +409,18 @@ final class ActionRegistry: ObservableObject {
         config = copy
     }
 
-    // MARK: - Custom Transformations (правка #7 light — engine architecture)
+    // MARK: - Custom Transformations (lightweight engine architecture)
 
-    /// Перестраивает custom transformation actions из config.customTransformations.
-    /// Удаляет старые user.transform.* и регистрирует новые из descriptors.
+    /// Rebuilds custom transformation actions from `config.customTransformations`.
+    /// All descriptors are registered regardless of `enabled` so the rows stay
+    /// visible (greyed) when toggled off in Settings — runtime filtering is
+    /// centralized in `isEnabled(_:)`. The filter now matches descriptor IDs
+    /// instead of the `user.transform.*` prefix so bundled `builtin.*`
+    /// transformations seeded via DefaultTransformationSeed also flow through.
     func rebuildCustomTransformations() {
-        actions.removeAll { $0.id.hasPrefix("user.transform.") }
-        for desc in config.customTransformations where desc.enabled {
+        let descriptorIDs = Set(config.customTransformations.map { $0.id })
+        actions.removeAll { descriptorIDs.contains($0.id) }
+        for desc in config.customTransformations {
             let kinds = Set(desc.applicableTypes.compactMap { SemanticKind(rawValue: $0) })
             let action = CustomTransformationAction(
                 id: desc.id,
@@ -392,24 +464,98 @@ final class ActionRegistry: ObservableObject {
         config = copy
     }
 
-    /// Найти actionID который уже использует данный hotkey (для conflict UI).
+    /// Find the action id that currently holds this hotkey, if any. Used by the
+    /// recorder UI to surface a non-blocking warning before stealing the binding.
+    /// Orphan entries (id no longer in `actions`) are ignored — they will be
+    /// garbage-collected on save and must not look like conflicts.
     func conflictingAction(for hotkey: ActionHotkey, excludingID: String? = nil) -> String? {
-        for (id, hk) in config.actionHotkeys where id != excludingID && hk == hotkey {
+        let validIDs = Set(actions.map { $0.id })
+        for (id, hk) in config.actionHotkeys
+            where id != excludingID && hk == hotkey && validIDs.contains(id)
+        {
             return id
         }
         return nil
     }
 
+    /// Convenience: same as `conflictingAction(for:excludingID:)` but also returns
+    /// the display title so the UI can show "Already used by '<Title>'".
+    func conflictingActionInfo(for hotkey: ActionHotkey, excludingID: String? = nil)
+        -> (id: String, title: String)?
+    {
+        guard let id = conflictingAction(for: hotkey, excludingID: excludingID) else {
+            return nil
+        }
+        let defaultTitle = actions.first(where: { $0.id == id })?.title ?? id
+        let title = displayTitle(forActionID: id, defaultTitle: defaultTitle)
+        return (id, title)
+    }
+
+    /// Removes hotkey bindings whose action no longer exists in `actions`.
+    /// Sources of orphans: deleted user.* descriptor, action pack removed/renamed
+    /// between versions, factory ID migration that missed an entry. Without GC
+    /// the orphan would persist in config.actionHotkeys and surface in the
+    /// Welcome window's "Your custom action hotkeys" list as a dead row.
+    ///
+    /// Safe to call recursively from `config.didSet` — only writes back when at
+    /// least one orphan was found, and a second pass finds nothing to prune.
+    func pruneOrphanedActionHotkeys() {
+        guard !config.actionHotkeys.isEmpty else { return }
+        let validIDs = Set(actions.map { $0.id })
+        let orphans = config.actionHotkeys.keys.filter { !validIDs.contains($0) }
+        guard !orphans.isEmpty else { return }
+        var copy = config
+        for id in orphans {
+            copy.actionHotkeys.removeValue(forKey: id)
+        }
+        config = copy
+    }
+
+    // MARK: - Factory reset
+
+    /// Wipes every user-tunable state back to first-launch defaults:
+    /// action config (enabled flags, custom AI, custom transformations, custom
+    /// titles, ordering, per-action hotkeys, preferences), AI provider configs
+    /// and their Keychain API keys, and the UserDefaults preference keys
+    /// (font scale, cut-cursor toggle, welcome suppression).
+    /// Reseeds the default AI actions so they appear in the rebuilt registry.
+    /// Returns once everything is reloaded; caller may want to surface a "Done"
+    /// status string to the UI.
+    /// `@MainActor` because it touches `AIProviderRegistry.shared` (main-actor
+    /// isolated). All callers are SwiftUI button actions, already on main.
+    @MainActor
+    func factoryReset() {
+        // Wipe provider configs + Keychain keys.
+        AIProviderRegistry.shared.factoryReset()
+        // Clear every UserDefaults key DrPaste owns. Covers HUD scale, cut-cursor
+        // toggle, welcome suppression, per-cue sound flags, and sound volume.
+        let defaults = UserDefaults.standard
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("drpaste.") {
+            defaults.removeObject(forKey: key)
+        }
+        // Reset action config to a blank state, then reseed defaults.
+        // Setting config triggers didSet → rebuilds + GC + persistence.
+        config = ActionConfig()
+        runFirstLaunchSeeds()
+        // Rebuilds after seed already happen via didSet, but call explicitly to
+        // be safe when seedAIVersion was already at currentSeedVersion (no-op seed).
+        rebuildCustomAI()
+        rebuildCustomTransformations()
+        pruneOrphanedActionHotkeys()
+        // Re-register hotkeys (all dropped above, this just clears the manager).
+        Task { @MainActor in ActionHotkeyManager.shared.reload() }
+    }
+
     // MARK: - Export / Import
 
-    /// Сериализует config в JSON для export. API keys в export НЕ включаются.
+    /// Serializes config to JSON for export. API keys are NOT included.
     func exportJSON() -> Data? {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try? encoder.encode(config)
     }
 
-    /// Импорт config: replace = заменяет полностью, merge = добавляет уникальное.
+    /// Imports config: .replace overwrites everything; .merge adds unique entries.
     enum ImportStrategy { case replace, merge }
 
     func importJSON(_ data: Data, strategy: ImportStrategy) -> Bool {

@@ -6,12 +6,12 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Multi-provider AI architecture (Правка #4 итерации 2):
-//  - protocol AIProvider — единый интерфейс
-//  - AIProviderRegistry — singleton с list of ConfiguredProvider
-//  - AnthropicProvider, OpenAICompatibleProvider, GeminiProvider — конкретные реализации
+//  Multi-provider AI architecture:
+//  - protocol AIProvider — single interface for all providers
+//  - AIProviderRegistry — singleton holding a list of ConfiguredProvider
+//  - AnthropicProvider, OpenAICompatibleProvider, GeminiProvider — concrete impls
 //  - APIKeyStorage — Keychain-based key storage
-//  - providers.json v2 — новый формат с массивом providers + миграция v1
+//  - providers.json v2 — new format with a providers array plus v1 migration
 //
 
 import Foundation
@@ -24,7 +24,7 @@ protocol AIProvider {
     var displayName: String { get }
     var model: String { get }
     var isLocal: Bool { get }
-    /// Имеет ли provider всё необходимое для работы (ключ для cloud, baseURL для local).
+    /// True when the provider has everything it needs (API key for cloud, base URL for local).
     var isReady: Bool { get }
     func run(prompt: String, input: String) async throws -> String
 }
@@ -66,7 +66,7 @@ enum ProviderKind: String, Codable, CaseIterable {
         }
     }
 
-    /// Короткий лейбл для badge в UI (HUD action list).
+    /// Short label for the provider badge in the UI (HUD action list).
     var badgeLabel: String {
         switch self {
         case .anthropic: return "Claude"
@@ -82,8 +82,8 @@ enum ProviderKind: String, Codable, CaseIterable {
         }
     }
 
-    /// SF Symbol для provider icon в action list (#9, #10).
-    /// Используем семантические symbols — Apple-нативно, free from trademark issues.
+    /// SF Symbol name used as the provider icon in the action list. Semantic
+    /// symbols are preferred — Apple-native and free of trademark issues.
     var iconName: String {
         switch self {
         case .anthropic: return "a.circle.fill"           // Anthropic "A"
@@ -102,7 +102,7 @@ enum ProviderKind: String, Codable, CaseIterable {
     var isLocal: Bool {
         switch self {
         case .ollama, .lmstudio, .llamaCpp: return true
-        case .custom: return false   // could be local или remote, treat as remote default
+        case .custom: return false   // could be local or remote; treated as remote by default.
         default: return false
         }
     }
@@ -150,8 +150,9 @@ enum ProviderKind: String, Codable, CaseIterable {
 
 // MARK: - ConfiguredProvider
 
-/// User-facing описание настроенного provider'а. Сериализуется в providers.json.
-/// API key хранится отдельно в Keychain под providerID — здесь только не-секретные поля.
+/// User-facing description of a configured provider. Serialized to
+/// providers.json. The API key is stored separately in Keychain under
+/// providerID; only non-secret fields live here.
 struct ConfiguredProvider: Codable, Identifiable, Equatable {
     var id: String
     var kind: ProviderKind
@@ -194,11 +195,13 @@ struct ProvidersConfig: Codable {
         try? data.write(to: Self.configURL, options: .atomic)
     }
 
-    /// Default — Anthropic + Ollama настроены как presets (без ключей пока).
+    /// Default — Anthropic + Ollama as presets (not configured yet, no API keys).
+    /// `defaultProviderID` is nil — the default is auto-assigned to the first
+    /// provider that passes its connection test.
     static func defaultConfig() -> ProvidersConfig {
         return ProvidersConfig(
             version: 2,
-            defaultProviderID: "anthropic",
+            defaultProviderID: nil,
             providers: [
                 ConfiguredProvider(id: "anthropic", kind: .anthropic,
                                    displayName: ProviderKind.anthropic.displayName,
@@ -208,7 +211,7 @@ struct ProvidersConfig: Codable {
                                    displayName: ProviderKind.ollama.displayName,
                                    model: ProviderKind.ollama.defaultModel,
                                    baseURL: ProviderKind.ollama.defaultBaseURL,
-                                   enabled: false)   // disabled пока пользователь не подтвердит
+                                   enabled: false)
             ]
         )
     }
@@ -221,7 +224,7 @@ struct ProvidersConfig: Codable {
     }
 
     private static func migrate(from v1: LegacyV1) -> ProvidersConfig {
-        // Если был ключ в v1 — перенесём его в Keychain, в config не сохраняем.
+        // If a v1 key was present, move it into Keychain and do not store it in config.
         if let key = v1.anthropicAPIKey, !key.isEmpty {
             APIKeyStorage.save(key, for: "anthropic")
         }
@@ -248,10 +251,42 @@ final class AIProviderRegistry: ObservableObject {
 
     private init() {
         self.config = ProvidersConfig.load()
+        reconcileDefaultProvider()
     }
 
-    /// Получить ready provider по ID. Создаёт concrete instance по first call,
-    /// кеширует, инвалидируется при reload().
+    /// If the currently-saved default isn't actually configured (no API key, no base URL),
+    /// promote any configured-and-enabled provider to be the default. This fixes stale
+    /// state from previous versions that pre-set "anthropic" as default before configuration.
+    private func reconcileDefaultProvider() {
+        let currentID = config.defaultProviderID
+        if let id = currentID, !id.isEmpty,
+           let cp = config.providers.first(where: { $0.id == id }) {
+            let hasKey = APIKeyStorage.load(for: cp.id) != nil
+            let isReady = cp.kind.isLocal || hasKey
+            if isReady { return }
+        }
+        // Find first ready provider (has key for cloud, has URL for local).
+        let firstReady = config.providers.first { cp in
+            guard cp.enabled else { return false }
+            if cp.kind.isLocal { return (cp.baseURL ?? "").isEmpty == false }
+            return APIKeyStorage.load(for: cp.id) != nil
+        }
+        if let candidate = firstReady {
+            var newCfg = config
+            newCfg.defaultProviderID = candidate.id
+            config = newCfg
+        } else {
+            // No ready provider — clear stale default so radio shows none selected.
+            if config.defaultProviderID != nil {
+                var newCfg = config
+                newCfg.defaultProviderID = nil
+                config = newCfg
+            }
+        }
+    }
+
+    /// Returns a ready provider by ID. Creates the concrete instance on first
+    /// call, caches it, and invalidates the cache on reload().
     func provider(id: String) -> AIProvider? {
         if let cached = providerCache[id] { return cached }
         guard let cp = config.providers.first(where: { $0.id == id }), cp.enabled else { return nil }
@@ -260,24 +295,24 @@ final class AIProviderRegistry: ObservableObject {
         return p
     }
 
-    /// Default provider (для AI actions без explicit providerID).
+    /// Default provider (used by AI actions without an explicit providerID).
     var defaultProvider: AIProvider? {
         if let id = config.defaultProviderID, let p = provider(id: id) {
             return p
         }
-        // fallback на первый enabled
+        // Fall back to the first enabled provider.
         for cp in config.providers where cp.enabled {
             if let p = provider(id: cp.id) { return p }
         }
         return nil
     }
 
-    /// Получить kind для UI badge.
+    /// Returns the provider kind for UI badges.
     func kind(forProviderID id: String) -> ProviderKind? {
         config.providers.first(where: { $0.id == id })?.kind
     }
 
-    /// Upsert provider. Если apiKey не nil — сохраняем в Keychain.
+    /// Upsert a provider. When apiKey is non-nil, the key is saved to Keychain.
     func upsert(_ cp: ConfiguredProvider, apiKey: String? = nil) {
         if let key = apiKey, !key.isEmpty {
             APIKeyStorage.save(key, for: cp.id)
@@ -309,12 +344,23 @@ final class AIProviderRegistry: ObservableObject {
         config = newCfg
     }
 
-    /// Принудительно сбросить кеш — после внешних изменений config.
+    /// Force-clears the provider cache. Call after external config mutations.
     func invalidateCache() {
         providerCache.removeAll()
     }
 
-    /// Test connection — посылает короткий prompt и измеряет latency.
+    /// Wipes all configured providers and their Keychain API keys, then restores
+    /// the bundled default config (Anthropic + Ollama placeholders, no default
+    /// selected). Used by Factory Reset.
+    func factoryReset() {
+        for cp in config.providers {
+            APIKeyStorage.remove(for: cp.id)
+        }
+        providerCache.removeAll()
+        config = ProvidersConfig.defaultConfig()
+    }
+
+    /// Test connection — sends a short prompt and measures the round-trip latency.
     func testConnection(providerID: String) async -> Result<String, AIProviderError> {
         guard let p = provider(id: providerID) else {
             return .failure(.missingAPIKey)
@@ -427,9 +473,9 @@ final class AnthropicProvider: AIProvider {
 
 // MARK: - OpenAICompatibleProvider
 
-/// Unified provider для OpenAI-compatible chat/completions API:
+/// Unified provider for any OpenAI-compatible chat/completions API.
 /// OpenAI, xAI Grok, Mistral, DeepSeek, Ollama, LM Studio, llama.cpp, Custom.
-/// Различаются только baseURL и наличием Authorization header.
+/// Implementations differ only in baseURL and whether they require an Authorization header.
 final class OpenAICompatibleProvider: AIProvider {
     let id: String
     let kind: ProviderKind
@@ -468,8 +514,9 @@ final class OpenAICompatibleProvider: AIProvider {
         if requiresAuth, let key = apiKey {
             req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         }
-        // Не отправляем max_tokens — gpt-5 family требует max_completion_tokens,
-        // gpt-4 ожидает max_tokens. Безопаснее не указывать (API default разумный).
+        // Do not send max_tokens — the gpt-5 family requires max_completion_tokens
+        // while gpt-4 expects max_tokens. Omitting the field is safer; the API
+        // default is reasonable.
         let body: [String: Any] = [
             "model": model,
             "messages": [
@@ -597,7 +644,7 @@ struct AIAction: ClipboardAction {
                           recovery: .openProvidersConfig)
         }
         do {
-            // Правка #9: MD round-trip для rich text
+            // Markdown round-trip for rich text inputs.
             let useRich = preserveRichFormatting && item.semantic == .richText
             let inputText: String
             let systemAddition: String
@@ -654,51 +701,56 @@ struct AIAction: ClipboardAction {
 /// or delete them. The `seedAIVersion` counter controls upgrades.
 enum DefaultAISeed {
     /// Increment when adding new default AI actions to ship to existing users on upgrade.
-    static let currentSeedVersion: Int = 1
+    /// v2: switch seeded entries from hardcoded "anthropic" providerID to "" (follow default).
+    static let currentSeedVersion: Int = 2
+
+    /// Sentinel for `providerID`: empty string means "use whatever provider is currently default".
+    /// Action follows the user's default selection — change the default in Settings → AI and
+    /// all default-bound actions instantly switch to the new provider.
+    static let defaultProviderSentinel = ""
 
     static func defaults() -> [CustomAIDescriptor] {
-        let provider = "anthropic"   // first launch default; user can switch per-action
         return [
             CustomAIDescriptor(
                 id: "user.summarize",
                 title: "Summarize",
                 promptTemplate: "Summarize the user's input in 1–3 sentences. Reply with the summary only, no preamble.",
-                providerID: provider,
+                providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText", "markdown", "code"]
             ),
             CustomAIDescriptor(
                 id: "user.translate",
                 title: "Translate",
                 promptTemplate: "Translate the input to Spanish. If the user provides text in Spanish, translate to English instead. Reply with the translation only.",
-                providerID: provider,
+                providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText", "markdown"]
             ),
             CustomAIDescriptor(
                 id: "user.translate_rich",
                 title: "Translate (rich)",
                 promptTemplate: "Translate the input to Spanish. If the user provides text in Spanish, translate to English instead. Reply with the translation only.",
-                providerID: provider,
+                providerID: defaultProviderSentinel,
                 applicableTypes: ["richText"]
             ),
             CustomAIDescriptor(
                 id: "user.fix_grammar",
                 title: "Fix grammar",
                 promptTemplate: "Fix grammar, spelling, and punctuation. Preserve the original language and voice. Reply with the corrected text only.",
-                providerID: provider,
+                providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText", "markdown"]
             ),
             CustomAIDescriptor(
                 id: "user.fix_grammar_rich",
                 title: "Fix grammar (rich)",
                 promptTemplate: "Fix grammar, spelling, and punctuation. Preserve the original language and voice. Reply with the corrected text only.",
-                providerID: provider,
+                providerID: defaultProviderSentinel,
                 applicableTypes: ["richText"]
             ),
             CustomAIDescriptor(
                 id: "user.formal_tone",
                 title: "Formal tone",
                 promptTemplate: "Rewrite the input in a more formal, professional tone. Preserve language and meaning. Reply with the rewritten text only.",
-                providerID: provider,
+                providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText", "markdown"]
             )
         ]

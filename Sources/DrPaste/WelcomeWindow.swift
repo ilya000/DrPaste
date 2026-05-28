@@ -6,8 +6,8 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Welcome window показывается при первом запуске (#13).
-//  Logo + name + key features + hotkey list + "Don't show again" checkbox + OK.
+//  Welcome window shown on first launch. Lists logo, name, key features,
+//  hotkeys, and a "Don't show again" checkbox plus an OK button.
 //
 
 import AppKit

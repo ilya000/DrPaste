@@ -6,9 +6,8 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Простой recorder для назначения hotkey'я action'у (0.6.0):
-//  кликни в поле → нажми любую комбинацию → она запомнилась.
-//  Esc отменяет, Delete очищает.
+//  Simple recorder for assigning a hotkey to an action. Click the field, press
+//  any combination, the recorder captures it. Esc cancels, Delete clears.
 //
 
 import SwiftUI
@@ -17,8 +16,13 @@ import Carbon.HIToolbox
 
 struct HotkeyRecorderField: View {
     @Binding var hotkey: ActionHotkey?
-    var onConflict: (String) -> Void = { _ in }
-    let conflictChecker: (ActionHotkey) -> String?    // returns conflicting action ID or nil
+    /// Called with a status message after a recording attempt. Empty string clears.
+    /// Errors (reserved combinations) and steal warnings both flow through here.
+    var onStatus: (String) -> Void = { _ in }
+    /// Returns `(id, displayTitle)` of an existing binding for this hotkey, or nil.
+    /// Used to build a non-blocking "stolen from X" warning — the recording itself
+    /// is always accepted, conflict resolution happens at save time.
+    let conflictChecker: (ActionHotkey) -> (id: String, title: String)?
 
     @State private var isRecording = false
     @State private var recorderMonitor: Any?
@@ -80,7 +84,7 @@ struct HotkeyRecorderField: View {
         isRecording = true
         recorderMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
             handleEvent(event)
-            return nil  // глотаем event
+            return nil  // swallow the event
         }
     }
 
@@ -91,18 +95,19 @@ struct HotkeyRecorderField: View {
 
     private func handleEvent(_ event: NSEvent) {
         let kc = event.keyCode
-        // Esc — отмена
+        // Esc — cancel without changing the binding.
         if Int(kc) == kVK_Escape {
             stopRecording()
             return
         }
-        // Delete — очистка
+        // Delete — clear the binding.
         if Int(kc) == kVK_Delete {
             hotkey = nil
+            onStatus("")
             stopRecording()
             return
         }
-        // Требуем хотя бы один modifier — иначе случайные клавиши будут срабатывать
+        // Require at least one modifier to avoid catching incidental keystrokes.
         var mods: UInt32 = 0
         if event.modifierFlags.contains(.command)  { mods |= UInt32(cmdKey) }
         if event.modifierFlags.contains(.option)   { mods |= UInt32(optionKey) }
@@ -111,13 +116,19 @@ struct HotkeyRecorderField: View {
         guard mods != 0 else { return }
 
         let candidate = ActionHotkey(keyCode: kc, modifiers: mods)
+        // Hard block: combinations reserved for DrPaste's main hotkeys (⌥⌘V/C/X)
+        // cannot be claimed by per-action bindings — they'd never fire anyway.
         if candidate.conflictsWithMainHotkeys {
-            onConflict("This combination is reserved for the main DrPaste hotkey (⌥⌘V/C/X).")
+            onStatus("This combination is reserved for the main DrPaste hotkey (⌥⌘V/C/X).")
             return
         }
-        if let conflictingID = conflictChecker(candidate) {
-            onConflict("This combination is already used by action: \(conflictingID).")
-            return
+        // Auto-steal: always accept the recording. If another action holds it,
+        // surface a notice so the user knows the binding will be transferred on
+        // Save. Actual unbind happens in ActionEditor.save() / ActionRegistry.
+        if let conflict = conflictChecker(candidate) {
+            onStatus("\(candidate.displayString) will be moved from \"\(conflict.title)\" to this action when you press Save.")
+        } else {
+            onStatus("")
         }
         hotkey = candidate
         stopRecording()

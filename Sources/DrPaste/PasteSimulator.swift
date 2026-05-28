@@ -6,10 +6,12 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Имитация ⌘V / ⌘C / ⌘X в активном приложении (Backlog #9 + Правка #16):
-//  - физический ⌥ "приподнимается" чтобы synthetic был чистым ⌘X не ⌥⌘X
-//  - все наши events помечаются DrPasteSyntheticMarker → EventTap игнорирует recursion
-//  Plus writers в NSPasteboard с восстановлением всех representations (Backlog #1).
+//  Simulates ⌘V / ⌘C / ⌘X in the foreground app.
+//  - Physically held Option is briefly released so the synthetic shortcut is a
+//    clean ⌘X / ⌘C and not ⌥⌘X / ⌥⌘C.
+//  - Every synthetic event is tagged with DrPasteSyntheticMarker so the
+//    EventTap ignores them and avoids recursion.
+//  Includes NSPasteboard writers that restore every representation losslessly.
 //
 
 import AppKit
@@ -24,9 +26,9 @@ enum PasteSimulator {
         let src = CGEventSource(stateID: .combinedSessionState)
         let loc = CGEventTapLocation.cghidEventTap
 
-        // Правка #16 слой 1: проверяем физическое состояние ⌥ — если зажат,
-        // programmatically up'аем его перед synthetic ⌘X, чтобы app видел
-        // чистый ⌘X не ⌥⌘X (важно для cut/copy через ⌥⌘X / ⌥⌘C).
+        // Check the physical Option modifier — if it is held, lift it
+        // programmatically before posting the synthetic shortcut so the target
+        // app sees a clean ⌘X / ⌘C rather than ⌥⌘X / ⌥⌘C.
         let optionHeld = NSEvent.modifierFlags.contains(.option)
         if optionHeld {
             let optUp = CGEvent(keyboardEventSource: src,
@@ -47,7 +49,7 @@ enum PasteSimulator {
         keyUp?.flags = .maskCommand
         let cmdUp = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_Command), keyDown: false)
 
-        // Слой 2: пометить все наши synthetic чтобы EventTap не recursively обработал.
+        // Tag every synthetic event so the EventTap does not re-process them.
         for ev in [cmdDown, keyDown, keyUp, cmdUp] {
             ev?.setIntegerValueField(.eventSourceUserData, value: DrPasteSyntheticMarker)
         }
@@ -57,7 +59,7 @@ enum PasteSimulator {
         keyUp?.post(tap: loc)
         cmdUp?.post(tap: loc)
 
-        // Восстановить ⌥ если был up'нут.
+        // Restore Option if it was held before.
         if optionHeld {
             Thread.sleep(forTimeInterval: 0.005)
             let optDown = CGEvent(keyboardEventSource: src,
@@ -70,18 +72,18 @@ enum PasteSimulator {
     }
 }
 
-// MARK: - PasteboardWriter (Backlog #1 — lossless restoration)
+// MARK: - PasteboardWriter (lossless restoration)
 
 enum PasteboardWriter {
-    /// Восстанавливает ВСЕ representations clipboard item.
-    /// Это Paste-as-is: если item был скопирован из Excel — все его representations
-    /// (TSV, HTML, RTF, proprietary metadata) попадают обратно в pasteboard
-    /// в исходном порядке приоритета.
+    /// Restores every representation of a clipboard item. This is Paste-as-is:
+    /// if the item was copied from Excel, all of its representations (TSV,
+    /// HTML, RTF, proprietary metadata) are written back to the pasteboard in
+    /// the original priority order.
     static func write(_ item: ClipboardItem, store: ClipboardStore) {
         let pb = NSPasteboard.general
         pb.clearContents()
 
-        // Если у нас есть полный raw snapshot — восстанавливаем lossless
+        // If a full raw snapshot is available, restore losslessly.
         if !item.representations.isEmpty && !item.typesOrdered.isEmpty {
             let types = item.typesOrdered.map { NSPasteboard.PasteboardType($0) }
             pb.declareTypes(types, owner: nil)
@@ -94,9 +96,9 @@ enum PasteboardWriter {
             return
         }
 
-        // Fallback: writeback из previewText / previewImageRel
-        // (используется для transformed items — например после JSON pretty
-        // мы создали item.previewText без representations).
+        // Fallback path: write back from previewText / previewImageRel. Used
+        // for transformed items where we created item.previewText without
+        // preserving the original representations (for example after JSON pretty).
         if let text = item.previewText, !text.isEmpty {
             pb.setString(text, forType: .string)
         }

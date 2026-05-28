@@ -6,8 +6,8 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Единая точка правды для product name, иконок, версии и About credits.
-//  Поменяй здесь — обновится во всём UI.
+//  Single source of truth for product name, icons, version, and About credits.
+//  Updating this file propagates the change throughout the UI.
 //
 
 import AppKit
@@ -15,40 +15,67 @@ import SwiftUI
 
 enum AppBrand {
     static let name: String = "DrPaste"
-    static let version: String = "0.10.0"
+    static let version: String = "0.12.0"
     static let tagline: String = "Press, browse, paste — the Paste gesture, extended"
 
     static let githubURL = "https://github.com/ilya000/DrPaste"
 
-    /// Цветная иконка для HUD header / About panel.
+    /// Color icon for the HUD header, About panel, Dock, and Cmd-Tab.
+    ///
+    /// Resource lookup order, first match wins:
+    ///   1. NSImage(named: "AppIcon") — Asset Catalog hit (signed builds)
+    ///   2. AppIcon.icns               — multi-resolution icon set
+    ///   3. AppIcon@2x.png             — Retina raster
+    ///   4. AppIcon.png                — single-resolution raster
+    ///   5. AppIcon.svg                — vector fallback / placeholder
+    ///   6. SF Symbol "doc.on.clipboard.fill" — last-resort
     static var nsIcon: NSImage {
         if let img = NSImage(named: "AppIcon") { return img }
-        if let url = Bundle.module.url(forResource: "AppIcon", withExtension: "svg"),
-           let img = NSImage(contentsOf: url) {
-            return img
+        for ext in ["icns", "png", "svg"] {
+            if let url = Bundle.module.url(forResource: "AppIcon", withExtension: ext),
+               let img = NSImage(contentsOf: url) {
+                return img
+            }
         }
         return NSImage(systemSymbolName: "doc.on.clipboard.fill", accessibilityDescription: name)
             ?? NSImage()
     }
 
-    /// SwiftUI-обёртка для HUD header (цветная).
+    /// SwiftUI wrapper of the color icon — reuses the same NSImage lookup so
+    /// HUD / Welcome / About displays are consistent with the Dock icon.
     static var icon: Image {
-        if let url = Bundle.module.url(forResource: "AppIcon", withExtension: "svg"),
-           let nsImage = NSImage(contentsOf: url) {
-            return Image(nsImage: nsImage)
-        }
-        return Image(systemName: "doc.on.clipboard.fill")
+        Image(nsImage: nsIcon)
     }
 
-    /// Template-иконка для menu bar status item (Backlog #5).
-    /// Монохром, isTemplate=true → macOS сам красит под appearance.
-    /// Tight viewBox без лишнего padding → стандартная ширина status item.
+    /// Installs the color icon as the running application's icon. Affects the
+    /// About panel header and the Cmd-Tab switcher entry. Call from
+    /// `applicationDidFinishLaunching`. Until DrPaste ships as a signed .app
+    /// bundle with an .icns inside Contents/Resources, this is the only way
+    /// the Dock can be persuaded to display the branded icon.
+    static func installApplicationIcon() {
+        NSApplication.shared.applicationIconImage = nsIcon
+    }
+
+    /// Template icon for the menu bar status item. Monochrome with isTemplate=true
+    /// so macOS tints it to match the system appearance (black in light mode,
+    /// white in dark mode, accent when the status menu is open). Tight viewBox
+    /// keeps the status item at the standard width.
+    ///
+    /// Resource lookup order, first match wins:
+    ///   1. MenuBarIcon.pdf     — preferred vector format
+    ///   2. MenuBarIcon.svg     — fallback vector format (current default)
+    ///   3. MenuBarIcon@2x.png  — Retina raster, picked up automatically
+    ///   4. MenuBarIcon.png     — single-resolution raster fallback
+    ///   5. SF Symbol "doc.on.clipboard" — last-resort placeholder
     static var menuBarIcon: NSImage {
         let img: NSImage
         if let url = Bundle.module.url(forResource: "MenuBarIcon", withExtension: "pdf"),
            let i = NSImage(contentsOf: url) {
             img = i
         } else if let url = Bundle.module.url(forResource: "MenuBarIcon", withExtension: "svg"),
+                  let i = NSImage(contentsOf: url) {
+            img = i
+        } else if let url = Bundle.module.url(forResource: "MenuBarIcon", withExtension: "png"),
                   let i = NSImage(contentsOf: url) {
             img = i
         } else {
@@ -60,7 +87,7 @@ enum AppBrand {
         return img
     }
 
-    /// Полный credits для About panel (Backlog #6).
+    /// Full credits block for the About panel.
     static var aboutCredits: NSAttributedString {
         let body = NSMutableAttributedString()
 

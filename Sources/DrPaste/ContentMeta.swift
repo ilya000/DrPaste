@@ -6,9 +6,9 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Content metadata для HUD content meta row (Правка #15).
-//  Lazy async compute + in-memory cache. Не должно тормозить — budget time 50 ms,
-//  для больших inputs используется sampling-based approximation.
+//  Content metadata shown in the HUD's meta row. Lazy async compute with an
+//  in-memory cache. Time budget per compute is roughly 50 ms; large inputs use
+//  sampling-based approximation to stay within budget.
 //
 
 import Foundation
@@ -20,8 +20,8 @@ final class ContentMetaCache: @unchecked Sendable {
     private var cache: [UUID: String] = [:]
     private let lock = NSLock()
 
-    /// Synchronous compute — вызывается из background Task'а.
-    /// Возвращает уже cache'нутое значение либо вычисляет и кеширует.
+    /// Synchronous compute called from a background Task. Returns the cached
+    /// value when present, otherwise computes and caches.
     func computeSync(for item: ClipboardItem) -> String {
         lock.lock()
         if let cached = cache[item.id] {
@@ -81,7 +81,7 @@ final class ContentMetaCache: @unchecked Sendable {
             let lines = text.components(separatedBy: .newlines).count
             return "\(label) · \(words) words · \(chars) chars · \(lines) lines"
         }
-        // Большие — sample-based approximation
+        // Large inputs use sample-based approximation.
         let sample = text.prefix(10_000)
         let sampleWords = sample.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
         let estimatedWords = Int(Double(sampleWords) * Double(text.count) / Double(sample.count))
@@ -154,14 +154,14 @@ final class ContentMetaCache: @unchecked Sendable {
     }
 
     private func computePDF(_ item: ClipboardItem) -> String {
-        // Найдём PDF data, оценим pages count
+        // Locate PDF data and estimate the page count.
         guard let rel = item.representations["com.adobe.pdf"],
               let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel))
         else {
             return "PDF"
         }
         let bytes = data.count
-        // Быстрая оценка page count через CGPDFDocument
+        // Fast page count via CGPDFDocument.
         var pages = 0
         if let provider = CGDataProvider(data: data as CFData),
            let doc = CGPDFDocument(provider) {

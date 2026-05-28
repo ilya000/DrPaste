@@ -6,8 +6,9 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Settings UI (Backlog #8): SwiftUI TabView с General, AI Providers, per-content-type tabs.
-//  Каждый content tab — playground: sample input + Result pane + actions list с Run buttons.
+//  Settings UI: SwiftUI TabView with General, AI Providers, and per-content-type
+//  tabs. Each content tab is a playground with sample input, a Result pane, and
+//  an action list with Run buttons.
 //
 
 import AppKit
@@ -62,8 +63,6 @@ struct SettingsView: View {
                 ContentTypeTab(kind: kind, registry: registry, store: store)
                     .tabItem { Label(kind.displayName, systemImage: kind.sfSymbol) }
             }
-            ImportExportTab(registry: registry)
-                .tabItem { Label("Import/Export", systemImage: "square.and.arrow.up.on.square") }
         }
         .padding()
         .frame(minWidth: 760, minHeight: 520)
@@ -80,6 +79,9 @@ struct GeneralTab: View {
     @ObservedObject var registry: ActionRegistry
     @State private var fontScale: Double = 1.0
     @State private var soundVolume: Double = 0.6
+    @State private var configStatus: String? = nil
+    @State private var confirmReplace = false
+    @State private var confirmFactoryReset = false
 
     var body: some View {
         Form {
@@ -136,6 +138,35 @@ struct GeneralTab: View {
                     Toggle(cueLabel(cue), isOn: cueBinding(cue))
                 }
             }
+
+            Section("Configuration") {
+                HStack(spacing: 10) {
+                    Button("Export…") { exportConfig() }
+                    Button("Import…") { importConfig(strategy: .merge) }
+                    Button("Replace from file…") { confirmReplace = true }
+                    Spacer()
+                }
+                Text("Export saves your actions, hotkeys, and preferences to a JSON file. API keys are kept in Keychain and never written to the export.")
+                    .font(.caption).foregroundStyle(.secondary)
+
+                HStack(spacing: 10) {
+                    Button(role: .destructive) {
+                        confirmFactoryReset = true
+                    } label: {
+                        Label("Factory Reset", systemImage: "arrow.counterclockwise")
+                            .foregroundStyle(.red)
+                    }
+                    Spacer()
+                }
+                Text("Factory Reset wipes all action customizations, custom AI prompts and transformations, per-action hotkeys, configured AI providers, and saved API keys, then reseeds the bundled defaults. This cannot be undone.")
+                    .font(.caption).foregroundStyle(.secondary)
+
+                if let status = configStatus {
+                    Text(status)
+                        .font(.caption)
+                        .foregroundStyle(status.hasPrefix("Failed") ? .red : .green)
+                }
+            }
         }
         .formStyle(.grouped)
         .onAppear { reload() }
@@ -144,8 +175,28 @@ struct GeneralTab: View {
         }
         .onChange(of: soundVolume) { v in
             SoundFeedback.setVolume(Float(v))
-            // #1 Sound preview — играем при изменении volume
+            // Sound preview while the volume slider moves.
             SoundFeedback.playPreview(.copySuccess)
+        }
+        .confirmationDialog(
+            "Replace configuration from file?",
+            isPresented: $confirmReplace,
+            titleVisibility: .visible
+        ) {
+            Button("Replace", role: .destructive) { importConfig(strategy: .replace) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Your current actions, hotkeys, and preferences will be replaced with the contents of the selected file. API keys in Keychain are not touched.")
+        }
+        .confirmationDialog(
+            "Reset DrPaste to factory defaults?",
+            isPresented: $confirmFactoryReset,
+            titleVisibility: .visible
+        ) {
+            Button("Reset everything", role: .destructive) { factoryReset() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("All custom actions, hotkeys, AI provider configs, API keys, and preferences will be erased. This cannot be undone.")
         }
     }
 
@@ -178,37 +229,86 @@ struct GeneralTab: View {
             get: { SoundFeedback.isEnabled(cue) },
             set: { newValue in
                 SoundFeedback.setEnabled(newValue, for: cue)
-                // #1 Sound preview: играем sample когда тогглят (всегда, чтобы user
-                // услышал что это за звук, даже при выключении — последний preview)
+                // Sound preview on every toggle so the user always hears the
+                // sample — even when disabling (gives them a final preview).
                 SoundFeedback.playPreview(cue)
             }
         )
     }
+
+    // MARK: - Configuration (Export / Import / Factory Reset)
+
+    private func exportConfig() {
+        guard let data = registry.exportJSON() else {
+            configStatus = "Failed to encode configuration"
+            return
+        }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "drpaste-config-\(Self.dateStamp()).json"
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                try data.write(to: url)
+                configStatus = "Exported to \(url.lastPathComponent)"
+            } catch {
+                configStatus = "Failed to write file: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func importConfig(strategy: ActionRegistry.ImportStrategy) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK,
+              let url = panel.url,
+              let data = try? Data(contentsOf: url) else { return }
+        if registry.importJSON(data, strategy: strategy) {
+            configStatus = strategy == .replace ? "Replaced from \(url.lastPathComponent)"
+                                                : "Merged from \(url.lastPathComponent)"
+        } else {
+            configStatus = "Failed: file is not a valid DrPaste configuration"
+        }
+    }
+
+    private func factoryReset() {
+        registry.factoryReset()
+        // Pull UserDefaults-backed local state back to defaults so the inputs
+        // displayed in this same view reflect the reset immediately.
+        fontScale = 1.0
+        soundVolume = Double(SoundFeedback.currentVolume())
+        configStatus = "Factory reset complete"
+    }
+
+    private static func dateStamp() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: Date())
+    }
 }
 
-// MARK: - AI Providers tab (Multi-provider, правка #4)
+// MARK: - AI Providers tab (multi-provider)
 
 struct AIProvidersTab: View {
     @ObservedObject var registry: ActionRegistry
     @ObservedObject private var providerRegistry = AIProviderRegistry.shared
     @State private var editingProvider: ConfiguredProvider? = nil
     @State private var showingAddSheet = false
+    /// Mirror of `APIKeyStorage.fallbackOnly`. Toggled by the user via the
+    /// "Skip macOS Keychain" switch at the bottom of this tab; persisted via
+    /// the static setter on `APIKeyStorage` (UserDefaults-backed).
+    @State private var fallbackOnly: Bool = APIKeyStorage.fallbackOnly
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("Default provider:")
-                Picker("", selection: defaultBinding) {
-                    ForEach(providerRegistry.config.providers) { p in
-                        Text(p.displayName).tag(p.id as String?)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: 300)
-                Spacer()
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "info.circle")
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 2)
+                Text("Select a default provider with the radio button on the left. AI actions use the default unless overridden per-action. The default is set automatically after the first successful connection test.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Text("Used for all custom AI actions unless overridden per action.")
-                .font(.caption).foregroundStyle(.secondary)
 
             Divider()
 
@@ -240,6 +340,17 @@ struct AIProvidersTab: View {
                 .controlSize(.small)
                 Spacer()
             }
+
+            Divider()
+
+            // API key storage policy. Defaults to Keychain. The toggle exists
+            // because unsigned builds (current state of this project) trigger
+            // a Keychain login-password prompt on every launch — Keychain's
+            // ACL is tied to the binary's code signature and every rebuild
+            // changes the hash. Flipping to file storage moves keys to
+            // `~/Library/Application Support/DrPaste/provider-keys-fallback.json`
+            // with 0o600 perms. Same protection level as ~/.aws/credentials.
+            keyStorageSection
         }
         .padding()
         .sheet(item: $editingProvider) { p in
@@ -268,12 +379,6 @@ struct AIProvidersTab: View {
         }
     }
 
-    private var defaultBinding: Binding<String?> {
-        Binding(
-            get: { providerRegistry.config.defaultProviderID },
-            set: { providerRegistry.setDefault(providerID: $0 ?? "") }
-        )
-    }
 
     @ViewBuilder
     private func sectionHeader(_ title: String) -> some View {
@@ -284,16 +389,71 @@ struct AIProvidersTab: View {
         .padding(.top, 4)
     }
 
+    /// API-key storage policy section. Defaults to Keychain. The user can
+    /// flip to a plain-JSON fallback file when Keychain triggers a login
+    /// password prompt on every launch (typical for unsigned development
+    /// builds — Keychain ACL is bound to the binary's code signature and
+    /// every rebuild changes the hash).
+    @ViewBuilder
+    private var keyStorageSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "lock.shield").foregroundStyle(.secondary)
+                Text("API key storage")
+                    .font(.subheadline)
+                Spacer()
+            }
+            Toggle("Skip macOS Keychain — store API keys in a local file",
+                   isOn: $fallbackOnly)
+                .onChange(of: fallbackOnly) { newValue in
+                    APIKeyStorage.setFallbackOnly(newValue)
+                    AIProviderRegistry.shared.invalidateCache()
+                }
+            Text("Useful for unsigned development builds. Keychain ties its ACL to the app's code signature; every rebuild changes the binary hash and triggers the login password prompt on next launch. With this enabled, keys are saved to ~/Library/Application Support/DrPaste/provider-keys-fallback.json with user-only file permissions (0o600).")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if fallbackOnly {
+                Text("File storage active. New API keys are written to the fallback file. Any existing Keychain entries are ignored — re-enter the key in the provider editor if a provider stops working.")
+                    .font(.caption2)
+                    .foregroundStyle(Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     @ViewBuilder
     private func providerRow(_ p: ConfiguredProvider) -> some View {
+        let hasKey = APIKeyStorage.load(for: p.id) != nil
+        let isReady = p.kind.isLocal || hasKey
+        let isDefault = providerRegistry.config.defaultProviderID == p.id
         HStack(spacing: 10) {
-            let hasKey = APIKeyStorage.load(for: p.id) != nil
-            let isReady = p.kind.isLocal || hasKey
+            // Default radio — clickable if provider is ready.
+            Button {
+                if isReady {
+                    providerRegistry.setDefault(providerID: p.id)
+                }
+            } label: {
+                Image(systemName: isDefault ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(radioColor(isDefault: isDefault, isReady: isReady))
+                    .font(.system(size: 14))
+            }
+            .buttonStyle(.plain)
+            .help(isReady ? "Set as default provider for AI actions" : "Configure the provider first")
+
             Circle()
                 .fill(isReady ? Color.green : Color.gray.opacity(0.4))
                 .frame(width: 8, height: 8)
             VStack(alignment: .leading, spacing: 2) {
-                Text(p.displayName).font(.system(size: 13, weight: .medium))
+                HStack(spacing: 6) {
+                    Text(p.displayName).font(.system(size: 13, weight: .medium))
+                    if isDefault {
+                        Text("DEFAULT")
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 4).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+                    }
+                }
                 Text(p.kind.isLocal
                      ? "Local · \(p.baseURL ?? "no URL") · \(p.model)"
                      : "\(isReady ? "Configured" : "Not configured") · \(p.model)")
@@ -313,6 +473,14 @@ struct AIProvidersTab: View {
         }
         .padding(.horizontal, 8).padding(.vertical, 6)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.04)))
+    }
+
+    /// Returns explicit Color for the radio icon to avoid HierarchicalShapeStyle vs Color
+    /// type inference issues in the ternary expression.
+    private func radioColor(isDefault: Bool, isReady: Bool) -> Color {
+        if isDefault { return .accentColor }
+        if isReady { return Color.primary.opacity(0.55) }
+        return Color.primary.opacity(0.25)
     }
 
     private func enabledBinding(_ p: ConfiguredProvider) -> Binding<Bool> {
@@ -471,12 +639,29 @@ struct ProviderEditor: View {
             switch result {
             case .success(let msg):
                 testResult = "✓ \(msg)"
+                // Auto-promote to default if no default is set, default is empty,
+                // or the current default is not ready (no key / no local URL).
+                if Self.shouldAutoPromoteDefault() {
+                    AIProviderRegistry.shared.setDefault(providerID: providerCopy.id)
+                }
                 commit()
             case .failure(let e):
                 testResult = "✗ \(errorMessage(e))"
                 // Editor remains open — user can adjust and retry.
             }
         }
+    }
+
+    /// Returns true if the just-passed provider should claim the default slot:
+    /// either no default exists, or the current default has no key / is unconfigured.
+    private static func shouldAutoPromoteDefault() -> Bool {
+        let cfg = AIProviderRegistry.shared.config
+        guard let currentID = cfg.defaultProviderID, !currentID.isEmpty,
+              let currentDefault = cfg.providers.first(where: { $0.id == currentID })
+        else { return true }
+        let hasKey = APIKeyStorage.load(for: currentDefault.id) != nil
+        let isReady = currentDefault.kind.isLocal || hasKey
+        return !isReady
     }
 
     private func commit() {
@@ -494,7 +679,7 @@ struct ProviderEditor: View {
         }
     }
 
-    /// Manual standalone test (без save) — keeps editor open regardless of result.
+    /// Manual standalone test (no save) — keeps the editor open regardless of result.
     private func runTest() {
         testing = true; testResult = nil
         let temp = provider
@@ -578,6 +763,9 @@ struct ProviderAddSheet: View {
 struct ContentTypeTab: View {
     let kind: SemanticKind
     @ObservedObject var registry: ActionRegistry
+    /// Observed so AI action rows re-render when the default provider changes —
+    /// default-bound rows show whichever provider's icon is currently default.
+    @ObservedObject private var providerRegistry = AIProviderRegistry.shared
     let store: ClipboardStore
 
     @State private var sampleText: String = ""
@@ -587,9 +775,9 @@ struct ContentTypeTab: View {
     @State private var showingPalette: Bool = false
 
     var body: some View {
-        // 2-колоночная вёрстка (Правка #5):
-        // left = Sample input сверху + Result снизу
-        // right = scrollable Actions list
+        // Two-column layout:
+        // left  = Sample input on top, Result below
+        // right = scrollable Actions list.
         HStack(alignment: .top, spacing: 16) {
             leftColumn
                 .frame(minWidth: 320, idealWidth: 380, maxWidth: .infinity)
@@ -645,7 +833,7 @@ struct ContentTypeTab: View {
             HStack {
                 Text("Actions").font(.headline)
                 Spacer()
-                Text("\(orderedActions.count + customAIDescriptors.count)")
+                Text("\(orderedActions.count)")
                     .font(.caption).foregroundStyle(.secondary)
                 Button { editorContext = .createNew } label: {
                     Label("New", systemImage: "plus.circle")
@@ -656,8 +844,9 @@ struct ContentTypeTab: View {
                 }
                 .controlSize(.small)
             }
-            // Drag-to-reorder через SwiftUI List (правка #5).
-            // Paste as is (identity) всегда первый и не двигается.
+            // Single drag-to-reorder list. Identity is always first.
+            // Built-in, custom AI, and custom transformations all live here together —
+            // user can intermix and reorder freely.
             List {
                 ForEach(orderedActions, id: \.id) { action in
                     actionRow(action)
@@ -666,27 +855,6 @@ struct ContentTypeTab: View {
                         .listRowBackground(Color.clear)
                 }
                 .onMove(perform: moveActions)
-
-                if !customTransformationDescriptors.isEmpty {
-                    Section("Custom transformations") {
-                        ForEach(customTransformationDescriptors) { desc in
-                            customTransformationRow(desc)
-                                .listRowInsets(EdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4))
-                                .listRowSeparator(.hidden)
-                                .listRowBackground(Color.clear)
-                        }
-                    }
-                }
-                if !customAIDescriptors.isEmpty {
-                    Section("Custom AI actions") {
-                        ForEach(customAIDescriptors) { desc in
-                            customAIRow(desc)
-                                .listRowInsets(EdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4))
-                                .listRowSeparator(.hidden)
-                                .listRowBackground(Color.clear)
-                        }
-                    }
-                }
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
@@ -696,109 +864,49 @@ struct ContentTypeTab: View {
         }
     }
 
-    @ViewBuilder
-    private func customTransformationRow(_ desc: CustomTransformationDescriptor) -> some View {
-        let hotkey = registry.hotkey(for: desc.id)
-        HStack(spacing: 8) {
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-                .frame(width: 12)
-            Toggle("", isOn: Binding(
-                get: { desc.enabled },
-                set: { newValue in
-                    var copy = desc
-                    copy.enabled = newValue
-                    registry.upsertCustomTransformation(copy)
-                }
-            ))
-            .labelsHidden()
-            if let engine = desc.engine {
-                Image(systemName: engine.iconName).foregroundStyle(.secondary).frame(width: 16)
-            }
-            Text(desc.title).lineLimit(1)
-            Spacer()
-            if let hk = hotkey {
-                Text(hk.displayString)
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(Capsule().fill(Color.primary.opacity(0.08)))
-            }
-            Button("Edit") { editorContext = .editTransformation(desc) }
-                .controlSize(.small)
-            Button("Run") { runTransformation(desc) }
-                .controlSize(.small)
-        }
-        .padding(.horizontal, 4).padding(.vertical, 3)
-        .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.04)))
-    }
-
-    private func runTransformation(_ desc: CustomTransformationDescriptor) {
-        let kinds = Set(desc.applicableTypes.compactMap { SemanticKind(rawValue: $0) })
-        let action = CustomTransformationAction(
-            id: desc.id,
-            title: desc.title,
-            descriptor: desc,
-            applicableSet: kinds.isEmpty ? [.text] : kinds
-        )
-        run(action)
-    }
-
     private func moveActions(from source: IndexSet, to destination: Int) {
         var ids = orderedActions.map { $0.id }
-        // Запретить перемещать identity и помещать что-либо в позицию 0
+        // Identity must stay at position 0 and cannot be moved.
         if source.contains(0) { return }
         let safeDest = max(1, destination)
         ids.move(fromOffsets: source, toOffset: safeDest)
         registry.setActionOrder(ids, for: kind)
     }
 
-    /// Actions в порядке текущего config (или default) + identity первая.
+    /// All applicable actions in saved order (or default). Identity stays first.
+    /// Includes built-ins, custom AI actions, and custom transformations in a single list —
+    /// user can reorder freely.
     private var orderedActions: [ClipboardAction] {
         let item = makeSampleItem()
         let ctx = ContextDetector.detect(item)
-        let applicable = registry.actions.filter {
-            $0.isApplicable(item: item, context: ctx) && !$0.id.hasPrefix("user.")
-        }
+        let applicable = registry.actions.filter { $0.isApplicable(item: item, context: ctx) }
         return registry.reorder(applicable, forContentType: kind)
     }
 
-    private var applicableActions: [ClipboardAction] {
-        let item = makeSampleItem()
-        let ctx = ContextDetector.detect(item)
-        return registry.actions.filter { $0.isApplicable(item: item, context: ctx) && !$0.id.hasPrefix("user.") }
-    }
-
-    private var customAIDescriptors: [CustomAIDescriptor] {
-        registry.config.customAI.filter { $0.applicableTypes.contains(kind.rawValue) }
-    }
-
-    private var customTransformationDescriptors: [CustomTransformationDescriptor] {
-        registry.config.customTransformations.filter { $0.applicableTypes.contains(kind.rawValue) }
-    }
-
+    /// Polymorphic row renderer — branches on action type so built-in, custom AI,
+    /// and custom transformation rows live together in a single reorderable list.
+    /// - Built-in: BuiltinActionIcons type icon; pencil → editBuiltin; no delete.
+    /// - Custom AI: provider badge that resolves the current default dynamically when
+    ///   the action follows the default; pencil → editAI; delete removes the AI descriptor.
+    /// - Custom transformation: engine SF Symbol; pencil → editTransformation; delete
+    ///   removes the transformation descriptor.
+    @ViewBuilder
     private func actionRow(_ action: ClipboardAction) -> some View {
         let displayTitle = registry.displayTitle(forActionID: action.id,
                                                   defaultTitle: action.title)
         let isCustomized = displayTitle != action.title
-        let hotkey = registry.hotkey(for: action.id)
         let isLocked = action.id == "builtin.identity"
-        let rowBg: Color = Color.primary.opacity(0.03)
-        return HStack(spacing: 8) {
-            // #2 Drag handle affordance — visual grip
-            // Identity (Paste as is) shown as locked (cannot be moved).
+        let isEnabled = registry.isEnabled(action.id)
+        let rowBg = rowBackground(for: action)
+        HStack(spacing: 8) {
+            // Drag handle. Identity (Paste as is) shown as locked (cannot be moved).
             Image(systemName: isLocked ? "lock.fill" : "line.3.horizontal")
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
                 .frame(width: 12)
             Toggle("", isOn: enabledBinding(action.id))
                 .labelsHidden()
-            // #11 Type icon — visual consistency across all action rows.
-            Image(systemName: BuiltinActionIcons.iconName(for: action.id))
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .frame(width: 16)
+            leadingIcon(for: action)
             VStack(alignment: .leading, spacing: 1) {
                 Text(displayTitle)
                     .lineLimit(1)
@@ -809,21 +917,21 @@ struct ContentTypeTab: View {
                 }
             }
             Spacer()
-            if let hk = hotkey {
-                Text(hk.displayString)
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(Capsule().fill(Color.primary.opacity(0.08)))
-            }
-            // Identity (Paste as is) поддерживает rename (#3), но не drag/delete.
-            Button {
-                editorContext = .editBuiltin(
-                    actionID: action.id,
-                    defaultTitle: action.title,
-                    description: BuiltinActionMetadata.descriptions[action.id] ?? ""
-                )
-            } label: {
+            // Inline hotkey recorder. Per the action-hierarchy principle,
+            // assigning a hotkey is a Tier 2 operation (a simple binary
+            // setting), so it lives in the row itself — the user doesn't
+            // need to open the editor (Tier 3) just to bind a shortcut.
+            // The editor still exposes the same recorder for users who
+            // want to tune a hotkey alongside title / parameters / scope.
+            HotkeyRecorderField(
+                hotkey: hotkeyBinding(for: action.id),
+                onStatus: { _ in },   // silent in row — auto-steal happens in the binding setter
+                conflictChecker: { hk in
+                    registry.conflictingActionInfo(for: hk, excludingID: action.id)
+                }
+            )
+            .frame(maxWidth: 150)
+            Button { openEditor(for: action) } label: {
                 Image(systemName: "pencil")
             }
             .controlSize(.small)
@@ -834,47 +942,87 @@ struct ContentTypeTab: View {
                 Button("Run") { run(action) }
                     .controlSize(.small)
             }
+            // Delete intentionally lives only inside the editor (pencil →
+            // Delete in the editor footer). The row's checkbox is a reversible
+            // visibility toggle; full deletion is a destructive permanent
+            // operation and should require the heavier interaction of opening
+            // the editor and reading the action before clicking the
+            // destructive button.
         }
         .padding(.horizontal, 4).padding(.vertical, 3)
         .background(RoundedRectangle(cornerRadius: 4).fill(rowBg))
+        .opacity(isEnabled ? 1.0 : 0.45)
     }
 
-    private func customAIRow(_ desc: CustomAIDescriptor) -> some View {
-        let badge = providerBadge(for: desc.providerID)
-        return HStack(spacing: 8) {
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-                .frame(width: 12)
-            Toggle("", isOn: customEnabledBinding(desc.id))
-                .labelsHidden()
+    /// Background tint distinguishes user-defined actions (subtle accent) from
+    /// built-ins (neutral) without breaking the unified list visual rhythm.
+    private func rowBackground(for action: ClipboardAction) -> Color {
+        if action is AIAction || action is CustomTransformationAction {
+            return Color.accentColor.opacity(0.06)
+        }
+        return Color.primary.opacity(0.03)
+    }
+
+    /// Leading type icon — provider badge for AI, engine glyph for transformations,
+    /// built-in SF Symbol otherwise. Provider badge resolves the default dynamically,
+    /// so seeded actions follow whichever provider is currently default.
+    @ViewBuilder
+    private func leadingIcon(for action: ClipboardAction) -> some View {
+        if let aiAction = action as? AIAction {
+            let badge = providerBadge(for: aiAction)
             ProviderBadgeView(text: badge.label, color: badge.color,
                               fontSize: 11, iconName: badge.icon)
-            Text(desc.title)
-                .lineLimit(1)
-            Spacer()
-            Button("Edit") { editorContext = .editAI(desc) }
-                .controlSize(.small)
-            Button("Run") { runCustomAI(desc) }
-                .controlSize(.small)
-            Button { registry.removeCustomAI(id: desc.id) } label: {
-                Image(systemName: "trash")
-            }
-            .controlSize(.small)
+        } else if let tx = action as? CustomTransformationAction {
+            Image(systemName: tx.descriptor.engine?.iconName ?? "function")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+        } else {
+            Image(systemName: BuiltinActionIcons.iconName(for: action.id))
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
         }
-        .padding(.horizontal, 4).padding(.vertical, 3)
-        .background(RoundedRectangle(cornerRadius: 4).fill(Color.accentColor.opacity(0.06)))
     }
 
-    /// Provider badge для AI action в Settings list (симметрия с HUD).
-    private func providerBadge(for providerID: String)
+    /// Routes the pencil button to the correct editor sheet for the action's type.
+    private func openEditor(for action: ClipboardAction) {
+        if action is AIAction,
+           let desc = registry.config.customAI.first(where: { $0.id == action.id }) {
+            editorContext = .editAI(desc)
+            return
+        }
+        if let tx = action as? CustomTransformationAction {
+            editorContext = .editTransformation(tx.descriptor)
+            return
+        }
+        editorContext = .editBuiltin(
+            actionID: action.id,
+            defaultTitle: action.title,
+            description: BuiltinActionMetadata.descriptions[action.id] ?? ""
+        )
+    }
+
+    /// Provider badge for AI action in Settings list (mirrors HUD chip).
+    /// Resolves dynamically: actions with nil or empty providerID follow the current
+    /// default provider — when the user changes the default, every default-bound row
+    /// updates because @ObservedObject on the provider registry republishes.
+    private func providerBadge(for ai: AIAction)
         -> (label: String, color: Color, icon: String)
     {
-        guard let cp = AIProviderRegistry.shared.config.providers.first(where: { $0.id == providerID })
-        else {
-            return ("AI", .gray, "sparkle")
-        }
-        let kind = cp.kind
+        let resolvedKind: ProviderKind? = {
+            if let id = ai.providerID, !id.isEmpty,
+               let cp = AIProviderRegistry.shared.config.providers.first(where: { $0.id == id }) {
+                return cp.kind
+            }
+            if let defaultID = AIProviderRegistry.shared.config.defaultProviderID,
+               !defaultID.isEmpty,
+               let cp = AIProviderRegistry.shared.config.providers.first(where: { $0.id == defaultID }) {
+                return cp.kind
+            }
+            return nil
+        }()
+        guard let kind = resolvedKind else { return ("AI", .gray, "sparkle") }
         let color: Color
         switch kind {
         case .anthropic: color = .orange
@@ -895,14 +1043,20 @@ struct ContentTypeTab: View {
         )
     }
 
-    private func customEnabledBinding(_ id: String) -> Binding<Bool> {
+    /// Binding for the inline row HotkeyRecorderField. Reads the current
+    /// hotkey for this action; on set, transparently unbinds the new hotkey
+    /// from whichever action previously held it (auto-steal), then writes the
+    /// new value. Matches the editor's save-time conflict-resolution policy,
+    /// so the row behaves the same as the editor without the dialog round trip.
+    private func hotkeyBinding(for actionID: String) -> Binding<ActionHotkey?> {
         Binding(
-            get: { registry.config.customAI.first(where: { $0.id == id })?.enabled ?? true },
+            get: { registry.hotkey(for: actionID) },
             set: { newValue in
-                if var desc = registry.config.customAI.first(where: { $0.id == id }) {
-                    desc.enabled = newValue
-                    registry.upsertCustomAI(desc)
+                if let new = newValue,
+                   let other = registry.conflictingAction(for: new, excludingID: actionID) {
+                    registry.setHotkey(nil, for: other)
                 }
+                registry.setHotkey(newValue, for: actionID)
             }
         )
     }
@@ -928,18 +1082,6 @@ struct ContentTypeTab: View {
                 self.runningID = nil
             }
         }
-    }
-
-    private func runCustomAI(_ desc: CustomAIDescriptor) {
-        let kinds = Set(desc.applicableTypes.compactMap { SemanticKind(rawValue: $0) })
-        let action = AIAction(
-            id: desc.id,
-            title: desc.title,
-            promptTemplate: desc.promptTemplate,
-            providerID: desc.providerID,
-            applicableTypes: kinds.isEmpty ? [.text, .richText, .markdown] : kinds
-        )
-        run(action)
     }
 
 }
@@ -1014,66 +1156,4 @@ struct ResultPane: View {
 
 }
 
-// MARK: - Import/Export tab
-
-struct ImportExportTab: View {
-    @ObservedObject var registry: ActionRegistry
-    @State private var status: String? = nil
-
-    var body: some View {
-        VStack(spacing: 16) {
-            Text("Export your DrPaste configuration to a JSON file you can back up or share.")
-                .multilineTextAlignment(.center)
-                .padding(.horizontal)
-
-            HStack(spacing: 16) {
-                Button("Export…") { exportConfig() }
-                Button("Import…") { importConfig(strategy: .merge) }
-                Button("Replace all from file…") { importConfig(strategy: .replace) }
-                    .foregroundStyle(.red)
-            }
-
-            Text("API keys are not included in export for security reasons.")
-                .font(.caption).foregroundStyle(.secondary)
-
-            if let status = status {
-                Text(status).font(.caption).foregroundStyle(.green)
-            }
-
-            Spacer()
-        }
-        .padding()
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private func exportConfig() {
-        guard let data = registry.exportJSON() else { return }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "drpaste-config-\(dateStamp()).json"
-        if panel.runModal() == .OK, let url = panel.url {
-            try? data.write(to: url)
-            status = "Exported to \(url.lastPathComponent)"
-        }
-    }
-
-    private func importConfig(strategy: ActionRegistry.ImportStrategy) {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.json]
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url,
-           let data = try? Data(contentsOf: url) {
-            if registry.importJSON(data, strategy: strategy) {
-                status = strategy == .replace ? "Replaced" : "Merged"
-            } else {
-                status = "Import failed — invalid JSON"
-            }
-        }
-    }
-
-    private func dateStamp() -> String {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd"
-        return f.string(from: Date())
-    }
-}
+// Import/Export controls live in GeneralTab → "Configuration" section.

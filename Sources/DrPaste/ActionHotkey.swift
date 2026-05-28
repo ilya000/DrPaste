@@ -6,9 +6,9 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Per-action hotkeys (0.6.0): пользователь назначает горячую клавишу
-//  любому action — при нажатии action применяется к текущему clipboard
-//  content без открытия HUD, результат вставляется в frontmost app.
+//  Per-action hotkeys. The user assigns a global shortcut to any action; when
+//  pressed, the action runs against the current clipboard content without
+//  opening the HUD and the result is pasted into the frontmost app.
 //
 
 import Foundation
@@ -18,10 +18,10 @@ import Carbon.HIToolbox
 // MARK: - Hotkey descriptor
 
 struct ActionHotkey: Codable, Equatable, Hashable {
-    var keyCode: UInt16          // CGKeyCode (как UInt16 для Codable)
-    var modifiers: UInt32        // битовая маска: cmd / opt / ctrl / shift (Carbon constants)
+    var keyCode: UInt16          // CGKeyCode (typed as UInt16 for Codable)
+    var modifiers: UInt32        // Bitmask of Carbon constants: cmd / opt / ctrl / shift
 
-    /// Human-readable строка (например "⌃⌘P")
+    /// Human-readable string, e.g. "⌃⌘P".
     var displayString: String {
         var s = ""
         if modifiers & UInt32(controlKey) != 0 { s += "⌃" }
@@ -32,7 +32,7 @@ struct ActionHotkey: Codable, Equatable, Hashable {
         return s
     }
 
-    /// Конфликтует с зарезервированными hotkey'ями DrPaste (⌥⌘V/C/X)?
+    /// True if this combination collides with one of DrPaste's reserved main hotkeys (⌥⌘V/C/X).
     var conflictsWithMainHotkeys: Bool {
         let isOptCmd = modifiers == (UInt32(optionKey) | UInt32(cmdKey))
         guard isOptCmd else { return false }
@@ -43,7 +43,7 @@ struct ActionHotkey: Codable, Equatable, Hashable {
     }
 }
 
-/// Преобразование keyCode → название клавиши для UI.
+/// Maps a keyCode to a display name used in the UI.
 enum KeyName {
     static func from(keyCode: UInt16) -> String {
         switch Int(keyCode) {
@@ -116,7 +116,7 @@ enum KeyName {
     }
 }
 
-// MARK: - Manager — регистрирует Carbon hotkeys и роутит на ActionRegistry
+// MARK: - Manager — registers Carbon hotkeys and routes them to ActionRegistry
 
 @MainActor
 final class ActionHotkeyManager: ObservableObject {
@@ -154,12 +154,18 @@ final class ActionHotkeyManager: ObservableObject {
         }, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), &eventHandler)
     }
 
-    /// Перерегистрировать все hotkeys из ActionConfig.
+    /// Reregister all hotkeys from ActionConfig.
+    /// Skips actions whose descriptor is disabled — disabled actions remain
+    /// visible in Settings (greyed) but do not respond to their direct-trigger
+    /// hotkey. Mirrors how `ActionRegistry.applicable(for:context:)` filters
+    /// disabled actions out of the HUD list.
     func reload() {
         unregisterAll()
-        guard let cfg = registry?.config else { return }
+        guard let registry = registry else { return }
+        let cfg = registry.config
         for (actionID, hotkey) in cfg.actionHotkeys {
             guard !hotkey.conflictsWithMainHotkeys else { continue }
+            guard registry.isEnabled(actionID) else { continue }
             register(actionID: actionID, hotkey: hotkey)
         }
     }

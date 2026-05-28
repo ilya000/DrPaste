@@ -9,28 +9,9 @@
 
 import Foundation
 
-struct URLStripTrackingAction: ClipboardAction {
-    let id = "builtin.url_strip_tracking"
-    let title = "Clean URL"
-    let isLocal = true
-    static let tracking: Set<String> = [
-        "utm_source","utm_medium","utm_campaign","utm_term","utm_content",
-        "fbclid","gclid","yclid","mc_cid","mc_eid","igshid",
-        "_ga","_gl","ref","ref_src","ref_url","spm","wt_mc","vero_conv","vero_id"
-    ]
-    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        context.contains(.url)
-    }
-    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        guard var comps = URLComponents(string: (item.previewText ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)) else { return .preview(item) }
-        if let q = comps.queryItems {
-            comps.queryItems = q.filter { !Self.tracking.contains($0.name.lowercased()) }
-            if comps.queryItems?.isEmpty == true { comps.queryItems = nil }
-        }
-        return .preview(makeTextItem(comps.string ?? (item.previewText ?? ""), from: item))
-    }
-}
+// URLStripTrackingAction migrated to DefaultTransformationSeed as
+// `builtin.url_strip_tracking` using the urlStripTracking engine — the
+// tracking-parameter allowlist now lives in TransformationRuntime.
 
 struct URLJustDomainAction: ClipboardAction {
     let id = "builtin.url_domain"
@@ -76,29 +57,14 @@ struct URLHTMLLinkAction: ClipboardAction {
     }
 }
 
-struct URLQueryParamsAction: ClipboardAction {
-    let id = "builtin.url_query_params"
-    let title = "Query params as table"
-    let isLocal = true
-    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        context.contains(.url) && (item.previewText ?? "").contains("?")
-    }
-    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        guard let comps = URLComponents(string: (item.previewText ?? "")),
-              let queryItems = comps.queryItems else {
-            return .failed(original: item, reason: "No query parameters", recovery: nil)
-        }
-        let lines = queryItems.map { "\($0.name)\t\($0.value ?? "")" }
-        return .preview(makeTextItem(lines.joined(separator: "\n"), from: item))
-    }
-}
+// URLQueryParamsAction (Query params as table) removed in 0.12.0 — debug-tool
+// niche, no marketing weight.
 
 enum URLActionsPack {
     static var all: [ClipboardAction] {
         [
-            URLStripTrackingAction(), URLJustDomainAction(),
-            URLMarkdownLinkAction(), URLHTMLLinkAction(),
-            URLQueryParamsAction()
+            URLJustDomainAction(),
+            URLMarkdownLinkAction(), URLHTMLLinkAction()
         ]
     }
 }

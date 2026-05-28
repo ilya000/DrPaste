@@ -8,8 +8,8 @@
 //
 //  Universal Semantic Clipboard Layer (Backlog #1):
 //  three layers — raw preservation, semantic interpretation, transformation.
-//  ClipboardItem хранит ВСЕ representations NSPasteboard lossless,
-//  плюс semantic kind для preview/actions, плюс source metadata.
+//  ClipboardItem stores every NSPasteboard representation losslessly, plus a
+//  semantic kind used for previews / actions, plus source metadata.
 //
 
 import Foundation
@@ -70,37 +70,37 @@ enum SemanticKind: String, Codable, CaseIterable {
 
 struct ClipboardItem: Identifiable, Codable, Equatable {
     let id: UUID
-    var semantic: SemanticKind          // human-readable классификация
+    var semantic: SemanticKind          // human-readable classification
     let createdAt: Date
 
-    /// Все pasteboard representations. UTType identifier → relative path в blob storage.
-    /// Это lossless raw preservation — Paste-as-is восстанавливает ВСЁ.
+    /// All pasteboard representations. UTType identifier → relative path in blob storage.
+    /// Lossless raw preservation — Paste-as-is restores every representation.
     var representations: [String: String]
-    /// Порядок UTTypes как они были в исходном pasteboard (приоритет при write back).
+    /// UTTypes in the order they appeared in the source pasteboard (priority for write-back).
     var typesOrdered: [String]
 
-    /// Plain-text preview (snippet) для рендеринга в HUD и истории.
-    /// Не payload — это derived view, может быть короче или сэмплем.
+    /// Plain-text preview snippet used by the HUD and history list. Not a
+    /// payload; this is a derived view that may be shorter than the original.
     var previewText: String?
-    /// Относительный path к PNG-превью (для image / PDF kinds).
-    /// Это **thumbnail** (max 600 pt, сгенерирован в PreviewSynthesizer.imageRelative).
-    /// Full-size image живёт в representations[…].
+    /// Relative path to the PNG preview for image / PDF items.
+    /// This is the **thumbnail** (max 600 pt, generated via
+    /// PreviewSynthesizer.imageRelative). The full-size image stays in `representations`.
     var previewImageRel: String?
 
-    /// Image metadata (Правка #13). Заполняется при snapshot если semantic == .image.
+    /// Image metadata. Populated at snapshot time when semantic == .image.
     var originalImageWidth: Int? = nil
     var originalImageHeight: Int? = nil
-    var originalImageFileSize: Int? = nil     // байт original (до thumbnail downscale)
+    var originalImageFileSize: Int? = nil     // bytes of the original before thumbnail downscale
     var imageFormat: String? = nil            // "PNG" / "TIFF" / "JPEG" / "HEIC"
 
-    /// Source metadata — откуда скопировали.
+    /// Source metadata — where the item was copied from.
     var sourceBundleID: String?
     var sourceAppName: String?
     var sourceWindowTitle: String?
 
     var tags: [String]
 
-    /// Удобный плейн-текст getter с fallback для backwards compatibility со старыми actions.
+    /// Convenience plain-text getter kept for backward compatibility with older actions.
     var text: String? {
         get { previewText }
         set { previewText = newValue }
@@ -166,11 +166,15 @@ final class ClipboardStore: ObservableObject {
         guard let idx = items.firstIndex(where: { $0.id == id }) else { return }
         let item = items.remove(at: idx)
         deleteBlobs(for: item)
+        RichTextImageExtractor.invalidate(id)
         save()
     }
 
     func clearAll() {
-        for item in items { deleteBlobs(for: item) }
+        for item in items {
+            deleteBlobs(for: item)
+            RichTextImageExtractor.invalidate(item.id)
+        }
         items.removeAll()
         save()
     }
@@ -191,7 +195,7 @@ final class ClipboardStore: ObservableObject {
         return nil
     }
 
-    /// Сохраняет raw blob payload, возвращает relative path для хранения в representations.
+    /// Writes a raw blob payload and returns its relative path for storage in `representations`.
     func writeRawBlob(_ data: Data, type: String) -> String {
         let safeName = type.replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: ".", with: "_")
@@ -268,7 +272,7 @@ final class ClipboardStore: ObservableObject {
 // MARK: - Source resolver (Backlog #1)
 
 enum SourceResolver {
-    /// Резолвит источник копирования. Bundle ID, app name, опционально window title через AX.
+    /// Resolves the copy source: bundle ID, app name, optionally window title via AX.
     static func resolve() -> (bundleID: String?, name: String?, window: String?) {
         let app = NSWorkspace.shared.frontmostApplication
         let bundleID = app?.bundleIdentifier
@@ -277,7 +281,7 @@ enum SourceResolver {
         return (bundleID, name, window)
     }
 
-    /// Пытается прочитать window title через AX API. Тихо возвращает nil если AX недоступен.
+    /// Tries to read the focused window title via the AX API. Returns nil silently when AX is unavailable.
     private static func windowTitle(for pid: pid_t?) -> String? {
         guard let pid = pid, AXIsProcessTrusted() else { return nil }
         let appElement = AXUIElementCreateApplication(pid)
@@ -320,8 +324,8 @@ final class ClipboardWatcher {
 
     func stop() { timer?.invalidate(); timer = nil }
 
-    /// Принудительный tick — для случаев когда нужно немедленно подхватить
-    /// изменение pasteboard (например после simulateCut в Backlog #9).
+    /// Forced tick — used when a pasteboard change must be picked up
+    /// immediately (for example right after simulateCut).
     func forceTick() { tick() }
 
     private func tick() {
@@ -338,9 +342,9 @@ final class ClipboardWatcher {
         }
     }
 
-    /// Universal snapshot: проходим по всем pasteboard.types,
-    /// сохраняем каждое representation в blob storage,
-    /// классифицируем semantic, генерируем preview.
+    /// Universal snapshot: walks every pasteboard.type, saves each
+    /// representation to blob storage, classifies the semantic kind, and
+    /// generates a preview.
     private func snapshotPasteboard() -> ClipboardItem? {
         guard let types = pasteboard.types, !types.isEmpty else { return nil }
 
@@ -390,7 +394,7 @@ final class ClipboardWatcher {
 // MARK: - Semantic classifier
 
 enum SemanticClassifier {
-    /// Определяет наиболее информативный SemanticKind по доступным types.
+    /// Picks the most informative SemanticKind from the available pasteboard types.
     static func classify(types: [String], pasteboard: NSPasteboard) -> SemanticKind {
         let typeSet = Set(types)
 
@@ -409,7 +413,7 @@ enum SemanticClassifier {
         }
         // Rich text
         if typeSet.contains("public.rtf") || typeSet.contains("public.html") {
-            // Дополнительно посмотрим на string — определим markdown / code / table / url etc.
+            // Also inspect the string payload to refine the classification (markdown / code / table / url, etc.).
             if let s = pasteboard.string(forType: .string) {
                 let textKind = classifyText(s)
                 if textKind == .text { return .richText }
@@ -472,8 +476,8 @@ enum SemanticClassifier {
 // MARK: - Preview synthesizer
 
 enum PreviewSynthesizer {
-    /// Текстовый preview: для text/url/json/etc — нормализованная строка,
-    /// для image — "Image NN KB", для files — список filenames.
+    /// Text preview: for text / url / json / etc. returns the normalized string;
+    /// for image returns "Image NN KB"; for files returns a list of filenames.
     static func text(from pasteboard: NSPasteboard, semantic: SemanticKind) -> String? {
         switch semantic {
         case .image:
@@ -496,13 +500,26 @@ enum PreviewSynthesizer {
         }
     }
 
-    /// Для image — кешируем **thumbnail** (max 600 pt) PNG в imagesDir, возвращаем relative path.
-    /// Full-size payload остаётся в representations[png/tiff/etc].
-    /// HUD рендерит thumbnail — не nagrushает layout при больших картинках (Правка #13).
+    /// For images / PDFs: caches a **thumbnail** (max 600 pt) PNG in imagesDir
+    /// and returns its relative path. The full-size payload stays in
+    /// `representations[png/tiff/com.adobe.pdf/etc]`. The HUD renders the
+    /// thumbnail so layout stays smooth even on very large source assets.
     static func imageRelative(from pasteboard: NSPasteboard,
                               semantic: SemanticKind,
                               store: ClipboardStore) -> String? {
-        guard semantic == .image else { return nil }
+        switch semantic {
+        case .image:
+            return imageThumbnail(from: pasteboard, store: store)
+        case .pdf:
+            return pdfThumbnail(from: pasteboard, store: store)
+        default:
+            return nil
+        }
+    }
+
+    /// Renders a raster thumbnail from any PNG / TIFF the pasteboard provided.
+    private static func imageThumbnail(from pasteboard: NSPasteboard,
+                                       store: ClipboardStore) -> String? {
         let imgData = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff)
         guard let data = imgData else { return nil }
         let fullImage = NSImage(data: data) ?? NSImage()
@@ -519,7 +536,61 @@ enum PreviewSynthesizer {
         return store.writeImageData(pngData)
     }
 
-    /// Image metadata (Правка #13). Используется в HUD ContentMetaRow.
+    /// Renders the first page of a clipboard PDF into a PNG thumbnail (≤600 pt
+    /// on the larger side, white background) and caches it in imagesDir. Used
+    /// by the HUD preview pane so PDFs surface as a real page image instead of
+    /// the generic "PDF NN KB" placeholder.
+    private static func pdfThumbnail(from pasteboard: NSPasteboard,
+                                     store: ClipboardStore) -> String? {
+        guard let data = pasteboard.data(forType: NSPasteboard.PasteboardType("com.adobe.pdf"))
+        else { return nil }
+        return renderPDFFirstPage(data: data, store: store)
+    }
+
+    /// Decodes a PDF blob, draws the first page into a fresh NSBitmapImageRep,
+    /// encodes as PNG, and writes it to `store.imagesDir`. Returns the relative
+    /// filename (suitable for `ClipboardItem.previewImageRel`) or nil on failure.
+    static func renderPDFFirstPage(data: Data, store: ClipboardStore) -> String? {
+        guard let provider = CGDataProvider(data: data as CFData),
+              let doc = CGPDFDocument(provider),
+              let page = doc.page(at: 1)
+        else { return nil }
+
+        let pageRect = page.getBoxRect(.cropBox)
+        guard pageRect.width > 0, pageRect.height > 0 else { return nil }
+
+        // Scale so the larger side fits within 600 pt.
+        let maxSide: CGFloat = 600
+        let scale = min(maxSide / pageRect.width, maxSide / pageRect.height, 2.0)
+        let targetSize = CGSize(width: pageRect.width * scale,
+                                height: pageRect.height * scale)
+
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let ctx = CGContext(data: nil,
+                                  width: Int(targetSize.width),
+                                  height: Int(targetSize.height),
+                                  bitsPerComponent: 8,
+                                  bytesPerRow: 0,
+                                  space: colorSpace,
+                                  bitmapInfo: bitmapInfo)
+        else { return nil }
+
+        // White page background — most PDFs assume white paper.
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fill(CGRect(origin: .zero, size: targetSize))
+        ctx.interpolationQuality = .high
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.translateBy(x: -pageRect.origin.x, y: -pageRect.origin.y)
+        ctx.drawPDFPage(page)
+
+        guard let cg = ctx.makeImage() else { return nil }
+        let rep = NSBitmapImageRep(cgImage: cg)
+        guard let png = rep.representation(using: .png, properties: [:]) else { return nil }
+        return store.writeImageData(png)
+    }
+
+    /// Image metadata. Used by the HUD ContentMetaRow.
     static func imageMetadata(from pasteboard: NSPasteboard)
         -> (width: Int?, height: Int?, fileSize: Int?, format: String?)
     {
@@ -534,7 +605,7 @@ enum PreviewSynthesizer {
         guard let imgData = data, let img = NSImage(data: imgData) else {
             return (nil, nil, nil, nil)
         }
-        // Native pixel dimensions (не points)
+        // Native pixel dimensions, not points.
         var width: Int? = nil
         var height: Int? = nil
         if let rep = img.representations.first as? NSBitmapImageRep {
@@ -547,8 +618,8 @@ enum PreviewSynthesizer {
         return (width, height, imgData.count, format)
     }
 
-    /// Lanczos-quality downscale до maxDimension pt в большей стороне.
-    /// Если image уже меньше — возвращает original.
+    /// Lanczos-quality downscale so the larger side fits within maxDimension pt.
+    /// Returns the original image if it is already smaller.
     static func makeThumbnail(_ source: NSImage, maxDimension: CGFloat) -> NSImage {
         let originalSize = source.size
         guard originalSize.width > 0, originalSize.height > 0 else { return source }

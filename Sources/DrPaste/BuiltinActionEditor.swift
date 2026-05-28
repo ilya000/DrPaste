@@ -6,8 +6,8 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Bundled metadata для built-in actions — descriptions для unified ActionEditor
-//  (0.7.0) и палитры (правка #8). Один источник правды.
+//  Bundled metadata for built-in actions — descriptions for the unified
+//  ActionEditor and the Browse palette. Single source of truth.
 //
 
 import Foundation
@@ -33,10 +33,8 @@ enum BuiltinActionMetadata {
         "builtin.url_just_domain": "Returns only the domain part of the URL.",
         "builtin.url_md_link": "Wraps URL as Markdown link [domain](url).",
         "builtin.url_html_link": "Wraps URL as HTML <a href> link.",
-        "builtin.url_query_params": "Extracts query parameters as a key/value table.",
         "builtin.table_to_json": "Converts CSV / TSV to JSON array of objects.",
         "builtin.table_to_md": "Converts CSV / TSV to Markdown table.",
-        "builtin.table_transpose": "Swaps rows and columns.",
         "builtin.md_to_plain": "Strips Markdown markup, keeps only readable prose.",
         "builtin.md_extract_headings": "Lists all Markdown headings — for building a TOC.",
         "builtin.md_extract_links": "Lists all Markdown links.",
@@ -69,9 +67,6 @@ enum BuiltinActionMetadata {
         "builtin.files_paths": "Returns absolute file paths as text, one per line.",
         "builtin.files_names": "Returns just the filenames (without paths).",
         "builtin.files_md_links": "Wraps files as Markdown links [name](file:///path).",
-        "builtin.files_bash_list": "Quotes filenames bash-style: \"file 1\" \"file 2\".",
-        "builtin.files_size": "Returns total size and count of files.",
-        "builtin.files_sha256": "Returns SHA-256 hash of the first file.",
         "builtin.files_reveal": "Reveals the files in Finder (side-effect — closes HUD on commit)."
     ]
 }

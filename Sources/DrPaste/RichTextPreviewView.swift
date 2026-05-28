@@ -44,8 +44,10 @@ struct RichTextPreviewView: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
-        let scaled = scaleAttributedString(attributedString, by: fontScale)
-        textView.textStorage?.setAttributedString(scaled)
+        let prepared = remapStaticForegroundColors(
+            scaleAttributedString(attributedString, by: fontScale)
+        )
+        textView.textStorage?.setAttributedString(prepared)
     }
 
     /// Apply fontScale by multiplying every `.font` attribute's pointSize.
@@ -58,6 +60,34 @@ struct RichTextPreviewView: NSViewRepresentable {
                 let scaled = NSFont(descriptor: font.fontDescriptor,
                                     size: font.pointSize * scale) ?? font
                 mutable.addAttribute(.font, value: scaled, range: range)
+            }
+        }
+        return mutable
+    }
+
+    /// RTF documents embed a fixed body color (typically black). In Dark Mode
+    /// that color renders as black-on-near-black and is illegible. Replace any
+    /// non-catalog (i.e. non-dynamic) foreground color with `NSColor.labelColor`
+    /// so the text adapts to the system appearance. Catalog colors such as
+    /// `.linkColor`, `.systemBlue`, etc. already adapt and are left alone.
+    /// Ranges with no explicit `.foregroundColor` get `.labelColor` set so the
+    /// text is drawn in the adaptive label color rather than NSTextView's
+    /// default of `textColor` (which an upstream caller could have overridden).
+    private func remapStaticForegroundColors(_ src: NSAttributedString) -> NSAttributedString {
+        guard src.length > 0 else { return src }
+        let mutable = NSMutableAttributedString(attributedString: src)
+        let fullRange = NSRange(location: 0, length: mutable.length)
+        mutable.enumerateAttribute(.foregroundColor, in: fullRange) { value, range, _ in
+            if let color = value as? NSColor {
+                if color.type != .catalog {
+                    mutable.addAttribute(.foregroundColor,
+                                         value: NSColor.labelColor,
+                                         range: range)
+                }
+            } else {
+                mutable.addAttribute(.foregroundColor,
+                                     value: NSColor.labelColor,
+                                     range: range)
             }
         }
         return mutable

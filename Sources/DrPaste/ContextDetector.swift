@@ -6,9 +6,9 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Подробный classification флаг-сет для фильтрации applicable actions.
-//  Дополняет SemanticKind (из ClipboardModel) детектом особых случаев —
-//  layoutWrong, mixedScript, multiline и т.п.
+//  Granular classification flag set used to filter applicable actions.
+//  Complements SemanticKind (from ClipboardModel) with detection of special
+//  cases: layoutWrong, mixedScript, multiline, and so on.
 //
 
 import Foundation
@@ -30,7 +30,7 @@ struct ContentContext: OptionSet, Hashable {
     static let image        = ContentContext(rawValue: 1 << 11)
     static let files        = ContentContext(rawValue: 1 << 12)
     static let pdf          = ContentContext(rawValue: 1 << 13)
-    static let qrEligible   = ContentContext(rawValue: 1 << 14)  // text короткий — можно в QR
+    static let qrEligible   = ContentContext(rawValue: 1 << 14)  // text short enough to encode as QR
 }
 
 enum ContextDetector {
@@ -38,7 +38,7 @@ enum ContextDetector {
     static func detect(_ item: ClipboardItem) -> ContentContext {
         var ctx = ContentContext()
 
-        // Маппинг SemanticKind → primary flag
+        // Map SemanticKind to the primary flag.
         switch item.semantic {
         case .text:     ctx.insert(.plain)
         case .richText: ctx.insert(.richText); ctx.insert(.plain)
@@ -54,12 +54,12 @@ enum ContextDetector {
         case .unknown:  break
         }
 
-        // Текстовые суб-флаги
+        // Text sub-flags
         guard ctx.contains(.plain), let s = item.previewText else { return ctx }
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.contains("\n") { ctx.insert(.multiline) }
 
-        // QR eligible — text ≤ 2900 (грубый лимит alphanumeric для QR М-уровня)
+        // QR eligible — text length up to ~2900 chars (rough alphanumeric limit for QR level M).
         if !trimmed.isEmpty && trimmed.count <= 2900 {
             ctx.insert(.qrEligible)
         }

@@ -6,8 +6,9 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Локальное исправление текста, набранного в неправильной раскладке.
-//  Punto Switcher на минималках: char-level mapping RU↔EN + scoring через NSSpellChecker.
+//  Local repair for text typed in the wrong keyboard layout.
+//  Minimal Punto-Switcher-style heuristic: character-level RU/EN mapping plus
+//  scoring via NSSpellChecker to decide whether the swap is an improvement.
 //
 
 import Foundation

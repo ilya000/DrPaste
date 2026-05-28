@@ -6,12 +6,12 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Унифицированный action editor (0.7.0): один диалог для трёх режимов:
-//  1. Built-in handler — pick pre-made + override metadata
-//  2. Transformation engine — regex / find / prepend / append / wrap / line filter
-//  3. AI prompt — pick provider, write prompt
+//  Unified action editor — one dialog for three modes:
+//  1. Built-in handler — pick a pre-made action and override metadata.
+//  2. Transformation engine — regex / find / prepend / append / wrap / line filter.
+//  3. AI prompt — pick a provider and write the prompt.
 //
-//  Все режимы делят общие поля: title, hotkey, applicable types, test panel.
+//  All modes share the same fields: title, hotkey, applicable types, test panel.
 //
 
 import SwiftUI
@@ -204,15 +204,21 @@ struct ActionEditor: View {
             Text("Hotkey").font(.caption).foregroundStyle(.secondary)
             HotkeyRecorderField(
                 hotkey: $hotkey,
-                onConflict: { msg in conflictMessage = msg },
+                onStatus: { msg in conflictMessage = msg.isEmpty ? nil : msg },
                 conflictChecker: { hk in
-                    registry.conflictingAction(for: hk, excludingID: currentActionID)
+                    registry.conflictingActionInfo(for: hk, excludingID: currentActionID)
                 }
             )
             if let msg = conflictMessage {
-                Text(msg).font(.caption).foregroundStyle(.red)
+                // Reserved-combo errors are red; steal notices are informational
+                // (orange). Both are non-blocking — the user can still press Save.
+                let isReserved = msg.hasPrefix("This combination is reserved")
+                Text(msg)
+                    .font(.caption)
+                    .foregroundStyle(isReserved ? Color.red : Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("Direct trigger: pressing hotkey applies action to current clipboard and pastes immediately (no HUD).")
+                Text("Direct trigger: pressing the hotkey applies the action to the current clipboard and pastes immediately (no HUD).")
                     .font(.caption2).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -278,7 +284,7 @@ struct ActionEditor: View {
         }
     }
 
-    // Built-in: picker для existing action
+    // Built-in: picker for an existing action.
     @ViewBuilder
     private var builtinConfig: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -300,8 +306,15 @@ struct ActionEditor: View {
             } else {
                 Picker("", selection: $builtinID) {
                     Text("Choose handler…").tag("")
-                    ForEach(availableBuiltins, id: \.id) { action in
-                        Text(action.title).tag(action.id)
+                    ForEach(BuiltinHandlerCategory.allCases) { category in
+                        let actions = builtinsByCategory[category] ?? []
+                        if !actions.isEmpty {
+                            Section(category.title) {
+                                ForEach(actions, id: \.id) { action in
+                                    Text(action.title).tag(action.id)
+                                }
+                            }
+                        }
                     }
                 }
                 .pickerStyle(.menu)
@@ -319,11 +332,45 @@ struct ActionEditor: View {
     }
 
     private var availableBuiltins: [ClipboardAction] {
-        registry.actions.filter { action in
-            action.id.hasPrefix("builtin.")
-                && action.id != "builtin.identity"   // identity не пере-настраивается
+        let descriptorBackedIDs = Set(registry.config.customTransformations.map(\.id))
+        return registry.actions.filter { action in
+            // Genuine hardcoded built-ins only. Identity is the pinned anchor
+            // (cannot be re-created via this dialog). Descriptor-backed ones
+            // (`DefaultTransformationSeed` entries) are edited through the
+            // Transformation mode pencil in the Actions list; surfacing them
+            // here too just clutters the menu.
+            guard action.id.hasPrefix("builtin.") else { return false }
+            guard action.id != "builtin.identity" else { return false }
+            guard !descriptorBackedIDs.contains(action.id) else { return false }
+            return true
         }
         .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    /// Available built-in handlers bucketed by category so the picker can
+    /// render them as labelled sections rather than one alphabetical list.
+    /// Bucketing is namespace-driven (`builtin.image_*` → Image, etc.) with a
+    /// small explicit override map for IDs that don't follow the prefix.
+    private var builtinsByCategory: [BuiltinHandlerCategory: [ClipboardAction]] {
+        Dictionary(grouping: availableBuiltins) { BuiltinHandlerCategory.of($0.id) }
+    }
+
+    /// Engines shown in the picker for a NEW custom transformation. Filters
+    /// out parameter-less "recipe" engines (camelCase, slugify, mdExtract, …)
+    /// that only exist to back specific bundled built-ins — those built-ins
+    /// already appear as ready-to-run actions, so re-exposing the underlying
+    /// engine in the constructor would just clutter the menu.
+    ///
+    /// When editing an existing transformation that uses one of the hidden
+    /// engines (e.g. opening the bundled `builtin.slugify` to retitle it),
+    /// the current engine is added to the list so the Picker can still render
+    /// the selected row.
+    private var availableEngines: [TransformationEngine] {
+        var engines = TransformationEngine.allCases.filter(\.userPickable)
+        if !engines.contains(transformationEngine) {
+            engines.append(transformationEngine)
+        }
+        return engines
     }
 
     // Transformation: engine picker + params
@@ -343,14 +390,14 @@ struct ActionEditor: View {
                 .controlSize(.small)
             }
             Picker("", selection: $transformationEngine) {
-                ForEach(TransformationEngine.allCases) { engine in
+                ForEach(availableEngines, id: \.self) { engine in
                     Label(engine.displayName, systemImage: engine.iconName).tag(engine)
                 }
             }
             .pickerStyle(.menu)
             .labelsHidden()
             .onChange(of: transformationEngine) { newEngine in
-                // Сбрасываем параметры к defaults новой engine, если меняем тип
+                // Reset parameters to the new engine's defaults whenever the engine changes.
                 if transformationParams.keys.sorted() != newEngine.defaultParameters.keys.sorted() {
                     transformationParams = newEngine.defaultParameters
                 }
@@ -427,11 +474,25 @@ struct ActionEditor: View {
                 Picker("", selection: paramBinding(key: "operation", default: "pretty")) {
                     Text("Pretty").tag("pretty")
                     Text("Minify").tag("minify")
-                    Text("Extract keys").tag("extractKeys")
+                    Text("Extract keys (top-level)").tag("extractKeys")
+                    Text("Extract keys (recursive)").tag("extractKeysRecursive")
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.menu)
                 .labelsHidden()
             }
+        // Parameter-less engines seeded as built-ins via DefaultTransformationSeed.
+        // They expose no editable parameters in the UI — they just show their
+        // description (which the editor already prints above this view) and
+        // run on the input as-is.
+        case .trim,
+             .camelCase, .snakeCase, .kebabCase,
+             .base64Encode, .base64Decode,
+             .urlPercentEncode, .urlPercentDecode,
+             .slugify, .wordCount,
+             .mdToPlain, .mdExtractHeadings, .mdExtractLinks,
+             .urlStripTracking:
+            Text("This engine has no parameters.")
+                .font(.caption).foregroundStyle(.tertiary)
         }
     }
 
@@ -473,12 +534,24 @@ struct ActionEditor: View {
                 Text("Provider:").font(.caption).foregroundStyle(.secondary)
                     .frame(width: 100, alignment: .leading)
                 Picker("", selection: $aiProviderID) {
+                    // Sentinel "" maps to "use whatever is set as default".
+                    let defaultName = AIProviderRegistry.shared.defaultProvider?.displayName
+                    Text("Default" + (defaultName.map { " (\($0))" } ?? "")).tag("")
+                    Divider()
                     ForEach(AIProviderRegistry.shared.config.providers) { p in
                         Text(p.displayName).tag(p.id)
                     }
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
+            }
+            if aiProviderID.isEmpty {
+                HStack(spacing: 4) {
+                    Spacer().frame(width: 100)
+                    Text("This action follows the default provider. Change the default in Settings → AI and this action follows automatically.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             // #7 Templates menu — quick-fill prompt from common patterns
             HStack {
@@ -548,7 +621,7 @@ struct ActionEditor: View {
 
     private var footerButtons: some View {
         HStack {
-            // Delete только для user-created actions (transformation / AI)
+            // Delete is available only for user-created actions (transformation / AI).
             if case .editTransformation(let desc) = context {
                 Button(role: .destructive) {
                     registry.removeCustomTransformation(id: desc.id)
@@ -604,9 +677,8 @@ struct ActionEditor: View {
             kind = .transformation
             applicableTypes = [.text]
             transformationParams = transformationEngine.defaultParameters
-            if let firstProvider = AIProviderRegistry.shared.config.providers.first {
-                aiProviderID = firstProvider.id
-            }
+            // New AI actions default to "" → follow the user's default provider.
+            aiProviderID = ""
         case .editBuiltin(let id, let defaultTitle, _):
             kind = .builtin
             builtinID = id
@@ -651,25 +723,40 @@ struct ActionEditor: View {
         let appliesArray = applicableTypes.map { $0.rawValue }.sorted()
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // Resolve target id first so hotkey conflict resolution can use it.
+        let targetID: String
         switch kind {
         case .builtin:
-            // ID built-in либо из context (edit), либо из dropdown (create)
             guard let id = currentActionID else { return }
-            let defaultTitle = registry.actions.first(where: { $0.id == id })?.title ?? id
+            targetID = id
+        case .transformation:
+            if case .editTransformation(let existing) = context { targetID = existing.id }
+            else { targetID = "user.transform.\(UUID().uuidString.prefix(8))" }
+        case .ai:
+            if case .editAI(let existing) = context { targetID = existing.id }
+            else { targetID = "user.\(UUID().uuidString.prefix(8))" }
+        }
+
+        // Auto-steal: if the hotkey we're about to bind is currently held by
+        // another action, unbind it there. The recorder already warned the user.
+        if let hk = hotkey,
+           let other = registry.conflictingAction(for: hk, excludingID: targetID) {
+            registry.setHotkey(nil, for: other)
+        }
+
+        switch kind {
+        case .builtin:
+            let defaultTitle = registry.actions.first(where: { $0.id == targetID })?.title ?? targetID
             if trimmedTitle.isEmpty || trimmedTitle == defaultTitle {
-                registry.setCustomTitle(nil, forActionID: id)
+                registry.setCustomTitle(nil, forActionID: targetID)
             } else {
-                registry.setCustomTitle(trimmedTitle, forActionID: id)
+                registry.setCustomTitle(trimmedTitle, forActionID: targetID)
             }
-            registry.setHotkey(hotkey, for: id)
-            // Built-in применимость зашита в код — applicableTypes show-only
+            registry.setHotkey(hotkey, for: targetID)
 
         case .transformation:
-            let id: String
-            if case .editTransformation(let existing) = context { id = existing.id }
-            else { id = "user.transform.\(UUID().uuidString.prefix(8))" }
             let descriptor = CustomTransformationDescriptor(
-                id: id,
+                id: targetID,
                 title: trimmedTitle,
                 engineID: transformationEngine.rawValue,
                 parameters: transformationParams,
@@ -677,14 +764,11 @@ struct ActionEditor: View {
                 enabled: true
             )
             registry.upsertCustomTransformation(descriptor)
-            registry.setHotkey(hotkey, for: id)
+            registry.setHotkey(hotkey, for: targetID)
 
         case .ai:
-            let id: String
-            if case .editAI(let existing) = context { id = existing.id }
-            else { id = "user.\(UUID().uuidString.prefix(8))" }
             let descriptor = CustomAIDescriptor(
-                id: id,
+                id: targetID,
                 title: trimmedTitle,
                 promptTemplate: aiPrompt,
                 providerID: aiProviderID,
@@ -692,7 +776,7 @@ struct ActionEditor: View {
                 enabled: true
             )
             registry.upsertCustomAI(descriptor)
-            registry.setHotkey(hotkey, for: id)
+            registry.setHotkey(hotkey, for: targetID)
         }
         onClose()
     }
@@ -768,6 +852,58 @@ struct ActionEditor: View {
         case .sideEffect(let desc, _): return "→ \(desc)"
         case .alternativeCommit(let item, _): return item.previewText ?? ""
         }
+    }
+}
+
+// MARK: - Built-in handler categories
+
+/// Buckets available built-in handlers in the ActionEditor picker so users
+/// can scan the menu by functional area (Image, Rich text, URL, …) instead
+/// of hunting through one long alphabetical list. Bucketing is
+/// namespace-driven (`builtin.image_*` → Image, etc.) with a small explicit
+/// override map for IDs that don't follow the prefix.
+private enum BuiltinHandlerCategory: String, CaseIterable, Identifiable {
+    case image
+    case richText
+    case url
+    case table
+    case json
+    case files
+    case text
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .image:    return "Image"
+        case .richText: return "Rich text"
+        case .url:      return "URL"
+        case .table:    return "Table"
+        case .json:     return "JSON"
+        case .files:    return "Files"
+        case .text:     return "Text & utility"
+        }
+    }
+
+    /// IDs that don't follow the namespace prefix get mapped explicitly.
+    /// Anything else falls back to prefix detection in `of(_:)`.
+    private static let overrides: [String: BuiltinHandlerCategory] = [
+        "builtin.layout_repair":    .text,
+        "builtin.paste_as_text":    .richText,
+        "builtin.clean_formatting": .richText,
+        "builtin.generate_qr":      .image,
+        "builtin.type_slowly":      .text
+    ]
+
+    static func of(_ actionID: String) -> BuiltinHandlerCategory {
+        if let override = overrides[actionID] { return override }
+        if actionID.hasPrefix("builtin.image_") { return .image }
+        if actionID.hasPrefix("builtin.rich_")  { return .richText }
+        if actionID.hasPrefix("builtin.url_")   { return .url }
+        if actionID.hasPrefix("builtin.table_") { return .table }
+        if actionID.hasPrefix("builtin.json_")  { return .json }
+        if actionID.hasPrefix("builtin.files_") { return .files }
+        return .text
     }
 }
 

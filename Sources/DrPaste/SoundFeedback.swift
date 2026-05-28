@@ -6,9 +6,9 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Звуковой фидбек (Backlog #10). Короткие звуки для copy/paste/type операций.
-//  По умолчанию все включены, отключаются индивидуально через UserDefaults.
-//  Source: bundled aiff в Resources/Sounds/ либо fallback на system NSSounds.
+//  Sound feedback for copy / paste / type operations. All cues are enabled by
+//  default and can be toggled individually through UserDefaults. Sources are
+//  bundled AIFF files under Resources/Sounds/ with a fallback to system NSSounds.
 //
 
 import AppKit
@@ -24,7 +24,7 @@ enum SoundCue: String {
     var defaultsKey: String { "drpaste.sound.\(rawValue).enabled" }
     var defaultEnabled: Bool { true }
 
-    /// System NSSound name для fallback если bundled assets нет.
+    /// System NSSound name used as a fallback when no bundled asset is available.
     var systemFallback: NSSound.Name {
         switch self {
         case .copySuccess, .pasteSuccess: return NSSound.Name("Tink")
@@ -44,7 +44,7 @@ enum SoundFeedback {
     static func play(_ cue: SoundCue) {
         guard isEnabled(cue) else { return }
 
-        // Throttle: не играть тот же sound чаще чем раз в 200 мс (type-tick exempt).
+        // Throttle: do not replay the same cue more often than every 200 ms (type-tick is exempt).
         if cue != .typeTick {
             if let prev = lastPlay[cue], Date().timeIntervalSince(prev) < throttleSeconds {
                 return
@@ -60,8 +60,8 @@ enum SoundFeedback {
         sound?.play()
     }
 
-    /// #1 Sound preview — играть звук игнорируя isEnabled flag и throttle
-    /// (для Settings toggle/volume change feedback).
+    /// Plays a cue while ignoring both the isEnabled flag and the throttle —
+    /// used by the Settings toggle / volume preview.
     static func playPreview(_ cue: SoundCue) {
         let volume = max(0, min(1, currentVolume()))
         let effectiveVolume = cue == .typeTick ? volume * 0.3 : volume
@@ -81,7 +81,7 @@ enum SoundFeedback {
            let s = NSSound(contentsOf: url, byReference: false) {
             return s.copy() as? NSSound
         }
-        // Fallback на system sound
+        // Fallback to a system sound.
         return NSSound(named: cue.systemFallback)?.copy() as? NSSound
     }
 

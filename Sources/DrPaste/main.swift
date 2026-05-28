@@ -18,7 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     var store: ClipboardStore!
     var watcher: ClipboardWatcher!
     var registry: ActionRegistry!
-    // AI provider теперь резолвится через AIProviderRegistry.shared (multi-provider, Правка #4)
+    // AI provider is resolved through AIProviderRegistry.shared (multi-provider).
 
     var engine: HotkeyEngine!
     var hudPanel: HudPanel?
@@ -46,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSLog("DrPaste: launch started")
+        AppBrand.installApplicationIcon()
         store = ClipboardStore()
         watcher = ClipboardWatcher(store: store)
         watcher.start()
@@ -78,6 +79,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         registry.rebuildCustomAI()
         registry.rebuildCustomTransformations()
         NSLog("DrPaste: rebuild complete")
+
+        // GC orphan hotkeys — drop bindings whose action no longer exists (deleted
+        // descriptor, removed action pack, factory ID migration). Must run after
+        // all packs are registered and custom descriptors rebuilt.
+        registry.pruneOrphanedActionHotkeys()
+        NSLog("DrPaste: orphan hotkey GC complete")
 
         // Per-action hotkeys
         ActionHotkeyManager.shared.registry = registry
@@ -226,7 +233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     // MARK: NSMenuDelegate — dynamic Recent submenu
 
     func menuWillOpen(_ menu: NSMenu) {
-        // Запоминаем frontmost ДО открытия меню — нужно для paste-to-frontmost.
+        // Remember the frontmost app BEFORE the menu opens — needed for paste-to-frontmost.
         if savedFrontmostApp == nil {
             savedFrontmostApp = NSWorkspace.shared.frontmostApplication
         }
@@ -244,7 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     private func rebuildRecentMenu() {
         recentMenu.removeAllItems()
 
-        // "Clear history" первым, визуальный separator-style.
+        // "Clear history" first, styled like a visual separator.
         let clear = NSMenuItem(title: "──── Clear history ────",
                                action: #selector(clearHistory), keyEquivalent: "")
         clear.target = self
@@ -286,7 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     @objc private func menuOpenAccessibility() { openAccessibilitySettings() }
 
     @objc private func menuOpenSettings() {
-        // Backlog #8 — полное Settings окно с TabView и playground.
+        // Open the full Settings window (TabView + playground).
         settingsController?.show()
     }
 
@@ -308,7 +315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         PasteboardWriter.write(item, store: store)
         watcher.ignoreNextChange = true
 
-        // paste-to-frontmost: активируем saved app + simulatePaste с задержкой
+        // paste-to-frontmost: activate the saved app and simulate paste after a short delay.
         guard let app = savedApp,
               app.bundleIdentifier != Bundle.main.bundleIdentifier else {
             SoundFeedback.play(.pasteSuccess)
@@ -320,8 +327,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                 PasteSimulator.simulatePaste()
                 SoundFeedback.play(.pasteSuccess)
             } else {
-                // Limited Mode: pasteboard write всё что можем
-                SoundFeedback.play(.copySuccess)  // signal что в clipboard
+                // Limited Mode: best-effort pasteboard write.
+                SoundFeedback.play(.copySuccess)  // signal that the content reached the clipboard
             }
         }
     }
@@ -333,9 +340,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             self.markOtherDrPasteAction()
             self.currentSummonReason = reason
             if reason == .cutAndReplace {
-                // Правка #16 слой 5: event-driven verification вместо fixed asyncAfter.
-                // Polling до 250 ms ждём изменение pasteboard, дальше openHUD.
-                // Если не дождались — silent fail, не зависаем в opening.
+                // Event-driven verification instead of a fixed asyncAfter:
+                // poll the pasteboard for up to 250 ms waiting for a change,
+                // then open the HUD. If nothing changed, fail silently rather
+                // than getting stuck in the opening state.
                 let frontApp = NSWorkspace.shared.frontmostApplication
                 self.savedFrontmostApp = frontApp
                 let before = NSPasteboard.general.changeCount
@@ -347,8 +355,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         }
     }
 
-    /// Правка #16 слой 5 + 3: poll pasteboard для cut verification +
-    /// watchdog таймер. Если cut не сработал — silent fail без HUD opening.
+    /// Polls the pasteboard to verify the cut, with a watchdog deadline. If
+    /// the cut did not take effect, fail silently without opening the HUD.
     @MainActor
     private func pollClipboardChangeThenOpenHUD(changeCountBefore: Int) {
         let start = Date()
@@ -362,9 +370,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                     return
                 }
             }
-            // Timeout — нет selection или app заблокировал cut
+            // Timeout — either no selection, or the app blocked the cut.
             SoundFeedback.play(.copyFailure)
-            // Force reset hudIsActive в engine — мы туда уже его установили в summon
+            // Force-reset hudIsActive in the engine since summon set it earlier.
             if let tap = self.engine as? EventTapEngine { tap.resetHudActive() }
         }
     }
@@ -378,7 +386,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         Task { @MainActor in self.hudState.adjustFontScale(change) }
     }
 
-    /// Правка #14: Backspace в HUD → delete focused item.
+    /// Backspace in the HUD deletes the focused item.
     nonisolated func hotkeyEngineDidDeleteFocused() {
         Task { @MainActor in
             guard let item = self.hudState.currentItem else { return }
@@ -398,12 +406,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         }
     }
 
-    /// Backlog #9 + #10: Quick Copy через ⌥⌘C.
-    /// Реальная детекция success/failure через pasteboard.changeCount diff.
-    // MARK: - Per-action hotkey direct trigger (0.6.0)
+    /// Quick Copy via ⌥⌘C. Success/failure is detected by diffing pasteboard.changeCount.
+    // MARK: - Per-action hotkey direct trigger
 
     /// Hotkey assigned to action was pressed. Without HUD: apply action to current
     /// clipboard content and paste result into frontmost app.
+    /// Shows a transient progress mini-window for slow actions (AI calls, image transforms).
     func actionHotkeyDidFire(actionID: String) {
         markOtherDrPasteAction()
         guard let action = registry.actions.first(where: { $0.id == actionID }) else { return }
@@ -411,7 +419,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
               frontmost.bundleIdentifier != Bundle.main.bundleIdentifier else {
             return
         }
-        // Snapshot текущего pasteboard как ClipboardItem
+        // Show progress HUD immediately — actions like AI calls or image transforms may take a noticeable time.
+        let actionTitle = registry.displayTitle(forActionID: action.id, defaultTitle: action.title)
+        ProgressHUDController.shared.show(label: actionTitle)
+        // Snapshot the current pasteboard as a ClipboardItem.
         let pb = NSPasteboard.general
         let textValue = pb.string(forType: .string) ?? ""
         var item = ClipboardItem(
@@ -428,7 +439,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             sourceWindowTitle: nil,
             tags: []
         )
-        // Re-build representations из pasteboard для lossless paste
+        // Rebuild representations from the pasteboard for lossless paste.
         if let types = pb.types {
             for t in types {
                 guard let data = pb.data(forType: t) else { continue }
@@ -441,6 +452,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
 
         Task { @MainActor in
             let outcome = await action.apply(item: item, context: ctx)
+            ProgressHUDController.shared.hide()
             switch outcome {
             case .preview(let result), .alternativeCommit(let result, _):
                 self.performStandardPaste(result, savedApp: frontmost)
@@ -566,7 +578,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     private func flashStatusItem() {
         guard let btn = statusItem.button else { return }
         let original = btn.image
-        // Подсветка accent — простая визуальная подтверждение
+        // Brief accent flash as a simple visual confirmation.
         btn.appearsDisabled = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
             btn.appearsDisabled = false
@@ -578,8 +590,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
 
     private func openHUD() {
         hudState.items = store.items
-        // Cut & Replace UX: если cursorOnSecondOnCut включён и есть >1 item,
-        // курсор стартует на втором (skip just-cut). Default = false (native).
+        // Cut & Replace UX: when cursorOnSecondOnCut is enabled and there are
+        // more than one item, the cursor starts on the second (skipping the
+        // just-cut item). Default off matches native cut+paste behavior.
         let skipCutItem = currentSummonReason == .cutAndReplace
             && UserDefaults.standard.bool(forKey: "drpaste.hud.cursorOnSecondOnCut")
             && hudState.items.count > 1
@@ -593,7 +606,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         if engine.hudMode == .summon { installLocalKeyMonitor() }
     }
 
-    /// Правка #15: вычислить content meta для focused item (async, lazy, cached).
+    /// Compute content meta for the focused item — async, lazy, cached.
     private func updateContentMeta() {
         guard let item = hudState.currentItem else {
             hudState.contentMeta = nil
@@ -602,8 +615,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         hudState.contentMeta = nil   // placeholder "…"
         let itemID = item.id
         Task { [weak self] in
-            // Background compute через detached child task, потом await обратно на MainActor.
-            // Это избегает Swift 6 warning про concurrent var capture self в MainActor.run.
+            // Background compute via a detached child task, then await back on
+            // the MainActor. Avoids the Swift 6 warning about concurrent var
+            // capture of self in MainActor.run.
             let meta = await Task.detached(priority: .userInitiated) {
                 ContentMetaCache.shared.computeSync(for: item)
             }.value
@@ -630,7 +644,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         case .alternativeCommit(let item, .typeFast):
             performTypeSlowly(item, savedApp: savedApp, delay: 0.05, jitter: 0)
         case .failed(let original, _, _):
-            // Backlog #2: на commit пишем original, играем failure звук
+            // On commit of a failed outcome, paste the original and play the failure sound.
             performStandardPaste(original, savedApp: savedApp)
             SoundFeedback.play(.pasteFailure)
         case .sideEffect(_, let perform):
@@ -657,7 +671,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             return
         }
         let text = item.previewText ?? ""
-        // Небольшая задержка чтобы HUD успел исчезнуть и focus вернулся
+        // Small delay so the HUD disappears and focus returns to the target app.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             TypeSimulator.typeSlowly(text, baseDelay: delay, jitter: jitter)
         }
@@ -730,7 +744,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
 
     private func showPanel() {
         if hudPanel == nil {
-            // Provider для custom titles (правка #6 lite)
+            // Provider closure for custom titles.
             hudState.actionTitleProvider = { [weak self] (id, defaultTitle) in
                 self?.registry.displayTitle(forActionID: id, defaultTitle: defaultTitle) ?? defaultTitle
             }
@@ -747,7 +761,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                 onCommit: { [weak self] in self?.commitHUD() },
                 onOpenAccessibility: { [weak self] in self?.openAccessibilitySettings() },
                 onRecoveryAction: { [weak self] rec in self?.performRecovery(rec) },
-                onClose: { [weak self] in self?.closeHUD() }   // Правка #15: close button
+                onClose: { [weak self] in self?.closeHUD() }   // HUD close button
             )
             let allowsKey = engine.hudMode == .summon
             let host = HudHostingView(rootView: view)
@@ -764,7 +778,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         } else {
             panel.orderFrontRegardless()
         }
-        // Правка #16 слой 4: verify visibility, retry если не успел
+        // Verify visibility after a short delay and retry the show if needed.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
             if let p = self.hudPanel, !p.isVisible {
                 NSLog("DrPaste: HUD did not become visible, retry")
@@ -792,7 +806,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     private func performRecovery(_ rec: RecoveryAction) {
         switch rec {
         case .openProvidersConfig:
-            // Закрываем HUD и открываем Settings → AI tab
+            // Close the HUD and open Settings → AI tab.
             closeHUD()
             settingsController?.show()
         case .openAccessibilitySettings:
@@ -815,7 +829,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                 self.commitHUD(); return nil
             case kVK_Escape:
                 self.closeHUD(); return nil
-            case kVK_Delete:                       // Правка #14: Backspace в Limited Mode
+            case kVK_Delete:                       // Backspace deletes the focused item in Limited Mode
                 self.hotkeyEngineDidDeleteFocused(); return nil
             case kVK_UpArrow:    self.navigate(.up);    return nil
             case kVK_DownArrow:  self.navigate(.down);  return nil

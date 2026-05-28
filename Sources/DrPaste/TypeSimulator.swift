@@ -147,6 +147,12 @@ enum TypeSimulator {
             down?.keyboardSetUnicodeString(stringLength: ptr.count, unicodeString: ptr.baseAddress)
             up?.keyboardSetUnicodeString(stringLength: ptr.count, unicodeString: ptr.baseAddress)
         }
+        // Tag both events as synthetic so installCancellationMonitors() ignores them.
+        // Without this, the global keyDown monitor sees our first typed character,
+        // treats it as user activity, sets session.cancelled = true, and the very
+        // next iteration aborts the typing — only one character lands in the target.
+        down?.setIntegerValueField(.eventSourceUserData, value: DrPasteSyntheticMarker)
+        up?.setIntegerValueField(.eventSourceUserData, value: DrPasteSyntheticMarker)
         down?.post(tap: .cghidEventTap)
         up?.post(tap: .cghidEventTap)
     }
@@ -154,6 +160,8 @@ enum TypeSimulator {
     private static func postKey(source: CGEventSource?, keyCode: CGKeyCode) {
         let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
         let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
+        down?.setIntegerValueField(.eventSourceUserData, value: DrPasteSyntheticMarker)
+        up?.setIntegerValueField(.eventSourceUserData, value: DrPasteSyntheticMarker)
         down?.post(tap: .cghidEventTap)
         up?.post(tap: .cghidEventTap)
     }

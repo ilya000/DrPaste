@@ -6,9 +6,8 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Custom About window (Правка #2 итерации 2). Стандартный
-//  NSApp.orderFrontStandardAboutPanel слишком узкий и зажатый —
-//  здесь отдельное окно 560×500 с воздухом и полями.
+//  Custom About window. NSApp.orderFrontStandardAboutPanel is too narrow and
+//  cramped; this presents a separate 560x500 window with breathing room.
 //
 
 import AppKit

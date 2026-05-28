@@ -12,43 +12,11 @@
 import Foundation
 import AppKit
 
-// MARK: - Code
-
-struct WrapInCodeBlockAction: ClipboardAction {
-    let id = "builtin.code_wrap"; let title = "Wrap in code block"; let isLocal = true
-    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        context.contains(.code) || context.contains(.plain)
-    }
-    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        let s = item.previewText ?? ""
-        let result = "```\n\(s)\n```"
-        return .preview(makeTextItem(result, from: item))
-    }
-}
-
-struct TabsToSpacesAction: ClipboardAction {
-    let id = "builtin.tabs_to_spaces"; let title = "Tabs → 4 spaces"; let isLocal = true
-    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        (context.contains(.code) || context.contains(.plain)) &&
-        (item.previewText ?? "").contains("\t")
-    }
-    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        let result = (item.previewText ?? "").replacingOccurrences(of: "\t", with: "    ")
-        return .preview(makeTextItem(result, from: item))
-    }
-}
-
-struct SpacesToTabsAction: ClipboardAction {
-    let id = "builtin.spaces_to_tabs"; let title = "4 spaces → tabs"; let isLocal = true
-    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        (context.contains(.code) || context.contains(.plain)) &&
-        (item.previewText ?? "").contains("    ")
-    }
-    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        let result = (item.previewText ?? "").replacingOccurrences(of: "    ", with: "\t")
-        return .preview(makeTextItem(result, from: item))
-    }
-}
+// Code-related actions (WrapInCodeBlock, TabsToSpaces, SpacesToTabs) migrated
+// to DefaultTransformationSeed:
+//   builtin.code_wrap        → engine wrap
+//   builtin.tabs_to_spaces   → engine findReplace
+//   builtin.spaces_to_tabs   → engine findReplace
 
 // MARK: - Table
 
@@ -103,27 +71,8 @@ struct TableToMarkdownAction: ClipboardAction {
     }
 }
 
-struct TableTransposeAction: ClipboardAction {
-    let id = "builtin.table_transpose"; let title = "Transpose"; let isLocal = true
-    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        context.contains(.table)
-    }
-    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        let lines = (item.previewText ?? "").split(separator: "\n").map(String.init)
-        guard !lines.isEmpty else { return .preview(item) }
-        let sep = lines[0].contains("\t") ? "\t" : ","
-        let rows = lines.map { $0.components(separatedBy: sep) }
-        let cols = rows.map(\.count).max() ?? 0
-        var transposed: [[String]] = Array(repeating: [], count: cols)
-        for row in rows {
-            for col in 0..<cols {
-                transposed[col].append(col < row.count ? row[col] : "")
-            }
-        }
-        let result = transposed.map { $0.joined(separator: sep) }.joined(separator: "\n")
-        return .preview(makeTextItem(result, from: item))
-    }
-}
+// TableTransposeAction (Transpose) removed in 0.12.0 — table-specific niche,
+// no marketing weight.
 
 // MARK: - Rich text
 
@@ -133,8 +82,8 @@ struct RichTextToMarkdownAction: ClipboardAction {
         context.contains(.richText)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        // Минимальная conversion: RTF → AttributedString → emit markdown markers
-        // (bold/italic only; полноценная conversion — отдельная правка с swift-markdown)
+        // Minimal conversion: RTF → AttributedString → emit Markdown markers
+        // (bold/italic only). A full converter would require swift-markdown.
         guard let rel = item.representations["public.rtf"],
               let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
               let attr = try? NSAttributedString(data: data,
@@ -160,18 +109,16 @@ struct RichTextToMarkdownAction: ClipboardAction {
 // MARK: - Packs
 
 enum CodeActionsPack {
-    static var all: [ClipboardAction] {
-        [WrapInCodeBlockAction(), TabsToSpacesAction(), SpacesToTabsAction()]
-    }
+    static var all: [ClipboardAction] { [] }
 }
 
 enum TableActionsPack {
     static var all: [ClipboardAction] {
-        [TableToJSONAction(), TableToMarkdownAction(), TableTransposeAction()]
+        [TableToJSONAction(), TableToMarkdownAction()]
     }
 }
 
-// MARK: - Rich → HTML (правка #9)
+// MARK: - Rich → HTML
 
 struct RichTextToHTMLAction: ClipboardAction {
     let id = "builtin.rich_to_html"; let title = "Rich → HTML"; let isLocal = true
@@ -192,7 +139,7 @@ struct RichTextToHTMLAction: ClipboardAction {
     }
 }
 
-// MARK: - Rich → Wiki markup (правка #10)
+// MARK: - Rich → Wiki markup
 
 struct RichTextToWikiAction: ClipboardAction {
     let id = "builtin.rich_to_wiki"; let title = "Rich → Wiki markup"; let isLocal = true
@@ -215,7 +162,7 @@ struct RichTextToWikiAction: ClipboardAction {
     }
 }
 
-// MARK: - Paste as text (правка #8 — combined clean+trim)
+// MARK: - Paste as text (combined clean + trim)
 
 struct PasteAsTextAction: ClipboardAction {
     let id = "builtin.paste_as_text"; let title = "Paste as text"; let isLocal = true
@@ -223,7 +170,7 @@ struct PasteAsTextAction: ClipboardAction {
         context.contains(.plain) || context.contains(.richText)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        // Strip formatting через previewText (plain текст уже без RTF/HTML).
+        // Strip formatting by reading previewText (already plain, no RTF/HTML).
         let plain = item.previewText ?? ""
         let trimmed = plain.trimmingCharacters(in: .whitespacesAndNewlines)
         return .preview(makeTextItem(trimmed, from: item))

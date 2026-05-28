@@ -8,13 +8,13 @@
 //
 //  Configuration model for Settings (Backlog #8):
 //  enable/disable flags for built-in actions + custom AI action descriptors.
-//  Сериализуется в actions.json. Export/Import используют этот же формат.
+//  Serialized to actions.json. Export / Import use the same format.
 //
 
 import Foundation
 import AppKit
 
-/// Описание custom AI action. Пользователь может добавлять / редактировать / удалять.
+/// Descriptor for a custom AI action. Users can add, edit, and delete them.
 struct CustomAIDescriptor: Codable, Identifiable, Equatable {
     var id: String                       // unique, "user.<slug>"
     var title: String
@@ -24,19 +24,19 @@ struct CustomAIDescriptor: Codable, Identifiable, Equatable {
     var enabled: Bool = true
 }
 
-/// Корневая конфигурация. Сериализуется в actions.json.
+/// Root configuration. Serialized to actions.json.
 struct ActionConfig: Codable, Equatable {
     var version: Int = 4
-    /// builtin action.id → enabled. Default true (если ключа нет в map'е — enabled).
+    /// builtin action.id → enabled. Default true (missing key implies enabled).
     var enabledFlags: [String: Bool] = [:]
-    /// Пользовательские AI actions.
+    /// User-defined AI actions.
     var customAI: [CustomAIDescriptor] = []
-    /// Custom titles per action ID (правка #6 lite — пользователь может переименовать built-in).
-    /// Если ключа нет — используется action.title (default).
+    /// Custom titles keyed by action ID — users can rename built-ins. When no
+    /// override exists, the action's default title is used.
     var customTitles: [String: String] = [:]
-    /// Custom order per content type (правка #5).
-    /// Key — SemanticKind.rawValue, value — [actionID] в порядке отображения.
-    /// Actions не в массиве идут после, в default order.
+    /// Custom action order per content type. Key is SemanticKind.rawValue,
+    /// value is the list of action IDs in display order. Actions not present
+    /// in the array appear after the listed ones in their default order.
     var actionOrder: [String: [String]] = [:]
     /// User-defined transformations (engine architecture, light version).
     var customTransformations: [CustomTransformationDescriptor] = []
@@ -46,12 +46,16 @@ struct ActionConfig: Codable, Equatable {
     /// Seed version counter — increments when new default AI actions are bundled.
     /// Existing users get new defaults on upgrade; existing entries are not duplicated.
     var seedAIVersion: Int = 0
+    /// Seed version counter for bundled transformations (DefaultTransformationSeed).
+    /// Migration on bump: new descriptors are appended, prior `enabledFlags` for
+    /// the seeded IDs are folded into the descriptor's `enabled` field.
+    var seedTransformationVersion: Int = 0
     /// Full snapshot for export (also includes preferences).
     var preferences: ActionConfigPreferences = ActionConfigPreferences()
 
     init() {}
 
-    /// Custom decode для backward compat: новые поля используют decodeIfPresent.
+    /// Custom decode for backward compatibility: new fields use decodeIfPresent.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
@@ -64,13 +68,15 @@ struct ActionConfig: Codable, Equatable {
         self.actionHotkeys = try c.decodeIfPresent([String: ActionHotkey].self,
                                                     forKey: .actionHotkeys) ?? [:]
         self.seedAIVersion = try c.decodeIfPresent(Int.self, forKey: .seedAIVersion) ?? 0
+        self.seedTransformationVersion = try c.decodeIfPresent(Int.self, forKey: .seedTransformationVersion) ?? 0
         self.preferences = try c.decodeIfPresent(ActionConfigPreferences.self,
                                                  forKey: .preferences) ?? ActionConfigPreferences()
     }
 
     private enum CodingKeys: String, CodingKey {
         case version, enabledFlags, customAI, customTitles, actionOrder,
-             customTransformations, actionHotkeys, seedAIVersion, preferences
+             customTransformations, actionHotkeys, seedAIVersion,
+             seedTransformationVersion, preferences
     }
 
     static func load() -> ActionConfig {
@@ -122,8 +128,8 @@ private extension JSONEncoder {
 
 // MARK: - Default samples for Settings playground
 
-/// Bundled default sample text для каждого content tab.
-/// Подобраны так чтобы максимум applicable actions имели заметный эффект.
+/// Bundled default sample text for each content tab. Chosen so that as many
+/// applicable actions as possible produce a visible effect.
 enum SettingsSamples {
     static func sample(for kind: SemanticKind) -> ClipboardItem {
         if kind == .richText {
@@ -201,9 +207,9 @@ enum SettingsSamples {
         )
     }
 
-    /// Programmatically генерирует rich text sample как настоящий RTF
-    /// (правка #9 детали). Сохраняет в blobs storage с фиксированным именем —
-    /// перезаписываемое при каждом запросе, чтобы изменения в коде сразу применялись.
+    /// Programmatically generates a real RTF rich-text sample and writes it
+    /// to blob storage with a fixed filename so edits to this code take effect
+    /// on the next request.
     static func richTextSample() -> ClipboardItem {
         let s = NSMutableAttributedString()
         let body = NSFont.systemFont(ofSize: 13)

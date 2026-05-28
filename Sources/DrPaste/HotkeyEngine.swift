@@ -6,8 +6,9 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Три hotkey: ⌥⌘V paste (с press-and-hold), ⌥⌘C Quick Copy, ⌥⌘X Cut & Replace (Backlog #9).
-//  Три engine implementation: EventTap (Full Gesture), Carbon (Limited), GlobalMonitor (debug).
+//  Three main hotkeys: ⌥⌘V paste (with press-and-hold), ⌥⌘C Quick Copy,
+//  ⌥⌘X Cut & Replace. Three engine implementations:
+//  EventTap (Full Gesture mode), Carbon (Limited mode), GlobalMonitor (debug).
 //
 
 import AppKit
@@ -37,8 +38,8 @@ enum NavDirection { case up, down, left, right }
 enum FontChange { case bigger, smaller, reset }
 
 enum SummonReason {
-    case paste              // ⌥⌘V — обычный HUD flow
-    case cutAndReplace      // ⌥⌘X — simulated ⌘X, потом HUD, на commit replace
+    case paste              // ⌥⌘V — standard HUD flow.
+    case cutAndReplace      // ⌥⌘X — simulated ⌘X first, then HUD, replace on commit.
 }
 
 enum HotkeyEngineKind: String {
@@ -59,12 +60,13 @@ protocol HotkeyEngineDelegate: AnyObject {
     func hotkeyEngineDidCancel()
     func hotkeyEngineDidRequestFontChange(_ change: FontChange)
     func hotkeyEngineDidQuickCopy()
-    func hotkeyEngineDidDeleteFocused()    // Правка #14
-    func hotkeyEngineDidAppendCopy()       // #12
+    func hotkeyEngineDidDeleteFocused()
+    func hotkeyEngineDidAppendCopy()
 }
 
-/// Marker для собственных synthetic CGEvents (Правка #16, слой 2 — фильтрация recursion).
-/// Записывается в .eventSourceUserData при posting ⌘V/⌘X/⌘C.
+/// Marker for our own synthetic CGEvents — filters recursion when the engine
+/// re-observes events it just posted. Written into .eventSourceUserData when
+/// posting ⌘V/⌘X/⌘C.
 let DrPasteSyntheticMarker: Int64 = 0x44525041535445  // "DRPASTE" ASCII
 
 protocol HotkeyEngine: AnyObject {
@@ -126,11 +128,11 @@ final class EventTapEngine: HotkeyEngine {
         tap = nil; runLoopSource = nil; hudIsActive = false
     }
 
-    /// Принудительно очистить hudIsActive (используется как watchdog в AppDelegate
-    /// если HUD не успел открыться — Правка #16 слой 3).
+    /// Force-clears hudIsActive. Used as a watchdog in AppDelegate when the HUD
+    /// failed to open in time.
     func resetHudActive() { hudIsActive = false }
 
-    /// Текущее состояние — для AppDelegate state machine синхронизации.
+    /// Current state — used for AppDelegate state-machine synchronization.
     var isHudActive: Bool { hudIsActive }
 
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -139,8 +141,8 @@ final class EventTapEngine: HotkeyEngine {
             return Unmanaged.passUnretained(event)
         }
 
-        // Правка #16 слой 2: пропускаем собственные synthetic events,
-        // чтобы не было recursion (наш ⌘X не интерпретировался как user ⌥⌘X).
+        // Skip our own synthetic events so the tap does not re-process them
+        // (e.g. our synthetic ⌘X must not be interpreted as a user-initiated ⌥⌘X).
         if event.getIntegerValueField(.eventSourceUserData) == DrPasteSyntheticMarker {
             return Unmanaged.passUnretained(event)
         }
@@ -169,7 +171,7 @@ final class EventTapEngine: HotkeyEngine {
                     hudIsActive = false
                     DispatchQueue.main.async { self.delegate?.hotkeyEngineDidCancel() }
                     return nil
-                case kVK_Delete:           // Правка #14: Backspace → delete focused item
+                case kVK_Delete:           // Backspace deletes the focused history item.
                     DispatchQueue.main.async { self.delegate?.hotkeyEngineDidDeleteFocused() }
                     return nil
                 case kVK_ANSI_Equal, kVK_ANSI_KeypadPlus:

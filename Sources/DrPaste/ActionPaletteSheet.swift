@@ -6,10 +6,10 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Palette popover (Правка #8 продолжение): "+ Add" в Settings Actions list открывает
-//  это окно. Показывает ВСЕ available actions для данного content type, разбиение
-//  по категориям. Disabled actions имеют toggle off → пользователь enable'ит одним кликом.
-//  Search field вверху для быстрого поиска.
+//  Palette sheet: the Browse button in the Settings Actions list opens this
+//  window. Shows every available action for the current content type, grouped
+//  by category. Disabled actions have their toggle off so the user can enable
+//  any of them with a single click. Search field at the top for quick lookup.
 //
 
 import SwiftUI
@@ -139,14 +139,14 @@ struct ActionPaletteSheet: View {
         return categories.filter { cat in !applicableActionsForCategory(cat).isEmpty }
     }
 
-    /// Все applicable actions для content type + category.
+    /// All applicable actions for this content type within a single category.
     private func applicableActionsForCategory(_ cat: Category) -> [ClipboardAction] {
         let item = SettingsSamples.sample(for: kind)
         let ctx = ContextDetector.detect(item)
         let all = registry.actions.filter { action in
-            // Не включаем user.* (custom AI) — они уже в основном списке
+            // Exclude user.* (custom AI / transformations) — they live in the main list.
             guard !action.id.hasPrefix("user.") else { return false }
-            // Категория
+            // Category match
             switch cat.id {
             case "core":
                 return action.id == "builtin.identity" || action.id == "builtin.paste_as_text"

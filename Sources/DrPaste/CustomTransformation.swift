@@ -6,11 +6,12 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Engine architecture (light) — Правка #7 итерации 2.
-//  Не ломаю built-ins (риск слишком велик) — добавляю отдельный механизм для
-//  user-defined transformations. Пользователь может создать N инстансов
-//  regex_replace / find_replace / prepend / append / wrap / line_filter —
-//  каждая со своими параметрами.
+//  Engine architecture for transformation actions. Originally introduced for
+//  user-defined transformations; now also hosts the bundled built-ins seeded
+//  via DefaultTransformationSeed (UPPERCASE, sort lines, base64, slugify,
+//  json pretty, markdown extraction, etc.). The engine + descriptor pair lets
+//  users rename, retitle, reorder, change parameters, or fully delete any
+//  transformation — built-in or user-created — through a single edit surface.
 //
 
 import Foundation
@@ -18,53 +19,95 @@ import Foundation
 // MARK: - Engine IDs
 
 enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
-    case regexReplace = "regex_replace"
-    case findReplace  = "find_replace"
-    case prepend      = "prepend"
-    case append       = "append"
-    case wrap         = "wrap"
-    case lineFilter   = "line_filter"
-    case caseChange   = "case_change"      // upper / lower / title / sentence
-    case sortLines    = "sort_lines"
-    case uniqueLines  = "unique_lines"
-    case jsonFormat   = "json_format"      // pretty / minify / extract keys
+    case regexReplace      = "regex_replace"
+    case findReplace       = "find_replace"
+    case prepend           = "prepend"
+    case append            = "append"
+    case wrap              = "wrap"
+    case lineFilter        = "line_filter"
+    case caseChange        = "case_change"          // upper / lower / title / sentence
+    case sortLines         = "sort_lines"           // asc / desc, case-insensitive flag
+    case uniqueLines       = "unique_lines"
+    case jsonFormat        = "json_format"          // pretty / minify / extractKeys / extractKeysRecursive
+    case trim              = "trim"                 // strip each line + outer whitespace
+    case camelCase         = "camel_case"
+    case snakeCase         = "snake_case"
+    case kebabCase         = "kebab_case"
+    case base64Encode      = "base64_encode"
+    case base64Decode      = "base64_decode"
+    case urlPercentEncode  = "url_percent_encode"
+    case urlPercentDecode  = "url_percent_decode"
+    case slugify           = "slugify"
+    case wordCount         = "word_count"
+    case mdToPlain         = "md_to_plain"
+    case mdExtractHeadings = "md_extract_headings"
+    case mdExtractLinks    = "md_extract_links"
+    case urlStripTracking  = "url_strip_tracking"
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
-        case .regexReplace: return "Regex replace"
-        case .findReplace:  return "Find and replace"
-        case .prepend:      return "Prepend text"
-        case .append:       return "Append text"
-        case .wrap:         return "Wrap with prefix/suffix"
-        case .lineFilter:   return "Filter lines"
-        case .caseChange:   return "Change case"
-        case .sortLines:    return "Sort lines"
-        case .uniqueLines:  return "Unique lines"
-        case .jsonFormat:   return "Format JSON"
+        case .regexReplace:      return "Regex replace"
+        case .findReplace:       return "Find and replace"
+        case .prepend:           return "Prepend text"
+        case .append:            return "Append text"
+        case .wrap:              return "Wrap with prefix/suffix"
+        case .lineFilter:        return "Filter lines"
+        case .caseChange:        return "Change case"
+        case .sortLines:         return "Sort lines"
+        case .uniqueLines:       return "Unique lines"
+        case .jsonFormat:        return "Format JSON"
+        case .trim:              return "Trim whitespace"
+        case .camelCase:         return "camelCase"
+        case .snakeCase:         return "snake_case"
+        case .kebabCase:         return "kebab-case"
+        case .base64Encode:      return "Base64 encode"
+        case .base64Decode:      return "Base64 decode"
+        case .urlPercentEncode:  return "URL percent-encode"
+        case .urlPercentDecode:  return "URL percent-decode"
+        case .slugify:           return "Slugify"
+        case .wordCount:         return "Word / char count"
+        case .mdToPlain:         return "Markdown → plain"
+        case .mdExtractHeadings: return "Extract Markdown headings"
+        case .mdExtractLinks:    return "Extract Markdown links"
+        case .urlStripTracking:  return "Strip URL tracking params"
         }
     }
 
     var iconName: String {
         switch self {
-        case .regexReplace: return "function"
-        case .findReplace:  return "magnifyingglass"
-        case .prepend:      return "text.append"
-        case .append:       return "text.insert"
-        case .wrap:         return "text.quote"
-        case .lineFilter:   return "line.horizontal.3.decrease"
-        case .caseChange:   return "textformat"
-        case .sortLines:    return "arrow.up.arrow.down"
-        case .uniqueLines:  return "line.3.horizontal.decrease.circle"
-        case .jsonFormat:   return "curlybraces"
+        case .regexReplace:      return "function"
+        case .findReplace:       return "magnifyingglass"
+        case .prepend:           return "text.append"
+        case .append:            return "text.insert"
+        case .wrap:              return "text.quote"
+        case .lineFilter:        return "line.horizontal.3.decrease"
+        case .caseChange:        return "textformat"
+        case .sortLines:         return "arrow.up.arrow.down"
+        case .uniqueLines:       return "line.3.horizontal.decrease.circle"
+        case .jsonFormat:        return "curlybraces"
+        case .trim:              return "scissors"
+        case .camelCase:         return "textformat.alt"
+        case .snakeCase:         return "textformat.alt"
+        case .kebabCase:         return "textformat.alt"
+        case .base64Encode:      return "lock.shield"
+        case .base64Decode:      return "lock.open"
+        case .urlPercentEncode:  return "percent"
+        case .urlPercentDecode:  return "percent"
+        case .slugify:           return "link"
+        case .wordCount:         return "number"
+        case .mdToPlain:         return "doc.plaintext"
+        case .mdExtractHeadings: return "list.bullet.indent"
+        case .mdExtractLinks:    return "link"
+        case .urlStripTracking:  return "shield.lefthalf.filled"
         }
     }
 
     var description: String {
         switch self {
         case .regexReplace:
-            return "Replace text matching a regular expression pattern with replacement string. Supports capture groups ($1, $2)."
+            return "Replace text matching a regular expression pattern with a replacement string. Supports capture groups ($1, $2)."
         case .findReplace:
             return "Replace occurrences of a literal string with another. Case-sensitive by default."
         case .prepend:
@@ -82,7 +125,35 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
         case .uniqueLines:
             return "Remove duplicate lines while preserving order."
         case .jsonFormat:
-            return "Format JSON: pretty-print, minify, or extract top-level keys as a list."
+            return "Format JSON: pretty-print, minify, extract top-level keys, or extract every key recursively."
+        case .trim:
+            return "Strip whitespace from each line and from the start/end of the text."
+        case .camelCase:
+            return "Convert text to camelCase by joining word boundaries and lowercasing the first word."
+        case .snakeCase:
+            return "Convert text to snake_case by joining word boundaries with underscores."
+        case .kebabCase:
+            return "Convert text to kebab-case by joining word boundaries with hyphens."
+        case .base64Encode:
+            return "Encode the UTF-8 representation of the text as a Base64 string."
+        case .base64Decode:
+            return "Decode a Base64 string back to UTF-8 text."
+        case .urlPercentEncode:
+            return "Percent-encode characters that are not safe in URL paths."
+        case .urlPercentDecode:
+            return "Reverse percent-encoding in a URL or URL-encoded fragment."
+        case .slugify:
+            return "Produce a URL-safe slug: lowercase, ASCII transliteration, hyphen-separated words."
+        case .wordCount:
+            return "Replace the content with a short summary: N words, N characters, N lines."
+        case .mdToPlain:
+            return "Strip Markdown markers (headings, bold, italic, code, links) and produce plain text."
+        case .mdExtractHeadings:
+            return "Keep only lines that start with one or more #, in source order."
+        case .mdExtractLinks:
+            return "Extract every URL referenced by an inline Markdown link, one per line."
+        case .urlStripTracking:
+            return "Drop common tracking query parameters (utm_*, fbclid, gclid, igshid, ref, _ga, etc.)."
         }
     }
 
@@ -98,6 +169,40 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
         case .sortLines:    return ["direction": "asc", "caseInsensitive": "false"]
         case .uniqueLines:  return [:]
         case .jsonFormat:   return ["operation": "pretty"]
+        case .trim,
+             .camelCase, .snakeCase, .kebabCase,
+             .base64Encode, .base64Decode,
+             .urlPercentEncode, .urlPercentDecode,
+             .slugify, .wordCount,
+             .mdToPlain, .mdExtractHeadings, .mdExtractLinks,
+             .urlStripTracking:
+            return [:]
+        }
+    }
+
+    /// True if this engine is a useful composable building block when the user
+    /// creates a brand-new custom transformation. False for parameter-less
+    /// "recipe" engines that exist solely to back a specific bundled built-in
+    /// (camelCase, slugify, Markdown extract, Strip URL tracking, etc.) — they
+    /// already appear as ready-to-use actions in the Actions list, so showing
+    /// them again in the engine picker would just clutter the menu.
+    ///
+    /// Note: engines flagged `false` still run normally and remain editable
+    /// when the user opens an existing built-in for editing — only the engine
+    /// **picker for new transformations** filters by this flag.
+    var userPickable: Bool {
+        switch self {
+        case .regexReplace, .findReplace, .prepend, .append, .wrap, .lineFilter,
+             .caseChange, .sortLines, .uniqueLines, .jsonFormat:
+            return true
+        case .trim,
+             .camelCase, .snakeCase, .kebabCase,
+             .base64Encode, .base64Decode,
+             .urlPercentEncode, .urlPercentDecode,
+             .slugify, .wordCount,
+             .mdToPlain, .mdExtractHeadings, .mdExtractLinks,
+             .urlStripTracking:
+            return false
         }
     }
 }
@@ -119,8 +224,8 @@ struct CustomTransformationDescriptor: Codable, Identifiable, Equatable {
 
 // MARK: - Runtime action
 
-/// ClipboardAction wrapper для CustomTransformationDescriptor.
-/// Создаётся в ActionRegistry.rebuildCustomTransformations().
+/// ClipboardAction wrapper for a CustomTransformationDescriptor.
+/// Instantiated by ActionRegistry.rebuildCustomTransformations().
 struct CustomTransformationAction: ClipboardAction {
     let id: String
     let title: String
@@ -162,26 +267,30 @@ enum TransformationRuntime {
                       input: String,
                       params: [String: String]) throws -> String {
         switch engine {
-        case .regexReplace:
-            return try regexReplace(input, params: params)
-        case .findReplace:
-            return findReplace(input, params: params)
-        case .prepend:
-            return (params["text"] ?? "") + input
-        case .append:
-            return input + (params["text"] ?? "")
-        case .wrap:
-            return (params["prefix"] ?? "") + input + (params["suffix"] ?? "")
-        case .lineFilter:
-            return try lineFilter(input, params: params)
-        case .caseChange:
-            return caseChange(input, params: params)
-        case .sortLines:
-            return sortLines(input, params: params)
-        case .uniqueLines:
-            return uniqueLines(input)
-        case .jsonFormat:
-            return jsonFormat(input, params: params)
+        case .regexReplace:      return try regexReplace(input, params: params)
+        case .findReplace:       return findReplace(input, params: params)
+        case .prepend:           return (params["text"] ?? "") + input
+        case .append:            return input + (params["text"] ?? "")
+        case .wrap:              return (params["prefix"] ?? "") + input + (params["suffix"] ?? "")
+        case .lineFilter:        return try lineFilter(input, params: params)
+        case .caseChange:        return caseChange(input, params: params)
+        case .sortLines:         return sortLines(input, params: params)
+        case .uniqueLines:       return uniqueLines(input)
+        case .jsonFormat:        return jsonFormat(input, params: params)
+        case .trim:              return trim(input)
+        case .camelCase:         return camelCase(input)
+        case .snakeCase:         return snakeCase(input)
+        case .kebabCase:         return kebabCase(input)
+        case .base64Encode:      return base64Encode(input)
+        case .base64Decode:      return try base64Decode(input)
+        case .urlPercentEncode:  return urlPercentEncode(input)
+        case .urlPercentDecode:  return urlPercentDecode(input)
+        case .slugify:           return slugify(input)
+        case .wordCount:         return wordCount(input)
+        case .mdToPlain:         return mdToPlain(input)
+        case .mdExtractHeadings: return try mdExtractHeadings(input)
+        case .mdExtractLinks:    return try mdExtractLinks(input)
+        case .urlStripTracking:  return urlStripTracking(input)
         }
     }
 
@@ -234,6 +343,10 @@ enum TransformationRuntime {
                 return dict.keys.sorted().joined(separator: "\n")
             }
             return ""
+        case "extractKeysRecursive":
+            var keys = Set<String>()
+            collectJSONKeys(into: &keys, from: json)
+            return keys.sorted().joined(separator: "\n")
         default: // pretty
             if let out = try? JSONSerialization.data(withJSONObject: json,
                                                       options: [.prettyPrinted, .sortedKeys]) {
@@ -241,6 +354,15 @@ enum TransformationRuntime {
             }
         }
         return input
+    }
+
+    /// Recursive walker used by jsonFormat operation = extractKeysRecursive.
+    private static func collectJSONKeys(into keys: inout Set<String>, from obj: Any) {
+        if let dict = obj as? [String: Any] {
+            for (k, v) in dict { keys.insert(k); collectJSONKeys(into: &keys, from: v) }
+        } else if let arr = obj as? [Any] {
+            for v in arr { collectJSONKeys(into: &keys, from: v) }
+        }
     }
 
     private static func regexReplace(_ input: String, params: [String: String]) throws -> String {
@@ -287,5 +409,128 @@ enum TransformationRuntime {
             return mode == "keep" ? matches : !matches
         }
         return filtered.joined(separator: "\n")
+    }
+
+    // MARK: - New parameter-less engines (seeded as builtin.* transformations)
+
+    private static func trim(_ input: String) -> String {
+        let lines = input.split(separator: "\n", omittingEmptySubsequences: false)
+        return lines.map { $0.trimmingCharacters(in: .whitespaces) }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func camelCase(_ input: String) -> String {
+        let parts = input.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        guard let first = parts.first?.lowercased() else { return "" }
+        let rest = parts.dropFirst().map { $0.lowercased().capitalized }
+        return first + rest.joined()
+    }
+
+    private static func snakeCase(_ input: String) -> String {
+        input.split { !$0.isLetter && !$0.isNumber }
+            .map { $0.lowercased() }
+            .joined(separator: "_")
+    }
+
+    private static func kebabCase(_ input: String) -> String {
+        input.split { !$0.isLetter && !$0.isNumber }
+            .map { $0.lowercased() }
+            .joined(separator: "-")
+    }
+
+    private static func base64Encode(_ input: String) -> String {
+        guard let data = input.data(using: .utf8) else { return input }
+        return data.base64EncodedString()
+    }
+
+    private static func base64Decode(_ input: String) throws -> String {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = Data(base64Encoded: trimmed),
+              let decoded = String(data: data, encoding: .utf8) else {
+            throw TransformationError.missingParameter("input is not valid Base64")
+        }
+        return decoded
+    }
+
+    private static func urlPercentEncode(_ input: String) -> String {
+        input.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? input
+    }
+
+    private static func urlPercentDecode(_ input: String) -> String {
+        input.removingPercentEncoding ?? input
+    }
+
+    private static func slugify(_ input: String) -> String {
+        let lower = input.lowercased()
+        let latin = lower.applyingTransform(.toLatin, reverse: false) ?? lower
+        let stripped = latin.applyingTransform(.stripDiacritics, reverse: false) ?? latin
+        return stripped.split { !$0.isLetter && !$0.isNumber }
+            .joined(separator: "-")
+    }
+
+    private static func wordCount(_ input: String) -> String {
+        let words = input.split { $0.isWhitespace }.count
+        let chars = input.count
+        let lines = input.split(separator: "\n").count
+        return "\(words) words, \(chars) characters, \(lines) lines"
+    }
+
+    private static func mdToPlain(_ input: String) -> String {
+        var s = input
+        let patterns: [(String, String)] = [
+            (#"^#{1,6}\s+"#, ""),
+            (#"\*\*(.+?)\*\*"#, "$1"),
+            (#"\*(.+?)\*"#, "$1"),
+            (#"`([^`]+)`"#, "$1"),
+            (#"\[([^\]]+)\]\([^)]+\)"#, "$1"),
+            (#"^[-*+]\s+"#, "• ")
+        ]
+        for (pat, rep) in patterns {
+            s = s.replacingOccurrences(of: pat, with: rep, options: .regularExpression)
+        }
+        return s
+    }
+
+    private static func mdExtractHeadings(_ input: String) throws -> String {
+        let lines = input.split(separator: "\n").map(String.init)
+        let headings = lines.filter { $0.hasPrefix("#") && $0.contains(" ") }
+        if headings.isEmpty {
+            throw TransformationError.missingParameter("no Markdown headings found")
+        }
+        return headings.joined(separator: "\n")
+    }
+
+    private static func mdExtractLinks(_ input: String) throws -> String {
+        let pattern = #"\[([^\]]+)\]\(([^)]+)\)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return input }
+        let range = NSRange(input.startIndex..<input.endIndex, in: input)
+        let matches = regex.matches(in: input, range: range)
+        let urls = matches.compactMap { m -> String? in
+            guard let r = Range(m.range(at: 2), in: input) else { return nil }
+            return String(input[r])
+        }
+        if urls.isEmpty {
+            throw TransformationError.missingParameter("no Markdown links found")
+        }
+        return urls.joined(separator: "\n")
+    }
+
+    /// Tracking parameter list mirrors the legacy URLStripTrackingAction whitelist.
+    private static let urlTrackingParams: Set<String> = [
+        "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+        "fbclid", "gclid", "yclid", "mc_cid", "mc_eid", "igshid",
+        "_ga", "_gl", "ref", "ref_src", "ref_url", "spm", "wt_mc",
+        "vero_conv", "vero_id"
+    ]
+
+    private static func urlStripTracking(_ input: String) -> String {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var comps = URLComponents(string: trimmed) else { return input }
+        if let q = comps.queryItems {
+            comps.queryItems = q.filter { !urlTrackingParams.contains($0.name.lowercased()) }
+            if comps.queryItems?.isEmpty == true { comps.queryItems = nil }
+        }
+        return comps.string ?? input
     }
 }

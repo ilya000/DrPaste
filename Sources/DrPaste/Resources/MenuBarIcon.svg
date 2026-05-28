@@ -1,51 +1,88 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">
   <!--
-    DrPaste menu bar icon — monochrome template.
-    Designed for 18-22pt rendering. macOS will tint this automatically
-    via isTemplate=true (black in light mode, white in dark mode,
-    accent when menu is open).
-    Concept: rounded square frame with "Dr" letterforms.
+    DrPaste menu bar icon — monochrome template (single-page clipboard with
+    ⌘V glyphs in the lower half). Rendered as a template image so macOS
+    auto-tints it: black in light mode, white in dark mode, accent when the
+    status menu is open.
+    Designed for 18–22pt rendering. All shapes use absolute SVG coordinates
+    inside a 22×22 viewBox so the icon scales cleanly without sub-pixel drift.
   -->
-  <g fill="black">
-    <!-- Squircle outline -->
-    <path d="M 5 2
-             L 17 2
-             Q 20 2 20 5
-             L 20 17
-             Q 20 20 17 20
-             L 5 20
-             Q 2 20 2 17
-             L 2 5
-             Q 2 2 5 2 Z
-             M 5 4
-             Q 4 4 4 5
-             L 4 17
-             Q 4 18 5 18
-             L 17 18
-             Q 18 18 18 17
-             L 18 5
-             Q 18 4 17 4 Z"
-          fill-rule="evenodd"/>
-    <!-- "Dr" letters inside, simple geometric shapes for monochrome readability -->
-    <!-- D -->
-    <path d="M 6 7
-             L 6 15
-             L 9 15
-             Q 11 15 11 11
-             Q 11 7 9 7 Z
-             M 7.5 8.5
-             L 8.8 8.5
-             Q 9.7 8.5 9.7 11
-             Q 9.7 13.5 8.8 13.5
-             L 7.5 13.5 Z"
-          fill-rule="evenodd"/>
-    <!-- r -->
-    <rect x="12" y="9" width="1.4" height="6"/>
-    <path d="M 12 9
-             L 12 10.4
-             Q 13.4 9 15 9.4
-             L 14.6 10.8
-             Q 13.5 10.4 12.6 11.2 Z"/>
+
+  <!-- Subtle back-page hint (second page peeking behind on the left).
+       Drawn first so the clipboard body covers most of it. -->
+  <path d="M 1.8 7.0
+           Q 1.8 5.4 3.4 5.4
+           L 3.4 19.8
+           Q 3.4 21.4 5.0 21.4
+           L 14.6 21.4
+           L 14.6 21.0
+           L 4.6 21.0
+           Q 2.4 21.0 2.4 18.8 Z"
+        fill="black" fill-opacity="0.35"/>
+
+  <!-- Clipboard body — rounded rectangle with hollow interior (outline). -->
+  <path d="M 5.6 3.6
+           L 16.4 3.6
+           Q 19.0 3.6 19.0 6.2
+           L 19.0 18.6
+           Q 19.0 21.0 16.6 21.0
+           L 5.4 21.0
+           Q 3.0 21.0 3.0 18.6
+           L 3.0 6.2
+           Q 3.0 3.6 5.6 3.6 Z
+           M 5.8 5.0
+           Q 4.4 5.0 4.4 6.4
+           L 4.4 18.4
+           Q 4.4 19.6 5.6 19.6
+           L 16.4 19.6
+           Q 17.6 19.6 17.6 18.4
+           L 17.6 6.4
+           Q 17.6 5.0 16.2 5.0 Z"
+        fill="black" fill-rule="evenodd"/>
+
+  <!-- Clip at top — rounded shoulders with a circular hanging hole. -->
+  <path d="M 8.4 0.6
+           L 13.6 0.6
+           Q 14.8 0.6 14.8 1.8
+           L 14.8 4.6
+           L 7.2 4.6
+           L 7.2 1.8
+           Q 7.2 0.6 8.4 0.6 Z
+           M 11.0 1.9
+           A 0.7 0.7 0 0 0 11.0 3.3
+           A 0.7 0.7 0 0 0 11.0 1.9 Z"
+        fill="black" fill-rule="evenodd"/>
+
+  <!-- Two short text rows near the top inside the clipboard. -->
+  <rect x="6.0" y="7.6" width="6.6" height="1.1" rx="0.55" fill="black"/>
+  <rect x="6.0" y="9.6" width="4.4" height="1.1" rx="0.55" fill="black"/>
+
+  <!-- ⌘ glyph: stroked inner square + four corner loops, connected by short
+       stubs. Drawn purely via strokes to keep the geometry simple and the
+       result legible at 18pt. -->
+  <g fill="none" stroke="black" stroke-width="0.55"
+     stroke-linecap="round" stroke-linejoin="round"
+     transform="translate(5.8, 13.4)">
+    <rect x="0.9" y="0.9" width="2.7" height="2.7"/>
+    <circle cx="0.3" cy="0.3" r="0.55"/>
+    <circle cx="4.2" cy="0.3" r="0.55"/>
+    <circle cx="0.3" cy="4.2" r="0.55"/>
+    <circle cx="4.2" cy="4.2" r="0.55"/>
+    <line x1="0.7" y1="0.7" x2="0.9" y2="0.9"/>
+    <line x1="3.8" y1="0.7" x2="3.6" y2="0.9"/>
+    <line x1="0.7" y1="3.8" x2="0.9" y2="3.6"/>
+    <line x1="3.8" y1="3.8" x2="3.6" y2="3.6"/>
   </g>
+
+  <!-- V letter on the right, balancing the ⌘ glyph. Filled polygon so the
+       weight matches the rest of the icon at small render sizes. -->
+  <path d="M 12.2 13.2
+           L 13.2 13.2
+           L 14.0 15.8
+           L 14.8 13.2
+           L 15.8 13.2
+           L 14.5 17.6
+           L 13.5 17.6 Z"
+        fill="black"/>
 </svg>

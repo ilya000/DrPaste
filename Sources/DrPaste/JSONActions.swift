@@ -6,63 +6,17 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
+//  JSON-specific actions that cannot be cleanly expressed as a single
+//  parameterized engine.
+//
+//  Pretty / Minify / Extract keys migrated to DefaultTransformationSeed as
+//  jsonFormat engine entries (`builtin.json_pretty`, `builtin.json_minify`,
+//  `builtin.json_keys`). Flatten and Remove-nulls remain hardcoded — they
+//  produce structurally rewritten JSON and would not benefit from a
+//  generalized engine.
+//
 
 import Foundation
-
-struct JSONPrettyAction: ClipboardAction {
-    let id = "builtin.json_pretty"; let title = "Pretty JSON"; let isLocal = true
-    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        context.contains(.json)
-    }
-    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        guard let data = (item.previewText ?? "").data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data, options: [.allowFragments]),
-              let pretty = try? JSONSerialization.data(withJSONObject: obj,
-                                                       options: [.prettyPrinted, .sortedKeys]) else {
-            return .failed(original: item, reason: "Couldn't parse as JSON", recovery: nil)
-        }
-        return .preview(makeTextItem(String(data: pretty, encoding: .utf8) ?? "", from: item))
-    }
-}
-
-struct JSONMinifyAction: ClipboardAction {
-    let id = "builtin.json_minify"; let title = "Minify JSON"; let isLocal = true
-    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        context.contains(.json)
-    }
-    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        guard let data = (item.previewText ?? "").data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data, options: [.allowFragments]),
-              let mini = try? JSONSerialization.data(withJSONObject: obj, options: []) else {
-            return .failed(original: item, reason: "Couldn't parse as JSON", recovery: nil)
-        }
-        return .preview(makeTextItem(String(data: mini, encoding: .utf8) ?? "", from: item))
-    }
-}
-
-struct JSONExtractKeysAction: ClipboardAction {
-    let id = "builtin.json_keys"; let title = "Extract keys"; let isLocal = true
-    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        context.contains(.json)
-    }
-    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        guard let data = (item.previewText ?? "").data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data, options: [.allowFragments]) else {
-            return .failed(original: item, reason: "Couldn't parse as JSON", recovery: nil)
-        }
-        var keys = Set<String>()
-        collect(keys: &keys, from: obj)
-        let sorted = keys.sorted().joined(separator: "\n")
-        return .preview(makeTextItem(sorted, from: item))
-    }
-    private func collect(keys: inout Set<String>, from obj: Any) {
-        if let dict = obj as? [String: Any] {
-            for (k, v) in dict { keys.insert(k); collect(keys: &keys, from: v) }
-        } else if let arr = obj as? [Any] {
-            for v in arr { collect(keys: &keys, from: v) }
-        }
-    }
-}
 
 struct JSONFlattenAction: ClipboardAction {
     let id = "builtin.json_flatten"; let title = "Flatten"; let isLocal = true
@@ -124,9 +78,6 @@ struct JSONRemoveNullsAction: ClipboardAction {
 
 enum JSONActionsPack {
     static var all: [ClipboardAction] {
-        [
-            JSONPrettyAction(), JSONMinifyAction(),
-            JSONExtractKeysAction(), JSONFlattenAction(), JSONRemoveNullsAction()
-        ]
+        [JSONFlattenAction(), JSONRemoveNullsAction()]
     }
 }
