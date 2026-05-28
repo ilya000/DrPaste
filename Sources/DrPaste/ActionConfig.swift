@@ -12,6 +12,7 @@
 //
 
 import Foundation
+import AppKit
 
 /// Описание custom AI action. Пользователь может добавлять / редактировать / удалять.
 struct CustomAIDescriptor: Codable, Identifiable, Equatable {
@@ -25,7 +26,7 @@ struct CustomAIDescriptor: Codable, Identifiable, Equatable {
 
 /// Корневая конфигурация. Сериализуется в actions.json.
 struct ActionConfig: Codable, Equatable {
-    var version: Int = 2
+    var version: Int = 4
     /// builtin action.id → enabled. Default true (если ключа нет в map'е — enabled).
     var enabledFlags: [String: Bool] = [:]
     /// Пользовательские AI actions.
@@ -33,6 +34,15 @@ struct ActionConfig: Codable, Equatable {
     /// Custom titles per action ID (правка #6 lite — пользователь может переименовать built-in).
     /// Если ключа нет — используется action.title (default).
     var customTitles: [String: String] = [:]
+    /// Custom order per content type (правка #5).
+    /// Key — SemanticKind.rawValue, value — [actionID] в порядке отображения.
+    /// Actions не в массиве идут после, в default order.
+    var actionOrder: [String: [String]] = [:]
+    /// User-defined transformations (правка #7 light — engine architecture).
+    var customTransformations: [CustomTransformationDescriptor] = []
+    /// Per-action hotkeys (0.6.0): actionID → ActionHotkey.
+    /// При нажатии — direct trigger без HUD.
+    var actionHotkeys: [String: ActionHotkey] = [:]
     /// Полный snapshot для export (preferences тоже).
     var preferences: ActionConfigPreferences = ActionConfigPreferences()
 
@@ -45,12 +55,18 @@ struct ActionConfig: Codable, Equatable {
         self.enabledFlags = try c.decodeIfPresent([String: Bool].self, forKey: .enabledFlags) ?? [:]
         self.customAI = try c.decodeIfPresent([CustomAIDescriptor].self, forKey: .customAI) ?? []
         self.customTitles = try c.decodeIfPresent([String: String].self, forKey: .customTitles) ?? [:]
+        self.actionOrder = try c.decodeIfPresent([String: [String]].self, forKey: .actionOrder) ?? [:]
+        self.customTransformations = try c.decodeIfPresent([CustomTransformationDescriptor].self,
+                                                            forKey: .customTransformations) ?? []
+        self.actionHotkeys = try c.decodeIfPresent([String: ActionHotkey].self,
+                                                    forKey: .actionHotkeys) ?? [:]
         self.preferences = try c.decodeIfPresent(ActionConfigPreferences.self,
                                                  forKey: .preferences) ?? ActionConfigPreferences()
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, enabledFlags, customAI, customTitles, preferences
+        case version, enabledFlags, customAI, customTitles, actionOrder,
+             customTransformations, actionHotkeys, preferences
     }
 
     static func load() -> ActionConfig {
@@ -106,18 +122,21 @@ private extension JSONEncoder {
 /// Подобраны так чтобы максимум applicable actions имели заметный эффект.
 enum SettingsSamples {
     static func sample(for kind: SemanticKind) -> ClipboardItem {
+        if kind == .richText {
+            return richTextSample()
+        }
         let text: String
         let semantic = kind
         switch kind {
         case .text:
             text = """
-            Здравствуйте! how are you doing today?
+            ¡Hola! how are you doing today?
             My website is https://example.com/?utm_source=test
             Contact email: hello@example.com
-            ETO TEKCT V NEPRAVILNOY RASKLADKE.
+            tHIS tEXT has WRONG capitalization.
             """
         case .richText:
-            text = "Some **rich** text with *italic* and a [link](https://example.com)"
+            text = ""  // unreachable
         case .url:
             text = "https://example.com/article?utm_source=newsletter&utm_medium=email&fbclid=abc123&id=42"
         case .email:
@@ -150,9 +169,9 @@ enum SettingsSamples {
         case .table:
             text = """
             name\tage\tcity
-            Anna\t30\tBelgrade
-            Boris\t42\tSarasota
-            Vera\t27\tNizhny
+            Anna\t30\tMadrid
+            Carlos\t42\tBarcelona
+            Sofia\t27\tValencia
             """
         case .image:
             text = "Image (use Settings sample image when ready)"
@@ -170,6 +189,75 @@ enum SettingsSamples {
             representations: [:],
             typesOrdered: [],
             previewText: text,
+            previewImageRel: nil,
+            sourceBundleID: nil,
+            sourceAppName: "Settings Playground",
+            sourceWindowTitle: nil,
+            tags: []
+        )
+    }
+
+    /// Programmatically генерирует rich text sample как настоящий RTF
+    /// (правка #9 детали). Сохраняет в blobs storage с фиксированным именем —
+    /// перезаписываемое при каждом запросе, чтобы изменения в коде сразу применялись.
+    static func richTextSample() -> ClipboardItem {
+        let s = NSMutableAttributedString()
+        let body = NSFont.systemFont(ofSize: 13)
+        let bold = NSFontManager.shared.convert(body, toHaveTrait: .boldFontMask)
+        let italic = NSFontManager.shared.convert(body, toHaveTrait: .italicFontMask)
+        let h1 = NSFont.systemFont(ofSize: 22, weight: .bold)
+        let h2 = NSFont.systemFont(ofSize: 16, weight: .semibold)
+        let mono = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+
+        s.append(.init(string: "Welcome to DrPaste\n", attributes: [.font: h1]))
+        s.append(.init(string: "\nDrPaste is a ", attributes: [.font: body]))
+        s.append(.init(string: "press-and-hold", attributes: [.font: bold]))
+        s.append(.init(string: " clipboard manager for macOS, designed as the natural extension of the ",
+                       attributes: [.font: body]))
+        s.append(.init(string: "Paste", attributes: [.font: italic]))
+        s.append(.init(string: " gesture itself.\n\n", attributes: [.font: body]))
+
+        s.append(.init(string: "What's in this sample\n", attributes: [.font: h2]))
+        s.append(.init(string: "\n  • Headings (h1, h2)\n", attributes: [.font: body]))
+        s.append(.init(string: "  • ", attributes: [.font: body]))
+        s.append(.init(string: "Bold", attributes: [.font: bold]))
+        s.append(.init(string: " and ", attributes: [.font: body]))
+        s.append(.init(string: "italic", attributes: [.font: italic]))
+        s.append(.init(string: " emphasis\n", attributes: [.font: body]))
+        s.append(.init(string: "  • Inline ", attributes: [.font: body]))
+        s.append(.init(string: "code", attributes: [.font: mono,
+                                                    .backgroundColor: NSColor.controlBackgroundColor]))
+        s.append(.init(string: " in monospaced font\n", attributes: [.font: body]))
+        s.append(.init(string: "  • A hyperlink: ", attributes: [.font: body]))
+        s.append(.init(string: "github.com/ilya000/DrPaste",
+                       attributes: [.font: body,
+                                    .link: URL(string: "https://github.com/ilya000/DrPaste")!,
+                                    .foregroundColor: NSColor.linkColor,
+                                    .underlineStyle: NSUnderlineStyle.single.rawValue]))
+        s.append(.init(string: "\n\n", attributes: [.font: body]))
+
+        s.append(.init(string: "Try ", attributes: [.font: body]))
+        s.append(.init(string: "Rich → Markdown", attributes: [.font: bold]))
+        s.append(.init(string: ", ", attributes: [.font: body]))
+        s.append(.init(string: "Rich → HTML", attributes: [.font: bold]))
+        s.append(.init(string: ", or ", attributes: [.font: body]))
+        s.append(.init(string: "Rich → Wiki markup", attributes: [.font: bold]))
+        s.append(.init(string: " to see the conversion in action.", attributes: [.font: body]))
+
+        let range = NSRange(location: 0, length: s.length)
+        let rtfData = (try? s.data(from: range,
+                                   documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])) ?? Data()
+        let relPath = "richtext-sample.rtf"
+        let url = AppStorage.blobsDir.appendingPathComponent(relPath)
+        try? rtfData.write(to: url)
+
+        return ClipboardItem(
+            id: UUID(),
+            semantic: .richText,
+            createdAt: Date(),
+            representations: ["public.rtf": relPath],
+            typesOrdered: ["public.rtf"],
+            previewText: s.string,
             previewImageRel: nil,
             sourceBundleID: nil,
             sourceAppName: "Settings Playground",

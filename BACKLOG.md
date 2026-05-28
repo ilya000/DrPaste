@@ -4,6 +4,1131 @@
 
 ---
 
+## Следующая волна (накапливается)
+
+### #12 — Action Editor «Applies to»: показывать ВСЕ типы контента + disabled state для неприменимых
+
+**Статус:** запланирована. UX правка ~30 строк (расширить allTypes + computed applicable mask + disabled binding).
+
+**Затрагивает:** `ActionEditor.swift` — `allTypes` array, `applicableTypesSection`, `inferApplicableTypes`.
+
+**Контекст:** в screenshot — Edit Action для `builtin.image_strip_meta` (action работает с картинками). В секции **Applies to** видны: Plain text / Rich text / URL / JSON / Table / Markdown / Code / Files. **НЕТ Image и PDF.** При этом Plain text оказался по умолчанию checked — что бессмысленно: strip_meta не умеет работать с plain text.
+
+Две проблемы:
+
+1. **Отсутствуют типы Image, PDF** (и возможно Email) в списке checkbox'ов. `allTypes` определён неполно:
+   ```swift
+   private let allTypes: [SemanticKind] = [.text, .richText, .url, .json, .table, .markdown, .code, .files]
+   ```
+   Image / PDF / Email отсутствуют.
+
+2. **Inapplicable типы** должны быть **disabled и unchecked**. Для image action — Plain text checkbox не должен быть кликабельным. Пользователь не может «применить» strip_meta к тексту — action.isApplicable вернёт false.
+
+**Желаемое поведение:**
+
+В Applies to показываются **ВСЕ** SemanticKind кроме `.unknown`:
+- Plain text
+- Rich text
+- URL
+- Email
+- JSON
+- Code
+- Markdown
+- Table
+- Image
+- PDF
+- Files
+
+Для каждого типа определяем — **applicable ли** этот action к этому типу:
+
+- **Built-in mode**: вызываем `action.isApplicable(item: sample, context: ctx)` для sample каждого type. Если false → checkbox disabled + grayed.
+- **Transformation mode**: engine.applicableSet (text engines — все text-based types; image engines — image only; и т.д.). Hardcoded по engine kind.
+- **AI mode**: AI applicable ко всем text-based + richText. Image / Files — disabled (AI prompts работают с текстом). PDF — disabled (нужно extraction step).
+
+**Implementation:**
+
+```swift
+private let allTypes: [SemanticKind] = [
+    .text, .richText, .url, .email, .json, .code, .markdown, .table, .image, .pdf, .files
+]
+
+private func isTypeApplicable(_ kind: SemanticKind) -> Bool {
+    switch self.kind {
+    case .builtin:
+        guard let action = registry.actions.first(where: { $0.id == builtinID })
+        else { return false }
+        let sample = SettingsSamples.sample(for: kind)
+        let ctx = ContextDetector.detect(sample)
+        return action.isApplicable(item: sample, context: ctx)
+
+    case .transformation:
+        // Text-based engines применимы к text/richText/markdown/code/table/url/json/email
+        // Other engines — none
+        return [.text, .richText, .markdown, .code, .table, .url, .email, .json].contains(kind)
+
+    case .ai:
+        // AI применимы к text-based contexts
+        return [.text, .richText, .markdown, .code, .url, .email, .json, .table].contains(kind)
+    }
+}
+
+// В applicableTypesSection
+ForEach(allTypes, id: \.self) { type in
+    let isApplicable = isTypeApplicable(type)
+    Toggle(isOn: Binding(
+        get: { applicableTypes.contains(type) },
+        set: { isOn in
+            guard isApplicable else { return }  // защита от программного toggling
+            if isOn { applicableTypes.insert(type) }
+            else { applicableTypes.remove(type) }
+        }
+    )) {
+        Text(type.displayName)
+            .font(.system(size: 12))
+            .foregroundStyle(isApplicable ? .primary : .tertiary)
+    }
+    .toggleStyle(.checkbox)
+    .disabled(!isApplicable)
+}
+```
+
+**Visual treatment** disabled checkbox: macOS SwiftUI Toggle с `.disabled(true)` автоматически становится gray и uncheckable. Text label тоже dim (через `foregroundStyle(.tertiary)`).
+
+**При Save** — фильтровать `applicableTypes` через isTypeApplicable (на случай если в config попал inapplicable type из-за legacy migration). Защита от ошибочных states.
+
+**Pre-fill при open editor:**
+
+`loadInitialState` для built-in — `inferApplicableTypes(builtinID:)` уже использует `isApplicable`. Расширить allTypes — теперь image strip_meta получит { .image } по умолчанию, не { .text }.
+
+**Verification:** открыть Edit на strip_meta:
+- Image checkbox **есть**, **enabled**, **checked**
+- Plain text / Rich text / URL / JSON / etc — **disabled, grayed, unchecked** (юзер не может включить)
+- Если попытаться clicked disabled — Toggle не отвечает (macOS native behavior)
+
+Открыть Edit на UPPERCASE:
+- Plain text / Rich text / Markdown / Code etc — enabled, checked (selected или нет)
+- Image / PDF / Files — disabled, grayed, unchecked
+
+Открыть Edit на translate (AI):
+- Plain text / Rich text / Markdown / Code / URL / Email / Table / JSON — enabled
+- Image / PDF / Files — disabled
+
+**Принцип:** UI **показывает полный domain** (все типы), но **honors capability** (disabled неприменимые). Юзер сразу понимает что action может и не может, не теряется в усечённом списке.
+
+---
+
+### #11 — Settings action rows: consistent type-icon перед названием для всех типов
+
+**Статус:** запланирована. UX правка ~30 строк (новый helper `iconForAction(_:) -> (name: String, color: Color)?` + использование в actionRow для built-ins).
+
+**Затрагивает:** `SettingsWindow.swift` — actionRow (built-in) + customTransformationRow (уже OK) + customAIRow (уже OK).
+
+**Контекст:** сейчас в Settings → Content tab → Actions list:
+- **AI rows** (customAI) показывают provider badge (Claude / GPT / Gemini icon) перед title — OK
+- **Transformation rows** (customTransformations) показывают engine icon (function / magnifyingglass / text.append / text.quote / line.horizontal.3.decrease) перед title — OK
+- **Built-in rows** (плейн ClipboardAction) — НЕТ иконки. Просто drag handle + toggle + title.
+
+Это **визуально неконсистентно** — юзер не видит сразу что за тип action'а перед ним. AI и transformation легко отличимы, built-in выглядит «голым».
+
+После применения **#9 + #10** (seed AI и transformations как user data) — большинство actions будут customAI/customTransformation → автоматически получают иконку. Останутся только «real» built-ins:
+
+- `identity` — Paste as is
+- `paste_as_text`
+- `rich_to_md`, `rich_to_html`, `rich_to_wiki`
+- `layout_repair`
+- `generate_qr`
+- `image_*` (OCR, decode_qr, strip_metadata, resize, grayscale, rotate, invert)
+- `files_*` (paths, names, md_links, bash_list, size, sha256, reveal)
+- `type_slowly`
+
+**Желаемое:** каждая built-in action row получает свою иконку (semantic SF Symbol).
+
+**Mapping built-in id → SF Symbol:**
+
+```swift
+enum BuiltinActionIcons {
+    static func iconName(for actionID: String) -> String {
+        switch actionID {
+        case "builtin.identity": return "doc.on.clipboard.fill"
+        case "builtin.paste_as_text": return "text.alignleft"
+        case "builtin.rich_to_md": return "doc.richtext"
+        case "builtin.rich_to_html": return "chevron.left.forwardslash.chevron.right"
+        case "builtin.rich_to_wiki": return "book.closed"
+        case "builtin.layout_repair": return "globe"
+        case "builtin.generate_qr": return "qrcode"
+        case "builtin.image_ocr": return "text.viewfinder"
+        case "builtin.image_decode_qr": return "qrcode.viewfinder"
+        case "builtin.image_strip_metadata": return "eye.slash"
+        case "builtin.image_resize_1920": return "arrow.up.left.and.down.right.magnifyingglass"
+        case "builtin.image_compress_jpeg": return "rectangle.compress.vertical"
+        case "builtin.image_grayscale": return "circle.lefthalf.filled"
+        case "builtin.image_rotate_90": return "rotate.right"
+        case "builtin.image_invert": return "circle.righthalf.filled"
+        case "builtin.files_paths": return "doc.on.doc"
+        case "builtin.files_names": return "doc.text"
+        case "builtin.files_md_links": return "link"
+        case "builtin.files_bash_list": return "terminal"
+        case "builtin.files_size": return "ruler"
+        case "builtin.files_sha256": return "number"
+        case "builtin.files_reveal": return "folder"
+        case "builtin.type_slowly": return "keyboard"
+        default: return "gearshape"  // fallback для legacy built-ins до seed migration
+        }
+    }
+}
+```
+
+**В actionRow добавить:**
+
+```swift
+HStack(spacing: 8) {
+    // drag handle (как было)
+    Image(systemName: isLocked ? "lock.fill" : "line.3.horizontal")
+        ...
+    // toggle (как было)
+    Toggle("", isOn: enabledBinding(action.id)) ...
+
+    // НОВОЕ: type-icon
+    Image(systemName: BuiltinActionIcons.iconName(for: action.id))
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .frame(width: 16)
+
+    VStack(alignment: .leading, spacing: 1) {
+        Text(displayTitle) ...
+    }
+    ...
+}
+```
+
+Цвет — `.secondary` (subtle, не отвлекает). 16pt frame для visual alignment с провайдер/engine badges (которые тоже ~16pt).
+
+**Visual consistency:** все три типа rows имеют icon в той же позиции (после toggle, перед title):
+- AI row: `[badge with provider icon]` (orange/green/blue/etc circle)
+- Transformation row: `[engine icon]` (function / magnifyingglass / text.append / etc) gray
+- Built-in row: `[type icon]` (semantic SF Symbol) gray
+
+**Цветовая differentiation:**
+
+- AI rows — coloured badge (provider brand color)
+- Transformation rows — accent color icon (consistent with engine concept)
+- Built-in rows — gray icon (neutral, hardcoded behaviour)
+
+Это даёт visual hint о типе action'а **с первого взгляда** в списке.
+
+**Verification:** в Settings → Text tab после волны — список actions имеет иконки слева от каждого названия. Identity = clipboard icon, Paste as text = text alignment icon, UPPERCASE = case_change engine icon, summarize = Claude badge. Никаких «голых» rows.
+
+---
+
+### #10 — Архитектурно: built-in transformations seed'ятся как editable CustomTransformation, не hardcoded
+
+**Статус:** запланирована. Продолжение принципа из #9 для transformation-style built-ins. Архитектурная правка ~200 строк (new engines + seed step + удаление hardcoded action структур).
+
+**Затрагивает:** `CustomTransformation.swift` (новые engines), `Actions.swift` / `TextActions.swift` / `URLActions.swift` / `MoreActions.swift` (удалить те actions которые становятся seeded transformations), `Actions.swift` ActionRegistry seed.
+
+**Контекст:** этот же принцип что #9 — **не фиксировать в коде то что является данными**. Сейчас множество built-in actions имеют логику которая ровно эквивалентна tranformation engines (regex_replace, find_replace, prepend, append, wrap, line_filter). Они закрыты, юзер не может их править. **Эффективно** их seed'ить как user data.
+
+**Список built-ins которые могут быть transformations:**
+
+С существующими engines:
+- `builtin.trim` → `engine.regex_replace`, pattern `^\s+|\s+$`, replacement empty + flag multiline
+- `builtin.url_strip_tracking` → `engine.regex_replace`, pattern `[?&](utm_[^=&]*|fbclid|gclid|ref|mc_eid)=[^&]*`, replacement empty
+- `builtin.url_just_domain` → `engine.regex_replace`, pattern `^https?://([^/]+).*`, replacement `$1`
+- `builtin.url_md_link` / `url_html_link` → `engine.wrap`, prefix/suffix
+- `builtin.code_wrap` → `engine.wrap`, prefix ` ``` `, suffix ` ``` `
+- `builtin.tabs_to_spaces` → `engine.find_replace`, find `\t`, replace `    `
+- `builtin.spaces_to_tabs` → `engine.find_replace`, find `    `, replace `\t`
+- `builtin.md_extract_headings` → `engine.line_filter`, pattern `^#+\s`, mode `keep`
+- `builtin.md_extract_links` → `engine.line_filter` (или regex_replace для extraction)
+- `builtin.slugify` — chain нескольких regex (need pipeline support? или single complex regex)
+
+С НОВЫМИ engines которые надо добавить:
+
+| Новый engine | Заменяет built-in | Описание |
+|---|---|---|
+| `engine.case_change` | uppercase, lowercase, title_case, sentence_case | param `case`: upper / lower / title / sentence |
+| `engine.case_convert` | camelCase, snake_case, kebab_case | param `style`: camel / snake / kebab — для programmer naming |
+| `engine.sort_lines` | sort_lines | param `direction`: asc / desc; `caseInsensitive` |
+| `engine.unique_lines` | unique_lines | param `keepOrder`: bool |
+| `engine.json_format` | json_pretty, json_minify, json_extract_keys, json_flatten, json_remove_nulls | param `operation`: pretty / minify / extractKeys / flatten / removeNulls |
+| `engine.url_format` | url_encode, url_decode | param `mode`: encode / decode |
+| `engine.base64` | base64_encode, base64_decode | param `mode`: encode / decode |
+| `engine.html_entities` | (новая) HTML entity encode / decode | param `mode`: encode / decode |
+| `engine.word_count` | word_count | возвращает text info — count, lines, chars |
+| `engine.table_csv` | table_to_json, table_to_md | param `mode`: toJSON / toMD; `separator`: tab / comma / auto |
+| `engine.table_transpose` | table_transpose | без параметров |
+| `engine.md_to_plain` | md_to_plain | strip markdown markup |
+
+**Что ОСТАЁТСЯ как real built-in actions** (нельзя выразить через transformations — нужны Swift API):
+
+- `builtin.identity` — Paste as is, semantic anchor (всегда locked)
+- `builtin.paste_as_text` — strip formatting через NSAttributedString
+- `builtin.rich_to_md` — NSAttributedString → Markdown
+- `builtin.rich_to_html` — NSAttributedString → HTML
+- `builtin.rich_to_wiki` — NSAttributedString → Wiki
+- `builtin.layout_repair` — char-by-char keyboard layout reverse lookup (специфическая логика, не regex)
+- `builtin.generate_qr` — CoreImage QR generation (image output)
+- `builtin.image_*` — Vision / CoreImage (OCR, decode QR, strip metadata, resize, grayscale, rotate, invert)
+- `builtin.files_*` — FileManager + sandbox-aware (paths, names, md_links, bash_list, size, sha256, reveal)
+- `builtin.type_slowly` — keyboard simulation (special commit style)
+
+**Seed логика:**
+
+В `ActionRegistry.init` после AI seed (#9) — transformation seed:
+
+```swift
+if config.seedTransformationsVersion < CurrentTransformationsSeedVersion {
+    seedDefaultTransformations()
+    config.seedTransformationsVersion = CurrentTransformationsSeedVersion
+    config.save()
+}
+
+private func seedDefaultTransformations() {
+    let defaults: [CustomTransformationDescriptor] = [
+        CustomTransformationDescriptor(
+            id: "user.trim",
+            title: "Trim whitespace",
+            engineID: "regex_replace",
+            parameters: ["pattern": "^\\s+|\\s+$", "replacement": "", "caseInsensitive": "false"],
+            applicableTypes: ["text", "markdown", "code"]
+        ),
+        CustomTransformationDescriptor(
+            id: "user.uppercase",
+            title: "UPPERCASE",
+            engineID: "case_change",
+            parameters: ["case": "upper"],
+            applicableTypes: ["text"]
+        ),
+        // ... etc
+    ]
+    for d in defaults where !config.customTransformations.contains(where: { $0.id == d.id }) {
+        config.customTransformations.append(d)
+    }
+}
+```
+
+**Удаление hardcoded structs:**
+
+После seed — структуры типа `UppercaseAction`, `LowercaseAction`, `TrimWhitespaceAction`, `URLStripTrackingAction`, `JSONPrettyAction`, etc. — удаляются из codebase. Они больше не нужны.
+
+**Hotkey migration:**
+
+Существующие `actionHotkeys["builtin.uppercase"]` → переезжают на `actionHotkeys["user.uppercase"]` в migration step.
+
+**Преимущества:**
+
+1. **~50%+ built-ins становятся editable** — юзер может настроить trim regex pattern, добавить свои параметры в strip_tracking, изменить sort direction
+2. **Discoverability** — открыв Edit на trim, юзер видит реальный regex pattern и понимает что происходит
+3. **Меньше Swift кода** — десятки struct'ов с ClipboardAction conformance → удалены, заменены seeded data
+4. **Customization without compile** — юзер сам делает варианты (например «trim only trailing whitespace») редактируя seeded transformations или клонируя их
+
+**Что сохраняется:**
+
+- Все default-enabled subset через CuratedDefaults.swift — обновить чтобы знал про user.* ids вместо builtin.*
+- Sort order через actionOrder — id-based, migrate
+- Sounds, applicable contexts, behaviour — без изменений для юзера
+
+**Verification:** после migration в Settings → Text tab видим те же действия (UPPERCASE, Trim whitespace, Sort lines, и т.д.) но pencil edit открывает full Transformation editor — видны engine + params, можно править. Identity / paste-as-text / rich → md/html/wiki / image actions — остаются Built-in mode (real Swift hardcoded).
+
+**Применять одной волной с #9** — чтобы обе архитектурные переработки шли вместе, единая migration step.
+
+---
+
+### #9 — Архитектурно: убрать factory `ai.*` actions, seed их как editable customAI на first launch
+
+**Статус:** запланирована. **Replaces / supersedes #8** — более чистое решение. Архитектурная правка ~80 строк (DefaultAIActions removed, ActionRegistry seed-on-first-launch logic).
+
+**Затрагивает:** `AIProvider.swift` (удалить `DefaultAIActions.make()`), `Actions.swift` (ActionRegistry.init добавить seed step), `main.swift` (убрать register для DefaultAIActions), `ActionConfig.swift` (опционально добавить version-tracked seeded flag).
+
+**Контекст:** сейчас `DefaultAIActions.make()` создаёт hardcoded AIAction объекты с id `ai.summarize`, `ai.translate_es_en`, `ai.fix_grammar`, `ai.translate_es_en_rich`, `ai.fix_grammar_rich`, `ai.formal_tone` — и регистрирует их в `registry.actions` массиве напрямую. Они никогда не попадают в `config.customAI`, поэтому Edit открывается в Built-in mode, prompt locked.
+
+**Архитектурный вопрос:** **зачем фиксировать AI action в коде?** AI action — это **prompt + provider**. Нет hardcoded logic за prompt'ом. Это user-facing данные, должны жить в config где user может править.
+
+**Желаемое решение — seed default AI actions в customAI на first launch:**
+
+1. Удалить `DefaultAIActions.make()` метод и его использование в `main.swift`.
+
+2. В `ActionRegistry.init` после `ActionConfig.load()` добавить **seed step**:
+   ```swift
+   if config.seedVersion < CurrentSeedVersion {
+       seedDefaultAIActions()
+       config.seedVersion = CurrentSeedVersion
+       config.save()
+   }
+   ```
+
+3. `seedDefaultAIActions()` создаёт `CustomAIDescriptor` записи для каждого preset:
+   ```swift
+   private func seedDefaultAIActions() {
+       let defaults: [CustomAIDescriptor] = [
+           CustomAIDescriptor(
+               id: "user.summarize",
+               title: "summarize",
+               promptTemplate: "Summarize the user's input in 1–3 sentences...",
+               providerID: AIProviderRegistry.shared.config.defaultProviderID ?? "anthropic",
+               applicableTypes: ["text", "richText", "markdown", "code"]
+           ),
+           CustomAIDescriptor(
+               id: "user.translate",
+               title: "translate",
+               promptTemplate: "Translate the input to Spanish. If the user provides text in Spanish, translate to English instead. Reply with the translation only.",
+               providerID: ..., applicableTypes: ["text", "richText", "markdown"]
+           ),
+           // ... аналогично для translate (rich), fix grammar, fix grammar (rich), formal tone
+       ]
+       for d in defaults where !config.customAI.contains(where: { $0.id == d.id }) {
+           config.customAI.append(d)
+       }
+   }
+   ```
+
+4. **`seedVersion`** в ActionConfig — Int, инкрементируется когда мы добавляем новые default AI actions. Existing users получают новые presets при upgrade. Уже существующие не дублируются (проверка по id).
+
+5. **Migration для existing 0.8.0 users:** при первой загрузке с новой версией — детектируется seedVersion = 0 → seed запускается → factory ai.* пресеты появляются в customAI как regular descriptors. Юзер видит их в Settings как обычные custom AI actions, может править prompt/provider/applicable.
+
+6. **Удалить из ContentTypeTab applicableActions filter:** `!$0.id.hasPrefix("user.")` остаётся (они в customAI). Pencil edit на customAI → open в AI mode (текущий путь .editAI). Никаких branchings на `ai.*` prefix — он больше не существует.
+
+7. **Hotkey IDs:** существующие per-action hotkeys для `ai.summarize` etc. — обнулятся при migration. **Migrate hotkeys:** если есть `actionHotkeys["ai.summarize"]`, перенести на `actionHotkeys["user.summarize"]` (один-к-одному mapping). Это автоматически в migration step.
+
+**Преимущества:**
+
+1. **Прозрачно для юзера** — все AI actions одинаковые, все editable, никаких «факторий с заблокированным prompt».
+2. **Архитектурно чисто** — DefaultAIActions.make() perpetually hardcoded магия не нужна. Все AI actions — данные в config.
+3. **Юзер может удалить дефолтные** — если не нужен `summarize` или `formal_tone`, просто delete из Settings. Не залочены в коде.
+4. **Юзер может изменить prompt** — сразу, не через workaround.
+5. **Provider override per-action** — уже работает через customAI.providerID, теперь применяется и к defaults.
+
+**Что #8 решал workaround'но → теперь решено архитектурно.**
+
+**Verification:** после migration в Settings → Text tab видны те же AI actions (summarize, translate, fix grammar, formal tone, и т.д.) — но pencil edit открывает full AI editor с prompt template editable, Provider picker, Templates menu. Никаких «Mode locked» / «Built-in handler» labels. Можно freely менять.
+
+---
+
+### #8 — Edit AI factory preset: открывать в AI mode (editable prompt), не в Built-in mode
+
+**УСТАРЕЛО — заменено на #9.** Оставлено для истории на случай если #9 окажется too disruptive и потребуется fallback workaround.
+
+**Статус:** запланирована. UX правка ~50 строк (детекция `ai.*` prefix + branching в ActionEditor context).
+
+**Затрагивает:** `SettingsWindow.swift` (ContentTypeTab actionRow pencil click → context routing), `ActionEditor.swift` (новый mode `.editFactoryAI` или routing edit through .editAI с factory descriptor).
+
+**Контекст:** в screenshot — юзер открыл `ai.translate_es_en_rich` (factory preset с готовым prompt'ом «Translate to Spanish ↔ English»). Edit dialog открылся в режиме **Built-in** — locked handler `ai.translate_es_en_rich`, нет prompt editor'а. Юзер может только rename / hotkey / applicable types — НО **не может изменить prompt** на «Translate to French ↔ English» под свой workflow.
+
+**Это неестественно** — AI action by definition имеет prompt template как core. Если пользователь видит AI action, он ожидает что может посмотреть и поправить prompt. Иначе factory presets — closed black boxes.
+
+**Корень архитектурно:** factory AI actions создаются через `DefaultAIActions.make()` и регистрируются в `actions[]` массиве с id `ai.translate_*`, `ai.summarize`, etc. Они НЕ в `config.customAI`. Когда юзер клик'ает pencil → `editorContext = .editBuiltin(...)` → редактор в built-in mode → prompt locked (built-in handlers по определению hardcoded logic).
+
+**Желаемое поведение:**
+
+При pencil click на action где id начинается с `ai.` (factory AI preset):
+- Открывать ActionEditor в **AI mode** (не Built-in)
+- Pre-fill prompt template из factory action's `promptTemplate` (через ((`AIAction`)`)
+- Pre-fill provider из action's `providerID` (или default)
+- Pre-fill applicable types из action's `applicableTypes`
+- Title editable как обычно
+
+**Save behavior:**
+
+При Save юзер фактически создаёт user-level customAI override:
+- Если юзер ничего не изменил из {prompt, provider, applicableTypes} vs factory → save идёт через customTitles + actionHotkeys (тот же flow что built-in override)
+- Если изменил prompt / provider / applicable types → создать `CustomAIDescriptor` в `customAI` с id `ai.translate_es_en_rich.user` (или другой scheme) который **shadowing'ует** factory preset
+
+Альтернативный простой подход: **factory AI actions при первом edit'е автоматически клонируются в customAI** (with id, например, `user.<factoryID>.<random>`), и в HUD больше не показываются с factory id — только user version. Factory id остаётся в коде как fallback, но если есть user override — он используется.
+
+**Ещё проще — "Fork to customize" pattern:**
+
+Если юзер начинает менять prompt/provider в Edit dialog для factory AI:
+- Save создаёт NEW CustomAIDescriptor в customAI (id `user.<uuid>`)
+- Factory preset остаётся как был
+- Юзер получает свою копию которую можно freely менять
+- В Settings list — обе видны: factory original + user copy
+
+В UI editor показать кнопку **«Reset to default prompt»** рядом с prompt editor (как Reset to default title) — для случая когда юзер хочет вернуть factory text.
+
+**Решение для волны:** второй подход — **branch on `ai.*` prefix** в pencil-click handler:
+
+```swift
+Button {
+    if action.id.hasPrefix("ai.") {
+        // Factory AI preset → open in AI mode pre-filled from action
+        let aiAction = action as? AIAction
+        let descriptor = CustomAIDescriptor(
+            id: action.id,    // keep factory id для consistency
+            title: registry.displayTitle(forActionID: action.id, defaultTitle: action.title),
+            promptTemplate: aiAction?.promptTemplate ?? "",
+            providerID: aiAction?.providerID ?? AIProviderRegistry.shared.config.defaultProviderID ?? "anthropic",
+            applicableTypes: Array(aiAction?.applicableTypes.map { $0.rawValue } ?? []),
+            enabled: true
+        )
+        editorContext = .editAI(descriptor)
+    } else {
+        editorContext = .editBuiltin(
+            actionID: action.id,
+            defaultTitle: action.title,
+            description: BuiltinActionMetadata.descriptions[action.id] ?? ""
+        )
+    }
+} label: {
+    Image(systemName: "pencil")
+}
+```
+
+**При Save AI action с id начинающимся с `ai.`** — registry.upsertCustomAI(descriptor). При rebuildCustomAI замечает override id и **дедупликация** — user version shadowing'ует factory version в actions list.
+
+Альтернативно: добавить `factoryAIOverrides: [String: CustomAIDescriptor]` отдельно в ActionConfig — где key = factory id, value = override.
+
+**Verification:** после правки клик pencil на `ai.translate_es_en_rich` → видим Title + Prompt template editor + Provider picker + Templates menu + Applicable types. Меняем prompt на «Translate to French ↔ English». Save. В HUD действие теперь использует новый prompt.
+
+---
+
+### #7 — Rich Text preview formatting (HUD + Settings) — повторный фикс
+
+**Статус:** запланирована. Bug — критичный для UX rich text actions. ~80 строк (NSViewRepresentable wrapper для NSTextView).
+
+**Затрагивает:** `HUD.swift` (richTextView + ImagePreview wrapper), `SettingsWindow.swift` (ResultPane.preview rich branch).
+
+**Контекст:** в 0.8.0 был «фикс» через `AttributedString(ns, including: \.swiftUI)` — но **не работает**. Bold / italic / inline code / colors **по-прежнему не видны** в preview.
+
+**Корни проблемы:**
+
+1. **`AttributedString(NSAttributedString, including: \.swiftUI)` — lossy конверсия.** SwiftUI's `AttributedString` поддерживает limited subset attributes. Семейство шрифтов, font traits (bold/italic), background colors часто **теряются** при конверсии через `\.swiftUI` scope. Это known issue в SwiftUI Text rendering.
+
+2. **`.font(.system(size: sz(12)))` modifier поверх `Text(attr)` — overrides attr fonts.** В HUD.swift:
+   ```swift
+   Text(attr).font(.system(size: sz(12)))
+   ```
+   `.font()` modifier APPLIES TO ENTIRE Text. Если у attr внутри есть bold/italic fonts — они **затираются** этим modifier'ом. Это объясняет почему всё рендерится одним plain шрифтом.
+
+**Правильное решение — NSViewRepresentable wrapper для NSTextView:**
+
+NSTextView **нативно** рендерит NSAttributedString со всеми attributes (bold, italic, links, colors, font sizes, alignment, lists). Это самый верный способ показать rich content.
+
+**Implementation:**
+
+Новый файл `RichTextPreview.swift`:
+
+```swift
+import SwiftUI
+import AppKit
+
+struct RichTextPreview: NSViewRepresentable {
+    let attributedString: NSAttributedString
+    var fontScale: CGFloat = 1.0
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSTextView.scrollableTextView()
+        let textView = scrollView.documentView as! NSTextView
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.drawsBackground = false
+        textView.backgroundColor = .clear
+        textView.textContainer?.lineFragmentPadding = 6
+        textView.textContainerInset = NSSize(width: 0, height: 6)
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? NSTextView else { return }
+        // Применяем font scale умножением existing font sizes
+        let scaled = NSMutableAttributedString(attributedString: attributedString)
+        if fontScale != 1.0 {
+            scaled.enumerateAttribute(.font, in: NSRange(location: 0, length: scaled.length)) { value, range, _ in
+                if let f = value as? NSFont {
+                    let scaledFont = NSFont(descriptor: f.fontDescriptor,
+                                            size: f.pointSize * fontScale) ?? f
+                    scaled.addAttribute(.font, value: scaledFont, range: range)
+                }
+            }
+        }
+        textView.textStorage?.setAttributedString(scaled)
+    }
+}
+```
+
+**В HUD.swift** заменить:
+
+```swift
+@ViewBuilder
+private func richTextView(_ item: ClipboardItem) -> some View {
+    if let attr = loadNSAttributedString(item) {
+        RichTextPreview(attributedString: attr, fontScale: state.fontScale)
+    } else {
+        Text(item.previewText ?? "").font(.system(size: sz(12)))
+    }
+}
+
+private func loadNSAttributedString(_ item: ClipboardItem) -> NSAttributedString? {
+    if let rel = item.representations["public.rtf"],
+       let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)) {
+        return try? NSAttributedString(data: data,
+                                        options: [.documentType: NSAttributedString.DocumentType.rtf],
+                                        documentAttributes: nil)
+    }
+    if let rel = item.representations["public.html"],
+       let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)) {
+        return try? NSAttributedString(data: data,
+                                        options: [.documentType: NSAttributedString.DocumentType.html,
+                                                  .characterEncoding: String.Encoding.utf8.rawValue],
+                                        documentAttributes: nil)
+    }
+    return nil
+}
+```
+
+**В SettingsWindow.swift** заменить `loadRichAttributedString` + использование:
+
+```swift
+} else if item.semantic == .richText,
+          let nsAttr = loadRichNSAttributedString(item) {
+    RichTextPreview(attributedString: nsAttr, fontScale: 1.0)
+} else {
+    ...
+}
+
+private func loadRichNSAttributedString(_ item: ClipboardItem) -> NSAttributedString? {
+    // как loadNSAttributedString из HUD
+}
+```
+
+**Удалить старые helpers:** `makeAttributedString`/`loadRichAttributedString` (которые возвращают `AttributedString`) — больше не нужны.
+
+**Verification:**
+
+После применения проверить на rich-sample.rtf что:
+- "Welcome to DrPaste" — крупный bold (h1)
+- "press-and-hold" — bold inline
+- "жестами" → "gestures" (после правки #4 русский был убран) — italic
+- "code" — monospaced
+- ссылка `github.com/ilya000/DrPaste` — синяя underlined
+- маркированный список с bullets
+
+Все должны рендериться визуально как rich text. **Без подмены plain text.**
+
+---
+
+### #6 — Type Slowly: убрать формулировки про обход / bypass / banking / anti-cheat
+
+**Статус:** запланирована. Tiny text правка ~10 строк в нескольких файлах. Compliance / трактовка как malware.
+
+**Затрагивает:** `BuiltinActionEditor.swift` (BuiltinActionMetadata.descriptions), `TypeSimulator.swift` (comments), `README.md`, `SKILL.md`, `BACKLOG.md` (historical entries).
+
+**Контекст:** сейчас в нескольких местах есть формулировки типа:
+- "Types the text character-by-character via key events — **bypasses paste blockers** (banking forms, anti-cheat)."
+- "**Банковские формы**, поля номера счёта/SWIFT/IBAN/credit card часто блокируют paste..."
+- "Игровых чатах с **anti-cheat блокирующих paste**"
+
+Эти фразы могут быть интерпретированы (Apple notarization review, App Store, security scanner'ы, корпоративные blocklists) как **вредоносное ПО**: «обход защиты», «обход банковских блокировок», «обход анти-чита» — это паттерны фразеологии malware.
+
+**Замена на нейтральные формулировки:**
+
+| Старая | Новая |
+|---|---|
+| "Types the text character-by-character via key events — bypasses paste blockers (banking forms, anti-cheat)" | "Types the text character-by-character — useful where regular paste isn't supported or you prefer simulated typing" |
+| "Use case: банковские формы, anti-cheat" | "Use case: input fields that prefer typed entry; demos / screen recordings; legacy forms" |
+| "bypass paste-block" | "type instead of paste" / "simulated typing" |
+
+**Конкретные места которые надо переписать:**
+
+1. **`BuiltinActionEditor.swift`** — `BuiltinActionMetadata.descriptions["builtin.type_slowly"]`:
+
+   Старое: `"Types the text character-by-character via key events — bypasses paste blockers (banking forms, anti-cheat)."`
+
+   Новое: `"Types the text character-by-character with a small delay between keys. Useful for input fields that don't accept paste, demos, or screen recordings."`
+
+2. **`TypeSimulator.swift`** — header comment с use case'ом. Убрать упоминание banking / anti-cheat. Оставить нейтральное: «simulates typing for fields that don't accept paste or prefer typed input».
+
+3. **`README.md`** — если есть упоминание use case'ов Type Slowly, заменить на нейтральные.
+
+4. **`SKILL.md`** — если есть, заменить.
+
+5. **`BACKLOG.md`** — historical entries в правках #7 (Type Slowly). Эти entries — описание планирования, но текст с «банковские формы» лучше тоже переписать на нейтральный для consistency. Можно либо удалить detail про use cases, либо переписать.
+
+**Принцип формулировок впредь:**
+
+- НЕ говорить про «обход», «bypass», «защиту»
+- НЕ называть конкретные «защищённые» контексты (banking, financial, anti-cheat, DRM, security software)
+- Говорить нейтрально: «simulated typing», «character-by-character input», «when paste isn't available», «for typed-entry workflows»
+- Use cases: demos, screen recordings, legacy systems, accessibility, forms that prefer typed entry — все эти формулировки neutral
+
+**Action — пройти grep'ом по `bypass|banking|anti-cheat|paste block|onpaste`** и переписать каждое вхождение. Сейчас 5 файлов:
+- `BACKLOG.md`
+- `Sources/DrPaste/BuiltinActionEditor.swift`
+- `README.md`
+- `Sources/DrPaste/TypeSimulator.swift`
+- `SKILL.md`
+
+---
+
+### #5 — AI Provider: принудительный test connection перед Save
+
+**Статус:** запланирована. UX правка ~30 строк (ProviderEditor — disabled Save до прохождения test).
+
+**Затрагивает:** `SettingsWindow.swift` → `ProviderEditor` — Save button disabled до успешного test, либо Save сам запускает test и блокирует если fail.
+
+**Контекст:** сейчас ProviderEditor имеет отдельную кнопку "Test connection" + кнопку Save. Пользователь может Save без теста → сохранит broken config → потом в HUD AI actions молча returning `.failed` (или ругаются на 401/404). Юзер думает что всё настроено, на самом деле нет.
+
+**Желаемое поведение:**
+
+При нажатии Save:
+1. Если test ещё не запускался ИЛИ последний test не успешный → **запустить test автоматически**
+2. Показать progress индикатор «Testing connection…»
+3. **Только если test успешный** → сохранить config + Keychain key, закрыть editor
+4. Если fail → показать error в editor (как сейчас при ручном Test) + кнопка остаётся доступной для повторной попытки (изменил key/model → попробовал снова)
+
+**Edge cases:**
+
+- **Pure metadata change** (например только displayName, без изменения key/model/baseURL): test не нужен, save проходит без test. Условие: если ничего из {apiKey, model, baseURL} не изменилось vs существующая запись → skip test.
+- **Local providers без auth** (Ollama, LM Studio, llama.cpp): test connection пытается достучаться до baseURL. Если local сервис не запущен — test fail. Юзер сначала запускает Ollama, потом сохраняет. Reasonable.
+- **Network temporarily unavailable**: test fail → юзер не может сохранить даже валидный config. Mitigation: добавить «Save without testing» опцию в footer? Или fall-through через advanced ⌥-Click? Достаточно: при network error в error message подсказать «check your connection and try again» — юзер либо чинит сеть, либо ждёт.
+- **Long-running test**: cap timeout 10 секунд. Если timeout — fail с понятной error.
+
+**Implementation skeleton:**
+
+```swift
+@State private var testPassed: Bool = false
+@State private var dirty: Bool = false   // были ли изменены auth-relevant поля
+
+// На onChange любого auth-поля: dirty = true, testPassed = false
+
+Button("Save") {
+    if dirty || testPassed == false {
+        runTestThenSaveIfPassed()
+    } else {
+        commitSave()
+    }
+}
+.disabled(testing)
+```
+
+```swift
+private func runTestThenSaveIfPassed() {
+    testing = true
+    testResult = nil
+    Task { @MainActor in
+        // save key + provider temporarily для test
+        let keyForTest = apiKey
+        let providerForTest = provider
+        if !keyForTest.isEmpty {
+            APIKeyStorage.save(keyForTest, for: providerForTest.id)
+        }
+        AIProviderRegistry.shared.upsert(providerForTest)
+        let result = await AIProviderRegistry.shared.testConnection(providerID: providerForTest.id)
+        testing = false
+        switch result {
+        case .success(let msg):
+            testResult = "✓ \(msg)"
+            testPassed = true
+            // Финальный save и закрываем editor
+            onClose(ProviderEditorResult(config: providerForTest,
+                                          apiKey: keyForTest.isEmpty ? nil : keyForTest))
+        case .failure(let e):
+            testResult = "✗ \(errorMessage(e))"
+            testPassed = false
+            // НЕ закрываем editor — юзер чинит и пробует снова
+        }
+    }
+}
+```
+
+**Manual "Test connection" кнопка остаётся** — для случаев когда юзер хочет проверить без save. Просто Save теперь тоже тестит.
+
+**UI копи:**
+
+Save button label меняется в зависимости от состояния:
+- Default: `Save`
+- Во время testing: `Testing…` + ProgressView
+- Если test passed previously и dirty=false: `Save` (instant)
+
+Tooltip на Save: «Tests the connection before saving to prevent broken configs.»
+
+**Принцип:** broken AI config — silent footgun. Лучше блокировать Save чем потом удивлять пользователя при использовании.
+
+---
+
+### #4 — Type Slowly: автостоп при любой пользовательской активности
+
+**Статус:** запланирована. Безопасность UX правка ~50 строк (TypeSimulator + observers).
+
+**Затрагивает:** `TypeSimulator.swift` — добавить cancellation observers; `main.swift` — pass cancellation handle при запуске.
+
+**Контекст:** Type Slowly печатает текст посимвольно с задержкой 0.2s. Если у юзера в середине типа:
+- Сменился focus (случайно кликнул в другое окно / поле) — продолжаем печатать в неверном месте, может попасть в чат / другое поле / адресную строку
+- Нажал любую клавишу — конфликт с simulated typing, может получиться мешанина
+- Случайно переключил workspace через Mission Control — typing продолжается в новом контексте
+
+Это **dangerous**: представь — typing пароль в банк, юзер случайно switch'нул на Slack, и наш typing допечатывает пароль в чат.
+
+**Желаемое поведение:**
+
+Type Slowly **немедленно прекращается** при ЛЮБОМ из событий:
+
+1. **Key press** (кроме самих synthesized events от нас — фильтр через `DrPasteSyntheticMarker`)
+2. **Mouse click** (любая кнопка)
+3. **Window focus change** — переключился frontmost app
+4. **Application activation** — другая app стала active
+5. **Workspace / space switch** — Mission Control gesture
+
+**Implementation skeleton:**
+
+В `TypeSimulator.typeSlowly`:
+
+```swift
+final class TypingSession {
+    var cancelled: Bool = false
+    var monitors: [Any] = []
+    let originalFrontmostPID: pid_t
+    let started: Date
+
+    init() {
+        self.originalFrontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+        self.started = Date()
+    }
+}
+
+static func typeSlowly(_ text: String, baseDelay: TimeInterval, jitter: Double) async {
+    let session = TypingSession()
+    installMonitors(session)
+    defer { removeMonitors(session) }
+
+    for ch in text {
+        if session.cancelled {
+            NSLog("DrPaste: Type Slowly cancelled mid-stream")
+            return
+        }
+        await postUnicodeChar(ch)
+        let delay = baseDelay * (1 + Double.random(in: -jitter...jitter))
+        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+    }
+}
+
+private static func installMonitors(_ session: TypingSession) {
+    // 1. Global key monitor (любой key press, кроме наших synthetic)
+    let keyMon = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown]) { event in
+        // Если event не наш — cancel
+        if event.cgEvent?.getIntegerValueField(.eventSourceUserData) != DrPasteSyntheticMarker {
+            session.cancelled = true
+        }
+    }
+    if let m = keyMon { session.monitors.append(m) }
+
+    // 2. Mouse clicks
+    let mouseMon = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { _ in
+        session.cancelled = true
+    }
+    if let m = mouseMon { session.monitors.append(m) }
+
+    // 3. Frontmost app change
+    let appObserver = NSWorkspace.shared.notificationCenter.addObserver(
+        forName: NSWorkspace.didActivateApplicationNotification,
+        object: nil, queue: .main
+    ) { note in
+        let newPID = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
+            .processIdentifier ?? 0
+        if newPID != session.originalFrontmostPID {
+            session.cancelled = true
+        }
+    }
+    session.monitors.append(appObserver)
+
+    // 4. Space/workspace change (опционально)
+    let spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+        forName: NSWorkspace.activeSpaceDidChangeNotification,
+        object: nil, queue: .main
+    ) { _ in session.cancelled = true }
+    session.monitors.append(spaceObserver)
+}
+
+private static func removeMonitors(_ session: TypingSession) {
+    for monitor in session.monitors {
+        if let workspaceObserver = monitor as? NSObjectProtocol {
+            NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
+        } else {
+            NSEvent.removeMonitor(monitor)
+        }
+    }
+}
+```
+
+**Feedback при cancel:**
+- Sound feedback: `pasteFailure` cue (короткий buzz) — даёт audio signal что typing прервался
+- Optional: показать transient banner "Type Slowly cancelled — focus changed" 2 сек в menu bar? Возможно overkill, sound достаточно
+
+**Edge cases:**
+
+1. **NSEvent global monitor требует AX permission.** В Limited Mode без AX мы и так не запускаем Type Slowly (TypeSlowlyAction возвращает `.failed` с recovery `.openAccessibilitySettings`). Так что эта проверка уже есть.
+
+2. **Synthesized events filtration.** Наши собственные posted CGEvents помечены `DrPasteSyntheticMarker` (от правки #16). Global monitor можно отфильтровать через `event.cgEvent?.getIntegerValueField(.eventSourceUserData)`.
+
+3. **Mouse moves НЕ ловим.** Только clicks. Move через trackpad — это естественное поведение во время typing'а, нельзя cancel'ить.
+
+4. **Modifier keys.** Если юзер просто держит Shift / Cmd без key down — не cancel'им. Только `.keyDown` events (буквы/цифры/etc).
+
+5. **First few ms grace period?** Юзер нажал ⌥⌘V → выбрал action → release. В момент release он может всё ещё держать ⌥⌘ — это вызовет flagsChanged events, не keyDown. Так что не должно срабатывать. Но если будет ложно — добавить grace period 100 ms после старта.
+
+**Default behavior — ON.** Это safety feature, не optional. Без неё Type Slowly опасен.
+
+---
+
+### #3 — HUD footer: показывать текущий zoom в процентах
+
+**Статус:** запланирована. Маленькая UI правка ~5 строк (форматирование hint в footer).
+
+**Затрагивает:** `HUD.swift` — `footer` view, hint строка `⌘+/-`.
+
+**Контекст:** при использовании `⌘+`/`⌘-`/`⌘0` для font scaling в HUD сейчас не видно текущий уровень — пользователь зуммит наугад. После нескольких нажатий не помнит сколько шагов было.
+
+**UX:**
+
+В footer rightmost hint (где сейчас `⌘+/-  zoom`) добавить процент текущего fontScale:
+
+```
+... ⌘+/-  zoom 100%
+... ⌘+/-  zoom 130%   (после нескольких ⌘+)
+... ⌘+/-  zoom 70%    (после нескольких ⌘-)
+```
+
+`fontScale` хранится в `HudState.fontScale` (от 0.7 до 1.6). Процент = `Int(fontScale * 100)`.
+
+**Implementation:**
+
+Заменить hint на `keyHint("⌘+/-", "zoom \(Int(state.fontScale * 100))%")` — реактивно через @Published.
+
+Опционально: при `fontScale == 1.0` показывать без процентов (`zoom`), при отклонении — с процентами. Это убирает шум на default. Но возможно явный `100%` лучше — visual consistency, никаких mode jumps.
+
+**Решение:** всегда показывать процент — пользователь сразу видит текущее значение, не надо догадываться когда `zoom` vs `zoom 100%`.
+
+### #2 — ⌥⌘S Append Copy: session-based reset логика
+
+**Статус:** запланирована. Поправка к существующей реализации #12 (0.8.0) — добавить session tracking чтобы избежать surprise со старым clipboard содержимым.
+
+**Затрагивает:** `main.swift` — `hotkeyEngineDidAppendCopy()` + state tracking (`lastAppendCopyTime`, `lastDrPasteHotkeyTime`).
+
+**Проблема в текущей реализации:** при первом нажатии ⌥⌘S мы append'им к **whatever is in clipboard** — даже если там лежит что-то старое, не имеющее отношения к текущей задаче пользователя. Это surprise: «там остатки того чего я не ожидал».
+
+**Желаемое поведение:**
+
+**Первое нажатие** `⌥⌘S` (см. определение «первое» ниже):
+1. Сохранить текущий clipboard в history (через watcher.forceTick — он сам подхватит)
+2. Очистить clipboard
+3. Симулировать ⌘C → захватить selection в чистый clipboard
+4. Это новая «accumulator session»
+
+**Последующие нажатия** `⌥⌘S` (в той же session):
+1. Симулировать ⌘C → захватить selection
+2. Объединить с previous accumulator content (текущая логика)
+
+**Что считается «первым нажатием»** (т.е. начало новой session):
+- Прошло **≥ 5 минут** с последнего DrPaste hotkey (любого — ⌥⌘V/C/X/S или per-action)
+- ИЛИ пользователь использовал любой DrPaste hotkey **кроме** ⌥⌘S (т.е. была другая операция, accumulator session должна сброситься)
+
+**State в AppDelegate:**
+
+```swift
+private var lastAppendCopyTime: Date? = nil
+private var lastDrPasteAction: DrPasteAction = .none
+
+enum DrPasteAction {
+    case none
+    case appendCopy
+    case other     // paste / cut / copy / per-action hotkey
+}
+```
+
+**Logic in `hotkeyEngineDidAppendCopy`:**
+
+```swift
+let isNewSession: Bool = {
+    // Если предыдущее DrPaste-действие было НЕ appendCopy → новая session
+    if lastDrPasteAction != .appendCopy { return true }
+    // Если прошло > 5 минут → новая session
+    if let last = lastAppendCopyTime,
+       Date().timeIntervalSince(last) > 300 { return true }
+    return false
+}()
+
+if isNewSession {
+    // 1. Save old clipboard to history
+    watcher.forceTick()    // подхватит текущий clipboard если изменился
+    // 2. Clear pasteboard
+    NSPasteboard.general.clearContents()
+    // 3. Simulate ⌘C → fresh capture
+    PasteSimulator.simulateCopy()
+    // ... wait for changeCount, play sound
+} else {
+    // Append к существующему (текущая логика)
+    ...
+}
+
+lastAppendCopyTime = Date()
+lastDrPasteAction = .appendCopy
+```
+
+**Также нужно tracking всех остальных hotkey'ев чтобы помечать `lastDrPasteAction = .other`:**
+
+- `hotkeyEngineDidSummon(reason: .paste)` → `.other`
+- `hotkeyEngineDidSummon(reason: .cutAndReplace)` → `.other`
+- `hotkeyEngineDidQuickCopy()` → `.other`
+- `actionHotkeyDidFire` (per-action hotkey) → `.other`
+
+**State обнуляется при restart** — session это про in-app workflow, не нужна persistence через launches.
+
+**Hardcoded константы (без Settings UI):**
+- Timeout 5 минут — фиксированный
+- Любой не-`⌥⌘S` DrPaste hotkey сбрасывает session — фиксированно
+
+**UX feedback:** при first press (new session) играть `copySuccess` звук как обычно — пользователю не нужно знать что это «new session». Internal logic.
+
+### #1 — Welcome window: предупреждение об отсутствии Accessibility доступа
+
+**Статус:** запланирована. Маленькая UI правка ~50 строк (новая секция в `WelcomeView` + deep link helper).
+
+**Затрагивает:** `WelcomeWindow.swift` — добавить conditional warning section, проверка `AXIsProcessTrusted()`, deep link на System Settings → Privacy & Security → Accessibility, кнопка «Restart DrPaste».
+
+**Контекст:** сейчас DrPaste detect'ит AX и автоматически fallback'ится на Limited Mode (Carbon hotkeys). Welcome window не упоминает об этом. Пользователь может не понимать почему не работают gesture features.
+
+**UX:**
+
+В `WelcomeView` добавить условную секцию (показывается если `AXIsProcessTrusted() == false`):
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ ⚠ Limited Mode — Accessibility access not granted           │
+│                                                             │
+│ DrPaste needs Accessibility permission to:                  │
+│  • Detect ⌥⌘V press-and-hold gesture (release to paste)     │
+│  • Intercept keyboard navigation inside the HUD             │
+│  • Simulate paste into the frontmost app                    │
+│                                                             │
+│ Without it, the app runs in Limited Mode — open HUD with    │
+│ ⌥⌘V, press Enter to paste (no press-and-hold).              │
+│                                                             │
+│ To enable full Gesture Mode:                                │
+│  1. Open System Settings → Privacy & Security →             │
+│     Accessibility                                           │
+│  2. Find DrPaste in the list and turn the toggle ON         │
+│  3. Restart DrPaste                                         │
+│                                                             │
+│   [Open Accessibility Settings…]    [Restart DrPaste]       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Выделено accent color (orange / yellow tint), чтобы привлекать внимание.
+
+**Implementation:**
+
+```swift
+private var hasAXAccess: Bool { AXIsProcessTrusted() }
+
+@ViewBuilder
+private var axWarningSection: some View {
+    if !hasAXAccess {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text("Limited Mode — Accessibility access not granted")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            Text("DrPaste needs Accessibility permission to detect press-and-hold gestures, intercept HUD keyboard navigation, and simulate paste...")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            // 3 numbered steps
+            HStack {
+                Button("Open Accessibility Settings…") { openAXSettings() }
+                Button("Restart DrPaste") { restartApp() }
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.10)))
+    }
+}
+
+private func openAXSettings() {
+    let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
+    NSWorkspace.shared.open(url)
+}
+
+private func restartApp() {
+    let exePath = Bundle.main.executablePath ?? Bundle.main.bundleURL.path
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: exePath)
+    try? process.run()
+    NSApp.terminate(nil)
+}
+```
+
+Deep link `x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility` — стандартный URL для прямого открытия Privacy Accessibility tab. Работает на macOS 13+.
+
+Restart использует существующий метод из `AppDelegate.restartApp()` — нужно либо вызывать через NotificationCenter, либо сделать публичный helper.
+
+**Размещение:** между header и description, как первая секция чтобы пользователь сразу видел проблему.
+
+**Полл AX trust:** после restart показ welcome заново. Также в AppDelegate уже есть `startAXMonitor()` который polls каждые 3 секунды — если grant'нули в реальном времени, warning section reactively обновится (через `@State private var hasAXAccess: Bool` + observer).
+
+---
+
+## Итерация 4 — для 0.7.0+ (discussion items)
+
+### Discussion #1 — Action keyboard shortcuts (⌘1, ⌘2, … в HUD)
+
+**Идея:** в HUD пользователь нажимает ⌘1 для запуска первого action из списка, ⌘2 — второй, и так далее. Quick-trigger без navigate стрелками.
+
+**Открытые вопросы:**
+
+1. **Что считать «первым»?** Идущий первым в filtered list (с учётом search и action order)? Или фиксированный slot — например ⌘1 всегда «Paste as is», ⌘2 — «Paste as text»? Фиксированные slots дают muscle memory, dynamic — гибкость.
+2. **Как избежать конфликта с системными ⌘1-⌘9?** В macOS ⌘1-⌘9 часто перехватываются apps (tab switching в Safari, workspaces). Поскольку HUD активен и EventTap intercept'ит — мы можем глотать ⌘1-⌘9 пока HUD открыт. Безопасно.
+3. **Только цифры 1-9 или больше?** ⌘0 свободен (уже использован для font reset). ⌘1-⌘9 даёт 9 quick slots — достаточно. ⌥⌘1-⌥⌘9 — extra 9 slots для редко используемых.
+4. **Какой commit style?** ⌘N immediately commit's (как release) или просто выделяет action и нужен ещё release/Enter? Думаю — immediate commit (это весь смысл shortcut'а).
+5. **Пинить actions к slots?** Пользователь может пометить «UPPERCASE → ⌘5» в Settings. Иначе слоты автоматически следуют action order.
+
+**Pricing complexity:**
+- Dynamic slots (следуют order): простая правка ~30 строк
+- Pinned slots (per-action assignment): UI + persistence ~80 строк
+- Both: ~100 строк + Settings UI для assignment
+
+Жду решения по этим вопросам.
+
+### Discussion #2 — Per-app provider override
+
+**Идея:** в зависимости от frontmost app использовать разный AI provider.
+
+Например:
+- Когда копируешь из work-приложений (Outlook, Slack, Teams, banking sites) → AI запросы идут в **local Ollama** (privacy).
+- Когда личное (Notes, Safari personal browsing) → Claude (качество).
+- При работе с кодом (Xcode, VS Code) → GPT-5 (хорош для кода).
+
+**Open questions:**
+
+1. **Bundle ID matching:** по точному bundle ID (`com.apple.mail`)? Или есть категории (work / personal / dev)? Bundle ID точнее, но требует enum'а от пользователя. Категории — гибче, но heuristic'и хрупки.
+2. **Какой источник bundle ID?** Сам `item.sourceBundleID` (где **скопировано**). Не frontmost при apply (это HUD).
+3. **Override on rich vs plain?** Например для rich text всегда Claude (лучше форматирование), для plain — фигуральный default.
+4. **Per-action override?** Может быть проще: каждый action имеет optional `providerOverrideForApps: [bundleID: providerID]`. Сложнее, но точечно.
+5. **UI complexity:** где это настраивать? В Settings → AI → «Per-app routing» с таблицей `bundleID + provider`?
+6. **Defaults:** при первой настройке какой mapping предложить? Возможно «Mail / Slack / Teams → local» как defaults?
+
+**Альтернативный подход — content-based routing вместо app-based:**
+
+Вместо bundle ID — детектить **признаки secrets в content**:
+- Соответствует patterns API key / token / SSN / credit card → local
+- Иначе — cloud default
+
+Это privacy-first, не зависит от app. Может быть проще как fallback или вообще лучше.
+
+Жду обсуждения.
+
+### Discussion #3 — Hotkey rebinding alternative (твоя идея)
+
+Ты упомянул что у тебя «немного другая но похожая идея». Спросить пользователя позже:
+- Что за идея?
+- Если не hotkey rebinding (⌥⌘V на любую комбу) — что вместо?
+- Возможно chord-based shortcuts? Sequence triggers? Mode switch?
+
+Записываю слот для обсуждения когда вернёшься к этому.
+
+---
+
 ## Итерация 3 — для 0.4.0
 
 ### Правка №1 (iteration 3) — ⌥⌘X UX: option "start cursor on second item"

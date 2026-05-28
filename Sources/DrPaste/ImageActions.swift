@@ -111,9 +111,14 @@ private func applyFilter(_ filter: CIFilter, on image: NSImage) -> NSImage? {
     let ciImage = CIImage(cgImage: cgImg)
     filter.setValue(ciImage, forKey: kCIInputImageKey)
     guard let output = filter.outputImage else { return nil }
-    let rep = NSCIImageRep(ciImage: output)
-    let result = NSImage(size: rep.size)
-    result.addRepresentation(rep)
+
+    // Явно рендерим через CIContext чтобы реально применить фильтр к пикселям
+    // (NSCIImageRep ленив и может терять effects на некоторых backing scale factors).
+    let context = CIContext(options: [.useSoftwareRenderer: false])
+    guard let outputCG = context.createCGImage(output, from: output.extent) else { return nil }
+    let outRep = NSBitmapImageRep(cgImage: outputCG)
+    let result = NSImage(size: NSSize(width: outRep.pixelsWide, height: outRep.pixelsHigh))
+    result.addRepresentation(outRep)
     return result
 }
 

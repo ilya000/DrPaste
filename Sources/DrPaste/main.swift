@@ -12,7 +12,8 @@ import SwiftUI
 import Carbon.HIToolbox
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, NSMenuDelegate,
+                         ActionHotkeyManagerDelegate {
 
     var store: ClipboardStore!
     var watcher: ClipboardWatcher!
@@ -66,6 +67,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         registry.register(DefaultAIActions.make().map { $0 as ClipboardAction })
         // Build custom AI actions из persisted config (Backlog #8)
         registry.rebuildCustomAI()
+        // Build custom transformations из persisted config (правка #7 light)
+        registry.rebuildCustomTransformations()
+
+        // Per-action hotkeys (0.6.0) — install Carbon event handler и зарегистрировать
+        ActionHotkeyManager.shared.registry = registry
+        ActionHotkeyManager.shared.delegate = self
+        ActionHotkeyManager.shared.install()
+        ActionHotkeyManager.shared.reload()
 
         settingsController = SettingsWindowController(registry: registry, store: store)
 
@@ -73,6 +82,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         startEngine()
         installStatusItem()
         startAXMonitor()
+
+        // #13 Welcome window — показывается при первом запуске
+        // (после 0.5s чтобы UI основные элементы успели mount'нуться)
+        WelcomeWindowController.shared.configure(registry: registry)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            WelcomeWindowController.shared.showIfNeeded()
+        }
     }
 
     // MARK: engine bootstrap
@@ -184,6 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         menu.addItem(.separator())
         menu.addItem(withTitle: "Settings…", action: #selector(menuOpenSettings), keyEquivalent: ",")
         menu.addItem(withTitle: "About DrPaste…", action: #selector(menuShowAbout), keyEquivalent: "")
+        menu.addItem(withTitle: "Welcome / Hotkeys…", action: #selector(menuShowWelcome), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit DrPaste", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         statusItem.menu = menu
@@ -259,6 +276,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
 
     @objc private func menuShowAbout() {
         AboutWindowController.shared.show()
+    }
+
+    @objc private func menuShowWelcome() {
+        WelcomeWindowController.shared.show()
     }
 
     @objc private func recentItemSelected(_ sender: NSMenuItem) {
@@ -362,6 +383,119 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
 
     /// Backlog #9 + #10: Quick Copy через ⌥⌘C.
     /// Реальная детекция success/failure через pasteboard.changeCount diff.
+    // MARK: - Per-action hotkey direct trigger (0.6.0)
+
+    /// Hotkey assigned to action был нажат. Без HUD: применяем action к текущему
+    /// clipboard content и paste'им результат в frontmost app.
+    func actionHotkeyDidFire(actionID: String) {
+        guard let action = registry.actions.first(where: { $0.id == actionID }) else { return }
+        guard let frontmost = NSWorkspace.shared.frontmostApplication,
+              frontmost.bundleIdentifier != Bundle.main.bundleIdentifier else {
+            return
+        }
+        // Snapshot текущего pasteboard как ClipboardItem
+        let pb = NSPasteboard.general
+        let textValue = pb.string(forType: .string) ?? ""
+        var item = ClipboardItem(
+            id: UUID(),
+            semantic: SemanticClassifier.classify(types: pb.types?.map(\.rawValue) ?? [],
+                                                  pasteboard: pb),
+            createdAt: Date(),
+            representations: [:],
+            typesOrdered: [],
+            previewText: textValue,
+            previewImageRel: nil,
+            sourceBundleID: frontmost.bundleIdentifier,
+            sourceAppName: frontmost.localizedName,
+            sourceWindowTitle: nil,
+            tags: []
+        )
+        // Re-build representations из pasteboard для lossless paste
+        if let types = pb.types {
+            for t in types {
+                guard let data = pb.data(forType: t) else { continue }
+                let rel = store.writeRawBlob(data, type: t.rawValue)
+                item.representations[t.rawValue] = rel
+                item.typesOrdered.append(t.rawValue)
+            }
+        }
+        let ctx = ContextDetector.detect(item)
+
+        Task { @MainActor in
+            let outcome = await action.apply(item: item, context: ctx)
+            switch outcome {
+            case .preview(let result), .alternativeCommit(let result, _):
+                self.performStandardPaste(result, savedApp: frontmost)
+            case .sideEffect(_, let perform):
+                perform()
+                SoundFeedback.play(.pasteSuccess)
+            case .failed(_, let reason, _):
+                SoundFeedback.play(.pasteFailure)
+                NSLog("DrPaste hotkey action failed: \(reason)")
+            }
+        }
+    }
+
+    /// #12 ⌥⌘S — Sum/Append Copy. Простая модель:
+    /// 1) симулируем ⌘C чтобы захватить текущую selection в clipboard
+    /// 2) ждём pasteboard change
+    /// 3) объединяем newly-copied content с previous clipboard content
+    /// 4) пишем результат обратно в clipboard
+    /// Text: concat с separator (default \n). Files: append URL list. Images: write first image
+    /// (multi-image нет нативного pasteboard pattern; user может paste через HUD multi-select).
+    nonisolated func hotkeyEngineDidAppendCopy() {
+        Task { @MainActor in
+            let pb = NSPasteboard.general
+            let separator = UserDefaults.standard.string(forKey: "drpaste.append.separator") ?? "\n"
+
+            // Сохраняем существующий clipboard как "previous"
+            let previousText = pb.string(forType: .string)
+            let previousFiles = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL]
+
+            let countBefore = pb.changeCount
+            PasteSimulator.simulateCopy()
+
+            // Ждём pasteboard изменение до 250ms
+            let start = Date()
+            while Date().timeIntervalSince(start) < 0.25 {
+                try? await Task.sleep(nanoseconds: 20_000_000)
+                if pb.changeCount > countBefore { break }
+            }
+            if pb.changeCount == countBefore {
+                SoundFeedback.play(.copyFailure)
+                return
+            }
+
+            // Объединяем
+            let newText = pb.string(forType: .string)
+            let newFiles = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL]
+
+            if let prev = previousText, let new = newText, !prev.isEmpty {
+                let combined = prev + separator + new
+                pb.clearContents()
+                pb.setString(combined, forType: .string)
+                self.watcher.ignoreNextChange = false
+                self.watcher.forceTick()
+                SoundFeedback.play(.copySuccess)
+                self.flashStatusItem()
+                return
+            }
+            if let prev = previousFiles, let new = newFiles, !prev.isEmpty {
+                let combined = prev + new
+                pb.clearContents()
+                pb.writeObjects(combined as [NSPasteboardWriting])
+                self.watcher.ignoreNextChange = false
+                self.watcher.forceTick()
+                SoundFeedback.play(.copySuccess)
+                self.flashStatusItem()
+                return
+            }
+            // Нет previous — просто copy success (как обычный ⌥⌘C)
+            SoundFeedback.play(.copySuccess)
+            self.flashStatusItem()
+        }
+    }
+
     nonisolated func hotkeyEngineDidQuickCopy() {
         Task { @MainActor in
             let countBefore = NSPasteboard.general.changeCount

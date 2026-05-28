@@ -60,6 +60,16 @@ enum SoundFeedback {
         sound?.play()
     }
 
+    /// #1 Sound preview — играть звук игнорируя isEnabled flag и throttle
+    /// (для Settings toggle/volume change feedback).
+    static func playPreview(_ cue: SoundCue) {
+        let volume = max(0, min(1, currentVolume()))
+        let effectiveVolume = cue == .typeTick ? volume * 0.3 : volume
+        let sound = makeSound(cue: cue)
+        sound?.volume = effectiveVolume
+        sound?.play()
+    }
+
     private static func makeSound(cue: SoundCue) -> NSSound? {
         // Try bundled aiff
         if let url = Bundle.module.url(forResource: cue.rawValue, withExtension: "aiff"),

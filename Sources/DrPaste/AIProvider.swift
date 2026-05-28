@@ -82,6 +82,23 @@ enum ProviderKind: String, Codable, CaseIterable {
         }
     }
 
+    /// SF Symbol для provider icon в action list (#9, #10).
+    /// Используем семантические symbols — Apple-нативно, free from trademark issues.
+    var iconName: String {
+        switch self {
+        case .anthropic: return "a.circle.fill"           // Anthropic "A"
+        case .openai:    return "circle.hexagongrid.fill"  // OpenAI hexagon pattern
+        case .gemini:    return "sparkle"                  // Gemini sparkle
+        case .grok:      return "x.circle.fill"            // X / Grok
+        case .mistral:   return "wind"                     // Mistral = wind
+        case .deepseek:  return "magnifyingglass.circle.fill"
+        case .ollama:    return "desktopcomputer"          // local
+        case .lmstudio:  return "laptopcomputer"           // local
+        case .llamaCpp:  return "terminal.fill"            // local cli-flavor
+        case .custom:    return "gearshape.fill"
+        }
+    }
+
     var isLocal: Bool {
         switch self {
         case .ollama, .lmstudio, .llamaCpp: return true
@@ -105,7 +122,7 @@ enum ProviderKind: String, Codable, CaseIterable {
     var defaultModel: String {
         switch self {
         case .anthropic: return "claude-sonnet-4-6"
-        case .openai:    return "gpt-5-mini"
+        case .openai:    return "gpt-4o-mini"
         case .gemini:    return "gemini-2.5-flash"
         case .grok:      return "grok-4"
         case .mistral:   return "mistral-large-latest"
@@ -120,7 +137,7 @@ enum ProviderKind: String, Codable, CaseIterable {
     var suggestedModels: [String] {
         switch self {
         case .anthropic: return ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"]
-        case .openai:    return ["gpt-5", "gpt-5-mini", "gpt-4.1", "gpt-4o", "gpt-4o-mini"]
+        case .openai:    return ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-5", "gpt-5-mini"]
         case .gemini:    return ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"]
         case .grok:      return ["grok-4", "grok-3"]
         case .mistral:   return ["mistral-large-latest", "codestral-latest", "mistral-small-latest"]
@@ -451,14 +468,14 @@ final class OpenAICompatibleProvider: AIProvider {
         if requiresAuth, let key = apiKey {
             req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         }
+        // Не отправляем max_tokens — gpt-5 family требует max_completion_tokens,
+        // gpt-4 ожидает max_tokens. Безопаснее не указывать (API default разумный).
         let body: [String: Any] = [
             "model": model,
             "messages": [
                 ["role": "system", "content": prompt],
                 ["role": "user", "content": input]
-            ],
-            "max_tokens": 1024,
-            "stream": false
+            ]
         ]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 

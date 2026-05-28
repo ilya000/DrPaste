@@ -144,6 +144,8 @@ struct GeneralTab: View {
         }
         .onChange(of: soundVolume) { v in
             SoundFeedback.setVolume(Float(v))
+            // #1 Sound preview — играем при изменении volume
+            SoundFeedback.playPreview(.copySuccess)
         }
     }
 
@@ -174,7 +176,12 @@ struct GeneralTab: View {
     private func cueBinding(_ cue: SoundCue) -> Binding<Bool> {
         Binding(
             get: { SoundFeedback.isEnabled(cue) },
-            set: { SoundFeedback.setEnabled($0, for: cue) }
+            set: { newValue in
+                SoundFeedback.setEnabled(newValue, for: cue)
+                // #1 Sound preview: играем sample когда тогглят (всегда, чтобы user
+                // услышал что это за звук, даже при выключении — последний preview)
+                SoundFeedback.playPreview(cue)
+            }
         )
     }
 }
@@ -521,9 +528,8 @@ struct ContentTypeTab: View {
     @State private var sampleText: String = ""
     @State private var result: ApplyOutcome? = nil
     @State private var runningID: String? = nil
-    @State private var editingAI: CustomAIDescriptor? = nil
-
-    @State private var editingBuiltin: String? = nil
+    @State private var editorContext: ActionEditorContext? = nil
+    @State private var showingPalette: Bool = false
 
     var body: some View {
         // 2-колоночная вёрстка (Правка #5):
@@ -538,20 +544,24 @@ struct ContentTypeTab: View {
         }
         .padding()
         .onAppear { sampleText = SettingsSamples.sample(for: kind).previewText ?? "" }
-        .sheet(item: $editingAI) { desc in
-            AIActionEditor(descriptor: desc, registry: registry) { saved in
-                if let saved = saved { registry.upsertCustomAI(saved) }
-                editingAI = nil
+        .sheet(item: Binding<EditorPresentation?>(
+            get: { editorContext.map { EditorPresentation(context: $0) } },
+            set: { editorContext = $0?.context }
+        )) { presentation in
+            ActionEditor(context: presentation.context, registry: registry) {
+                editorContext = nil
             }
         }
-        .sheet(item: Binding(
-            get: { editingBuiltin.map { BuiltinEditTarget(id: $0) } },
-            set: { editingBuiltin = $0?.id })) { target in
-            BuiltinActionEditor(actionID: target.id,
-                                defaultTitle: defaultTitle(for: target.id),
-                                description: descriptionFor(actionID: target.id),
-                                registry: registry) {
-                editingBuiltin = nil
+    }
+
+    private struct EditorPresentation: Identifiable {
+        let context: ActionEditorContext
+        var id: String {
+            switch context {
+            case .createNew: return "createNew"
+            case .editBuiltin(let id, _, _): return "builtin:\(id)"
+            case .editTransformation(let d): return "transform:\(d.id)"
+            case .editAI(let d): return "ai:\(d.id)"
             }
         }
     }
@@ -580,41 +590,123 @@ struct ContentTypeTab: View {
             HStack {
                 Text("Actions").font(.headline)
                 Spacer()
-                Text("\(applicableActions.count + customAIDescriptors.count)")
+                Text("\(orderedActions.count + customAIDescriptors.count)")
                     .font(.caption).foregroundStyle(.secondary)
+                Button { editorContext = .createNew } label: {
+                    Label("New", systemImage: "plus.circle")
+                }
+                .controlSize(.small)
+                Button { showingPalette = true } label: {
+                    Label("Browse", systemImage: "list.bullet.rectangle")
+                }
+                .controlSize(.small)
             }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(applicableActions, id: \.id) { action in
-                        actionRow(action)
-                    }
+            // Drag-to-reorder через SwiftUI List (правка #5).
+            // Paste as is (identity) всегда первый и не двигается.
+            List {
+                ForEach(orderedActions, id: \.id) { action in
+                    actionRow(action)
+                        .listRowInsets(EdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                }
+                .onMove(perform: moveActions)
 
-                    if !customAIDescriptors.isEmpty {
-                        Divider().padding(.vertical, 4)
-                        Text("Custom AI actions").font(.caption).foregroundStyle(.secondary)
-                        ForEach(customAIDescriptors) { desc in
-                            customAIRow(desc)
+                if !customTransformationDescriptors.isEmpty {
+                    Section("Custom transformations") {
+                        ForEach(customTransformationDescriptors) { desc in
+                            customTransformationRow(desc)
+                                .listRowInsets(EdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4))
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(Color.clear)
                         }
                     }
-
-                    Button { editingAI = newCustomAITemplate() } label: {
-                        Label("Add custom AI action…", systemImage: "plus.circle")
+                }
+                if !customAIDescriptors.isEmpty {
+                    Section("Custom AI actions") {
+                        ForEach(customAIDescriptors) { desc in
+                            customAIRow(desc)
+                                .listRowInsets(EdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4))
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(Color.clear)
+                        }
                     }
-                    .controlSize(.small)
-                    .padding(.top, 8)
                 }
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+        }
+        .sheet(isPresented: $showingPalette) {
+            ActionPaletteSheet(kind: kind, registry: registry) { showingPalette = false }
         }
     }
 
-    private struct BuiltinEditTarget: Identifiable { let id: String }
-
-    private func defaultTitle(for actionID: String) -> String {
-        registry.actions.first(where: { $0.id == actionID })?.title ?? actionID
+    @ViewBuilder
+    private func customTransformationRow(_ desc: CustomTransformationDescriptor) -> some View {
+        let hotkey = registry.hotkey(for: desc.id)
+        HStack(spacing: 8) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .frame(width: 12)
+            Toggle("", isOn: Binding(
+                get: { desc.enabled },
+                set: { newValue in
+                    var copy = desc
+                    copy.enabled = newValue
+                    registry.upsertCustomTransformation(copy)
+                }
+            ))
+            .labelsHidden()
+            if let engine = desc.engine {
+                Image(systemName: engine.iconName).foregroundStyle(.secondary).frame(width: 16)
+            }
+            Text(desc.title).lineLimit(1)
+            Spacer()
+            if let hk = hotkey {
+                Text(hk.displayString)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Capsule().fill(Color.primary.opacity(0.08)))
+            }
+            Button("Edit") { editorContext = .editTransformation(desc) }
+                .controlSize(.small)
+            Button("Run") { runTransformation(desc) }
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 4).padding(.vertical, 3)
+        .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.04)))
     }
 
-    private func descriptionFor(actionID: String) -> String {
-        BuiltinActionMetadata.descriptions[actionID] ?? ""
+    private func runTransformation(_ desc: CustomTransformationDescriptor) {
+        let kinds = Set(desc.applicableTypes.compactMap { SemanticKind(rawValue: $0) })
+        let action = CustomTransformationAction(
+            id: desc.id,
+            title: desc.title,
+            descriptor: desc,
+            applicableSet: kinds.isEmpty ? [.text] : kinds
+        )
+        run(action)
+    }
+
+    private func moveActions(from source: IndexSet, to destination: Int) {
+        var ids = orderedActions.map { $0.id }
+        // Запретить перемещать identity и помещать что-либо в позицию 0
+        if source.contains(0) { return }
+        let safeDest = max(1, destination)
+        ids.move(fromOffsets: source, toOffset: safeDest)
+        registry.setActionOrder(ids, for: kind)
+    }
+
+    /// Actions в порядке текущего config (или default) + identity первая.
+    private var orderedActions: [ClipboardAction] {
+        let item = makeSampleItem()
+        let ctx = ContextDetector.detect(item)
+        let applicable = registry.actions.filter {
+            $0.isApplicable(item: item, context: ctx) && !$0.id.hasPrefix("user.")
+        }
+        return registry.reorder(applicable, forContentType: kind)
     }
 
     private var applicableActions: [ClipboardAction] {
@@ -627,11 +719,24 @@ struct ContentTypeTab: View {
         registry.config.customAI.filter { $0.applicableTypes.contains(kind.rawValue) }
     }
 
+    private var customTransformationDescriptors: [CustomTransformationDescriptor] {
+        registry.config.customTransformations.filter { $0.applicableTypes.contains(kind.rawValue) }
+    }
+
     private func actionRow(_ action: ClipboardAction) -> some View {
         let displayTitle = registry.displayTitle(forActionID: action.id,
                                                   defaultTitle: action.title)
         let isCustomized = displayTitle != action.title
+        let hotkey = registry.hotkey(for: action.id)
+        let isLocked = action.id == "builtin.identity"
+        let rowBg: Color = Color.primary.opacity(0.03)
         return HStack(spacing: 8) {
+            // #2 Drag handle affordance — visual grip
+            // Identity (Paste as is) показывается как locked icon (нельзя двигать).
+            Image(systemName: isLocked ? "lock.fill" : "line.3.horizontal")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .frame(width: 12)
             Toggle("", isOn: enabledBinding(action.id))
                 .labelsHidden()
             VStack(alignment: .leading, spacing: 1) {
@@ -644,13 +749,25 @@ struct ContentTypeTab: View {
                 }
             }
             Spacer()
-            if action.id != "builtin.identity" {  // identity не редактируется
-                Button { editingBuiltin = action.id } label: {
-                    Image(systemName: "pencil")
-                }
-                .controlSize(.small)
-                .buttonStyle(.borderless)
+            if let hk = hotkey {
+                Text(hk.displayString)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Capsule().fill(Color.primary.opacity(0.08)))
             }
+            // Identity (Paste as is) поддерживает rename (#3), но не drag/delete.
+            Button {
+                editorContext = .editBuiltin(
+                    actionID: action.id,
+                    defaultTitle: action.title,
+                    description: BuiltinActionMetadata.descriptions[action.id] ?? ""
+                )
+            } label: {
+                Image(systemName: "pencil")
+            }
+            .controlSize(.small)
+            .buttonStyle(.borderless)
             if runningID == action.id {
                 ProgressView().controlSize(.small)
             } else {
@@ -659,18 +776,24 @@ struct ContentTypeTab: View {
             }
         }
         .padding(.horizontal, 4).padding(.vertical, 3)
-        .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.03)))
+        .background(RoundedRectangle(cornerRadius: 4).fill(rowBg))
     }
 
     private func customAIRow(_ desc: CustomAIDescriptor) -> some View {
-        HStack(spacing: 8) {
+        let badge = providerBadge(for: desc.providerID)
+        return HStack(spacing: 8) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .frame(width: 12)
             Toggle("", isOn: customEnabledBinding(desc.id))
                 .labelsHidden()
+            ProviderBadgeView(text: badge.label, color: badge.color,
+                              fontSize: 11, iconName: badge.icon)
             Text(desc.title)
                 .lineLimit(1)
-            Text("[custom]").font(.caption2).foregroundStyle(.secondary)
             Spacer()
-            Button("Edit") { editingAI = desc }
+            Button("Edit") { editorContext = .editAI(desc) }
                 .controlSize(.small)
             Button("Run") { runCustomAI(desc) }
                 .controlSize(.small)
@@ -681,6 +804,28 @@ struct ContentTypeTab: View {
         }
         .padding(.horizontal, 4).padding(.vertical, 3)
         .background(RoundedRectangle(cornerRadius: 4).fill(Color.accentColor.opacity(0.06)))
+    }
+
+    /// Provider badge для AI action в Settings list (симметрия с HUD).
+    private func providerBadge(for providerID: String)
+        -> (label: String, color: Color, icon: String)
+    {
+        guard let cp = AIProviderRegistry.shared.config.providers.first(where: { $0.id == providerID })
+        else {
+            return ("AI", .gray, "sparkle")
+        }
+        let kind = cp.kind
+        let color: Color
+        switch kind {
+        case .anthropic: color = .orange
+        case .openai:    color = .green
+        case .gemini:    color = .blue
+        case .grok:      color = .primary
+        case .mistral:   color = .purple
+        case .deepseek:  color = .indigo
+        case .ollama, .lmstudio, .llamaCpp, .custom: color = .gray
+        }
+        return (kind.badgeLabel, color, kind.iconName)
     }
 
     private func enabledBinding(_ actionID: String) -> Binding<Bool> {
@@ -737,16 +882,6 @@ struct ContentTypeTab: View {
         run(action)
     }
 
-    private func newCustomAITemplate() -> CustomAIDescriptor {
-        CustomAIDescriptor(
-            id: "user.\(UUID().uuidString.prefix(8))",
-            title: "AI: my action",
-            promptTemplate: "Rewrite the user's input. Reply with the result only, no preamble.",
-            providerID: "anthropic",
-            applicableTypes: [kind.rawValue],
-            enabled: true
-        )
-    }
 }
 
 // MARK: - Result pane
@@ -795,6 +930,15 @@ struct ResultPane: View {
             Image(nsImage: img)
                 .resizable().aspectRatio(contentMode: .fit)
                 .frame(maxHeight: 200)
+        } else if item.semantic == .richText,
+                  let attr = loadRichAttributedString(item) {
+            // #5: render bold/italic/links visually
+            ScrollView {
+                Text(attr)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(6)
+            }
         } else {
             ScrollView {
                 Text(item.previewText ?? "")
@@ -812,75 +956,16 @@ struct ResultPane: View {
         case .typeFast: return "Type Fast"
         }
     }
-}
 
-// MARK: - AI editor
-
-struct AIActionEditor: View {
-    @State var descriptor: CustomAIDescriptor
-    @ObservedObject var registry: ActionRegistry
-    let onClose: (CustomAIDescriptor?) -> Void
-
-    private let allTypes: [SemanticKind] = [.text, .richText, .url, .json, .table, .markdown, .code]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Custom AI action").font(.headline)
-
-            HStack {
-                Text("Title:").frame(width: 90, alignment: .trailing)
-                TextField("AI: …", text: $descriptor.title)
-            }
-
-            HStack(alignment: .top) {
-                Text("Prompt:").frame(width: 90, alignment: .trailing)
-                TextEditor(text: $descriptor.promptTemplate)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(height: 100)
-                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
-            }
-
-            HStack {
-                Text("Provider:").frame(width: 90, alignment: .trailing)
-                Picker("", selection: $descriptor.providerID) {
-                    ForEach(AIProviderRegistry.shared.config.providers) { p in
-                        Text(p.displayName).tag(p.id)
-                    }
-                }
-                .pickerStyle(.menu)
-            }
-
-            HStack(alignment: .top) {
-                Text("Applies to:").frame(width: 90, alignment: .trailing)
-                VStack(alignment: .leading) {
-                    ForEach(allTypes, id: \.self) { type in
-                        Toggle(type.displayName, isOn: typeBinding(type.rawValue))
-                    }
-                }
-            }
-
-            HStack {
-                Spacer()
-                Button("Cancel") { onClose(nil) }
-                Button("Save") { onClose(descriptor) }
-                    .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(20)
-        .frame(width: 520)
-    }
-
-    private func typeBinding(_ raw: String) -> Binding<Bool> {
-        Binding(
-            get: { descriptor.applicableTypes.contains(raw) },
-            set: { isOn in
-                if isOn {
-                    if !descriptor.applicableTypes.contains(raw) { descriptor.applicableTypes.append(raw) }
-                } else {
-                    descriptor.applicableTypes.removeAll { $0 == raw }
-                }
-            }
-        )
+    /// #5: Load NSAttributedString из rich text item для рендеринга в preview.
+    private func loadRichAttributedString(_ item: ClipboardItem) -> AttributedString? {
+        guard let rel = item.representations["public.rtf"],
+              let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
+              let ns = try? NSAttributedString(data: data,
+                                                options: [.documentType: NSAttributedString.DocumentType.rtf],
+                                                documentAttributes: nil)
+        else { return nil }
+        return try? AttributedString(ns, including: \.swiftUI)
     }
 }
 

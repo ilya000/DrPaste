@@ -20,12 +20,14 @@ struct HotkeyConfig {
     let pasteKeyCode: CGKeyCode      // V
     let copyKeyCode: CGKeyCode       // C
     let cutKeyCode: CGKeyCode        // X
-    let modifiers: CGEventFlags      // ⌥⌘ для всех трёх
+    let appendKeyCode: CGKeyCode     // S — Sum/Append Copy (#12)
+    let modifiers: CGEventFlags      // ⌥⌘
 
     static let `default` = HotkeyConfig(
         pasteKeyCode: CGKeyCode(kVK_ANSI_V),
         copyKeyCode: CGKeyCode(kVK_ANSI_C),
         cutKeyCode: CGKeyCode(kVK_ANSI_X),
+        appendKeyCode: CGKeyCode(kVK_ANSI_S),
         modifiers: [.maskCommand, .maskAlternate]
     )
 }
@@ -58,6 +60,7 @@ protocol HotkeyEngineDelegate: AnyObject {
     func hotkeyEngineDidRequestFontChange(_ change: FontChange)
     func hotkeyEngineDidQuickCopy()
     func hotkeyEngineDidDeleteFocused()    // Правка #14
+    func hotkeyEngineDidAppendCopy()       // #12
 }
 
 /// Marker для собственных synthetic CGEvents (Правка #16, слой 2 — фильтрация recursion).
@@ -199,6 +202,10 @@ final class EventTapEngine: HotkeyEngine {
                     DispatchQueue.main.async { self.delegate?.hotkeyEngineDidQuickCopy() }
                     return nil
                 }
+                if kc == config.appendKeyCode {
+                    DispatchQueue.main.async { self.delegate?.hotkeyEngineDidAppendCopy() }
+                    return nil
+                }
             }
         }
 
@@ -224,6 +231,7 @@ final class CarbonHotKeyEngine: HotkeyEngine {
     private var pasteRef: EventHotKeyRef?
     private var copyRef: EventHotKeyRef?
     private var cutRef: EventHotKeyRef?
+    private var appendRef: EventHotKeyRef?
     private var eventHandler: EventHandlerRef?
     private let signature: OSType = 0x44525053 // 'DRPS'
 
@@ -245,6 +253,7 @@ final class CarbonHotKeyEngine: HotkeyEngine {
                 case 1: engine.delegate?.hotkeyEngineDidSummon(reason: .paste)
                 case 2: engine.delegate?.hotkeyEngineDidQuickCopy()
                 case 3: engine.delegate?.hotkeyEngineDidSummon(reason: .cutAndReplace)
+                case 4: engine.delegate?.hotkeyEngineDidAppendCopy()
                 default: break
                 }
             }
@@ -263,14 +272,17 @@ final class CarbonHotKeyEngine: HotkeyEngine {
         let cutOK = RegisterEventHotKey(UInt32(config.cutKeyCode), mods,
                                         EventHotKeyID(signature: signature, id: 3),
                                         GetApplicationEventTarget(), 0, &cutRef) == noErr
+        _ = RegisterEventHotKey(UInt32(config.appendKeyCode), mods,
+                                EventHotKeyID(signature: signature, id: 4),
+                                GetApplicationEventTarget(), 0, &appendRef)
         return pasteOK || copyOK || cutOK
     }
 
     func stop() {
-        for ref in [pasteRef, copyRef, cutRef] {
+        for ref in [pasteRef, copyRef, cutRef, appendRef] {
             if let r = ref { UnregisterEventHotKey(r) }
         }
-        pasteRef = nil; copyRef = nil; cutRef = nil
+        pasteRef = nil; copyRef = nil; cutRef = nil; appendRef = nil
         if let e = eventHandler { RemoveEventHandler(e); eventHandler = nil }
     }
 
@@ -359,6 +371,8 @@ final class GlobalMonitorEngine: HotkeyEngine {
                 DispatchQueue.main.async { self.delegate?.hotkeyEngineDidSummon(reason: .cutAndReplace) }
             } else if kc == config.copyKeyCode {
                 DispatchQueue.main.async { self.delegate?.hotkeyEngineDidQuickCopy() }
+            } else if kc == config.appendKeyCode {
+                DispatchQueue.main.async { self.delegate?.hotkeyEngineDidAppendCopy() }
             }
         }
     }

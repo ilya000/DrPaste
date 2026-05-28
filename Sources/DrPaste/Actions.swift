@@ -165,6 +165,11 @@ final class ActionRegistry: ObservableObject {
             if oldValue != config {
                 config.save()
                 rebuildCustomAI()
+                rebuildCustomTransformations()
+                // Re-register hotkey'и если изменились
+                if oldValue.actionHotkeys != config.actionHotkeys {
+                    Task { @MainActor in ActionHotkeyManager.shared.reload() }
+                }
             }
         }
     }
@@ -199,7 +204,51 @@ final class ActionRegistry: ObservableObject {
     }
 
     func applicable(for item: ClipboardItem, context: ContentContext) -> [ClipboardAction] {
-        actions.filter { isEnabled($0.id) && $0.isApplicable(item: item, context: context) }
+        let filtered = actions.filter { isEnabled($0.id) && $0.isApplicable(item: item, context: context) }
+        return reorder(filtered, forContentType: item.semantic)
+    }
+
+    /// Применяет пользовательский order для данного content type (правка #5).
+    /// Identity (Paste as is) всегда первый. Остальное по actionOrder.
+    /// Actions без entry в order идут после в исходном порядке.
+    func reorder(_ list: [ClipboardAction], forContentType kind: SemanticKind) -> [ClipboardAction] {
+        let savedOrder = config.actionOrder[kind.rawValue] ?? []
+        guard !savedOrder.isEmpty else { return moveIdentityFirst(list) }
+        var byID: [String: ClipboardAction] = [:]
+        for a in list { byID[a.id] = a }
+        var result: [ClipboardAction] = []
+        for id in savedOrder {
+            if let a = byID.removeValue(forKey: id) { result.append(a) }
+        }
+        // Оставшиеся — в default order
+        for a in list where byID[a.id] != nil {
+            result.append(a)
+            byID.removeValue(forKey: a.id)
+        }
+        return moveIdentityFirst(result)
+    }
+
+    private func moveIdentityFirst(_ list: [ClipboardAction]) -> [ClipboardAction] {
+        guard let idx = list.firstIndex(where: { $0.id == "builtin.identity" }), idx != 0 else {
+            return list
+        }
+        var copy = list
+        let identity = copy.remove(at: idx)
+        copy.insert(identity, at: 0)
+        return copy
+    }
+
+    /// Сохранить custom order для content type. Identity автоматически удаляется
+    /// из массива — она всегда первая на render.
+    func setActionOrder(_ ids: [String], for kind: SemanticKind) {
+        var copy = config
+        let filtered = ids.filter { $0 != "builtin.identity" }
+        if filtered.isEmpty {
+            copy.actionOrder.removeValue(forKey: kind.rawValue)
+        } else {
+            copy.actionOrder[kind.rawValue] = filtered
+        }
+        config = copy
     }
 
     /// Built-in default — enabled if action ID is in curated subset (правка #8 lite).
@@ -265,6 +314,64 @@ final class ActionRegistry: ObservableObject {
         var copy = config
         copy.customAI.removeAll { $0.id == id }
         config = copy
+    }
+
+    // MARK: - Custom Transformations (правка #7 light — engine architecture)
+
+    /// Перестраивает custom transformation actions из config.customTransformations.
+    /// Удаляет старые user.transform.* и регистрирует новые из descriptors.
+    func rebuildCustomTransformations() {
+        actions.removeAll { $0.id.hasPrefix("user.transform.") }
+        for desc in config.customTransformations where desc.enabled {
+            let kinds = Set(desc.applicableTypes.compactMap { SemanticKind(rawValue: $0) })
+            let action = CustomTransformationAction(
+                id: desc.id,
+                title: desc.title,
+                descriptor: desc,
+                applicableSet: kinds.isEmpty ? [.text, .richText, .markdown, .code] : kinds
+            )
+            actions.append(action)
+        }
+    }
+
+    func upsertCustomTransformation(_ descriptor: CustomTransformationDescriptor) {
+        var copy = config
+        if let idx = copy.customTransformations.firstIndex(where: { $0.id == descriptor.id }) {
+            copy.customTransformations[idx] = descriptor
+        } else {
+            copy.customTransformations.append(descriptor)
+        }
+        config = copy
+    }
+
+    func removeCustomTransformation(id: String) {
+        var copy = config
+        copy.customTransformations.removeAll { $0.id == id }
+        config = copy
+    }
+
+    // MARK: - Per-action hotkeys (0.6.0)
+
+    func hotkey(for actionID: String) -> ActionHotkey? {
+        config.actionHotkeys[actionID]
+    }
+
+    func setHotkey(_ hotkey: ActionHotkey?, for actionID: String) {
+        var copy = config
+        if let hotkey = hotkey {
+            copy.actionHotkeys[actionID] = hotkey
+        } else {
+            copy.actionHotkeys.removeValue(forKey: actionID)
+        }
+        config = copy
+    }
+
+    /// Найти actionID который уже использует данный hotkey (для conflict UI).
+    func conflictingAction(for hotkey: ActionHotkey, excludingID: String? = nil) -> String? {
+        for (id, hk) in config.actionHotkeys where id != excludingID && hk == hotkey {
+            return id
+        }
+        return nil
     }
 
     // MARK: - Export / Import

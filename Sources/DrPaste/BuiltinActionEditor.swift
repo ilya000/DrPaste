@@ -6,96 +6,12 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Sheet для редактирования built-in action (Правка #6 lite):
-//  пользователь может переименовать действие (хранится в ActionConfig.customTitles)
-//  + видит metadata (default name, description, type). Сам алгоритм не меняется —
-//  это hardcoded в built-in struct.
+//  Bundled metadata для built-in actions — descriptions для unified ActionEditor
+//  (0.7.0) и палитры (правка #8). Один источник правды.
 //
 
-import SwiftUI
+import Foundation
 
-struct BuiltinActionEditor: View {
-    let actionID: String
-    let defaultTitle: String
-    let description: String
-    @ObservedObject var registry: ActionRegistry
-    let onClose: () -> Void
-
-    @State private var titleDraft: String = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Edit action").font(.headline)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Title").font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    TextField(defaultTitle, text: $titleDraft)
-                    if titleDraft != defaultTitle && !titleDraft.isEmpty {
-                        Button { titleDraft = defaultTitle } label: {
-                            Image(systemName: "arrow.counterclockwise")
-                        }
-                        .controlSize(.small)
-                        .buttonStyle(.borderless)
-                        .help("Reset to default")
-                    }
-                }
-                Text("Default: \(defaultTitle)")
-                    .font(.caption2).foregroundStyle(.tertiary)
-            }
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 6) {
-                metadataRow(label: "Type", value: "Built-in (local)")
-                metadataRow(label: "ID", value: actionID)
-                if !description.isEmpty {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Description").font(.caption).foregroundStyle(.secondary)
-                        Text(description).font(.system(size: 12))
-                            .foregroundStyle(.primary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-
-            Spacer()
-
-            HStack {
-                Spacer()
-                Button("Cancel") { onClose() }
-                Button("Save") {
-                    let trimmed = titleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if trimmed.isEmpty || trimmed == defaultTitle {
-                        registry.setCustomTitle(nil, forActionID: actionID)
-                    } else {
-                        registry.setCustomTitle(trimmed, forActionID: actionID)
-                    }
-                    onClose()
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(20)
-        .frame(width: 480, height: 360)
-        .onAppear {
-            titleDraft = registry.config.customTitles[actionID] ?? defaultTitle
-        }
-    }
-
-    private func metadataRow(label: String, value: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
-                .frame(width: 80, alignment: .leading)
-            Text(value).font(.system(size: 12, design: .monospaced))
-                .textSelection(.enabled)
-            Spacer()
-        }
-    }
-}
-
-/// Bundled metadata для built-in actions — descriptions для editor sheet
-/// и палитры (правка #8). Один источник правды.
 enum BuiltinActionMetadata {
     static let descriptions: [String: String] = [
         "builtin.identity": "Restores the clipboard payload exactly as it was copied — preserves all formats and representations.",
@@ -104,7 +20,7 @@ enum BuiltinActionMetadata {
         "builtin.trim": "Trims leading and trailing whitespace from each line. Removes blank lines at start/end.",
         "builtin.uppercase": "Converts all letters to UPPERCASE.",
         "builtin.lowercase": "Converts all letters to lowercase.",
-        "builtin.layout_repair": "Detects text mistyped in the wrong keyboard layout (e.g. \"eytkflcrjt\" → \"немного\") and corrects it.",
+        "builtin.layout_repair": "Detects text mistyped in the wrong keyboard layout (e.g. text accidentally typed with Cyrillic keys while in English layout) and corrects it.",
         "builtin.rich_to_md": "Converts rich text to Markdown — preserves bold, italic, headings, links.",
         "builtin.rich_to_html": "Converts rich text to HTML — uses native NSAttributedString HTML export.",
         "builtin.rich_to_wiki": "Converts rich text to MediaWiki markup (Wikipedia syntax).",

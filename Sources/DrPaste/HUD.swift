@@ -194,6 +194,13 @@ struct HudView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
+            if let timestampLabel = compactTimestampLabel {
+                Text("·").foregroundStyle(.secondary)
+                Text(timestampLabel)
+                    .font(.system(size: sz(11)))
+                    .foregroundStyle(.tertiary)
+                    .help(absoluteTimestampLabel ?? "")
+            }
             Spacer()
             if !state.engineLabel.isEmpty {
                 Text(state.engineLabel)
@@ -225,6 +232,35 @@ struct HudView: View {
             return "\(app) \"\(trimmed)\(suffix)\""
         }
         return app
+    }
+
+    /// Relative timestamp ("just now", "5m ago", "2h ago") для recent items,
+    /// absolute date/time для старых (>1 day). Tooltip всегда показывает полную дату.
+    private var compactTimestampLabel: String? {
+        guard let item = state.currentItem else { return nil }
+        let interval = Date().timeIntervalSince(item.createdAt)
+        if interval < 5 { return "just now" }
+        if interval < 60 { return "\(Int(interval))s ago" }
+        if interval < 3600 { return "\(Int(interval / 60))m ago" }
+        if interval < 86400 { return "\(Int(interval / 3600))h ago" }
+        if interval < 86400 * 7 {
+            let days = Int(interval / 86400)
+            return "\(days)d ago"
+        }
+        // Старше недели — точная дата
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .none
+        return formatter.string(from: item.createdAt)
+    }
+
+    /// Полный timestamp для tooltip на hover (всегда абсолютный).
+    private var absoluteTimestampLabel: String? {
+        guard let item = state.currentItem else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .medium
+        return "Copied \(formatter.string(from: item.createdAt))"
     }
 
     /// Content meta row (Правка #15 — небольшая строка с metadata о focused item).
@@ -583,7 +619,8 @@ struct HudView: View {
         let title = state.actionTitleProvider?(a.id, a.title) ?? a.title
         return HStack(spacing: 4) {
             if let badge = providerBadge(for: a) {
-                ProviderBadgeView(text: badge.label, color: badge.color, fontSize: sz(9))
+                ProviderBadgeView(text: badge.label, color: badge.color,
+                                  fontSize: sz(9), iconName: badge.icon)
             }
             Text(title)
                 .font(.system(size: sz(11), weight: isActive ? .semibold : .regular))
@@ -608,8 +645,10 @@ struct HudView: View {
         }
     }
 
-    /// Provider badge для AI actions (Правка #8). Возвращает label + color.
-    private func providerBadge(for action: ClipboardAction) -> (label: String, color: Color)? {
+    /// Provider badge для AI actions (#9). Возвращает label, color и SF Symbol.
+    private func providerBadge(for action: ClipboardAction)
+        -> (label: String, color: Color, icon: String)?
+    {
         guard let ai = action as? AIAction else { return nil }
         // Resolve provider kind через registry
         let resolvedKind: ProviderKind? = {
@@ -623,8 +662,8 @@ struct HudView: View {
             }
             return nil
         }()
-        guard let kind = resolvedKind else { return ("AI", Color.gray) }
-        return (kind.badgeLabel, badgeColor(for: kind))
+        guard let kind = resolvedKind else { return ("AI", Color.gray, "sparkle") }
+        return (kind.badgeLabel, badgeColor(for: kind), kind.iconName)
     }
 
     private func badgeColor(for kind: ProviderKind) -> Color {
@@ -708,19 +747,22 @@ struct VisualEffect: NSViewRepresentable {
 
 // MARK: - Image preview
 
-/// Provider badge (Правка #8) — маленькая капсула слева от title в action chip.
-/// Цвет — accent provider'а, alpha 0.18 для background, full saturation для текста.
+/// Provider badge (#9, #10) — маленький SF Symbol icon слева от title в action chip.
+/// Использует branded color provider'а. Параметр text оставлен для совместимости (показывается
+/// в Settings tooltip).
 struct ProviderBadgeView: View {
     let text: String
     let color: Color
     let fontSize: CGFloat
+    var iconName: String = "sparkle"
+
     var body: some View {
-        Text(text)
-            .font(.system(size: fontSize, weight: .medium, design: .monospaced))
+        Image(systemName: iconName)
+            .font(.system(size: fontSize + 1, weight: .medium))
             .foregroundStyle(color)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(Capsule().fill(color.opacity(0.18)))
+            .frame(width: fontSize + 4, height: fontSize + 4)
+            .background(Circle().fill(color.opacity(0.18)))
+            .help(text)
     }
 }
 
@@ -728,10 +770,20 @@ struct ProviderBadgeView: View {
 /// Никогда не рендерит full-size NSImage — только cached thumbnail (max 600 pt).
 struct ImagePreview: View {
     let item: ClipboardItem
+
+    /// #8 fix: загружаем через Data (а не NSImage(contentsOf:)) чтобы обходить
+    /// NSImage URL-cache. Это критично для transformed items (grayscale/invert/etc) —
+    /// новый файл может иметь тот же URL-like ключ, NSImage возвращает stale.
+    private var loadedImage: NSImage? {
+        guard let rel = item.previewImageRel,
+              let data = try? Data(contentsOf: AppStorage.imagesDir.appendingPathComponent(rel))
+        else { return nil }
+        return NSImage(data: data)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let rel = item.previewImageRel,
-               let img = NSImage(contentsOf: AppStorage.imagesDir.appendingPathComponent(rel)) {
+            if let img = loadedImage {
                 Image(nsImage: img)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
@@ -741,6 +793,7 @@ struct ImagePreview: View {
                         RoundedRectangle(cornerRadius: 8)
                             .stroke(Color.primary.opacity(0.1), lineWidth: 0.5)
                     )
+                    .id(item.id)   // force re-render when item changes
             } else {
                 Image(systemName: "photo")
                     .font(.system(size: 36))
