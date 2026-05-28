@@ -24,6 +24,10 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
     case append       = "append"
     case wrap         = "wrap"
     case lineFilter   = "line_filter"
+    case caseChange   = "case_change"      // upper / lower / title / sentence
+    case sortLines    = "sort_lines"
+    case uniqueLines  = "unique_lines"
+    case jsonFormat   = "json_format"      // pretty / minify / extract keys
 
     var id: String { rawValue }
 
@@ -35,6 +39,10 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
         case .append:       return "Append text"
         case .wrap:         return "Wrap with prefix/suffix"
         case .lineFilter:   return "Filter lines"
+        case .caseChange:   return "Change case"
+        case .sortLines:    return "Sort lines"
+        case .uniqueLines:  return "Unique lines"
+        case .jsonFormat:   return "Format JSON"
         }
     }
 
@@ -46,6 +54,10 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
         case .append:       return "text.insert"
         case .wrap:         return "text.quote"
         case .lineFilter:   return "line.horizontal.3.decrease"
+        case .caseChange:   return "textformat"
+        case .sortLines:    return "arrow.up.arrow.down"
+        case .uniqueLines:  return "line.3.horizontal.decrease.circle"
+        case .jsonFormat:   return "curlybraces"
         }
     }
 
@@ -63,6 +75,14 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
             return "Surround the text with a prefix and suffix (e.g. quotes, brackets, code fences)."
         case .lineFilter:
             return "Keep or remove lines matching a pattern."
+        case .caseChange:
+            return "Change text case: upper, lower, Title Case, or Sentence case."
+        case .sortLines:
+            return "Sort lines alphabetically, ascending or descending. Optional case-insensitive."
+        case .uniqueLines:
+            return "Remove duplicate lines while preserving order."
+        case .jsonFormat:
+            return "Format JSON: pretty-print, minify, or extract top-level keys as a list."
         }
     }
 
@@ -74,6 +94,10 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
         case .append:       return ["text": ""]
         case .wrap:         return ["prefix": "", "suffix": ""]
         case .lineFilter:   return ["pattern": "", "mode": "keep"]
+        case .caseChange:   return ["case": "upper"]
+        case .sortLines:    return ["direction": "asc", "caseInsensitive": "false"]
+        case .uniqueLines:  return [:]
+        case .jsonFormat:   return ["operation": "pretty"]
         }
     }
 }
@@ -150,7 +174,73 @@ enum TransformationRuntime {
             return (params["prefix"] ?? "") + input + (params["suffix"] ?? "")
         case .lineFilter:
             return try lineFilter(input, params: params)
+        case .caseChange:
+            return caseChange(input, params: params)
+        case .sortLines:
+            return sortLines(input, params: params)
+        case .uniqueLines:
+            return uniqueLines(input)
+        case .jsonFormat:
+            return jsonFormat(input, params: params)
         }
+    }
+
+    private static func caseChange(_ input: String, params: [String: String]) -> String {
+        switch params["case"] ?? "upper" {
+        case "upper": return input.uppercased()
+        case "lower": return input.lowercased()
+        case "title": return input.capitalized
+        case "sentence":
+            let lower = input.lowercased()
+            guard let first = lower.first else { return lower }
+            return first.uppercased() + lower.dropFirst()
+        default: return input
+        }
+    }
+
+    private static func sortLines(_ input: String, params: [String: String]) -> String {
+        let direction = params["direction"] ?? "asc"
+        let caseInsensitive = params["caseInsensitive"] == "true"
+        let lines = input.components(separatedBy: "\n")
+        let sorted = lines.sorted { a, b in
+            let la = caseInsensitive ? a.lowercased() : a
+            let lb = caseInsensitive ? b.lowercased() : b
+            return direction == "desc" ? la > lb : la < lb
+        }
+        return sorted.joined(separator: "\n")
+    }
+
+    private static func uniqueLines(_ input: String) -> String {
+        var seen = Set<String>()
+        let lines = input.components(separatedBy: "\n")
+        let unique = lines.filter { seen.insert($0).inserted }
+        return unique.joined(separator: "\n")
+    }
+
+    private static func jsonFormat(_ input: String, params: [String: String]) -> String {
+        let op = params["operation"] ?? "pretty"
+        guard let data = input.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data,
+                                                            options: [.allowFragments]) else {
+            return input
+        }
+        switch op {
+        case "minify":
+            if let out = try? JSONSerialization.data(withJSONObject: json, options: []) {
+                return String(data: out, encoding: .utf8) ?? input
+            }
+        case "extractKeys":
+            if let dict = json as? [String: Any] {
+                return dict.keys.sorted().joined(separator: "\n")
+            }
+            return ""
+        default: // pretty
+            if let out = try? JSONSerialization.data(withJSONObject: json,
+                                                      options: [.prettyPrinted, .sortedKeys]) {
+                return String(data: out, encoding: .utf8) ?? input
+            }
+        }
+        return input
     }
 
     private static func regexReplace(_ input: String, params: [String: String]) throws -> String {

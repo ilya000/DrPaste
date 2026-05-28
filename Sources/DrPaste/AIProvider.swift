@@ -647,41 +647,73 @@ struct AIAction: ClipboardAction {
     }
 }
 
-// MARK: - Default AI actions (factory presets)
+// MARK: - Default AI action seed
 
-enum DefaultAIActions {
-    /// Default AI actions используют default provider (nil providerID).
-    /// Spanish ↔ English как default translate target (Правка #10).
-    static func make() -> [AIAction] {
+/// Default AI actions are seeded into config.customAI on first launch as regular
+/// CustomAIDescriptor entries. Users can edit prompt, provider, applicable types,
+/// or delete them. The `seedAIVersion` counter controls upgrades.
+enum DefaultAISeed {
+    /// Increment when adding new default AI actions to ship to existing users on upgrade.
+    static let currentSeedVersion: Int = 1
+
+    static func defaults() -> [CustomAIDescriptor] {
+        let provider = "anthropic"   // first launch default; user can switch per-action
         return [
-            AIAction(id: "ai.summarize",
-                     title: "summarize",
-                     promptTemplate: "Summarize the user's input in 1–3 sentences. Reply with the summary only, no preamble.",
-                     applicableTypes: [.text, .richText, .markdown, .code]),
-            AIAction(id: "ai.translate_es_en",
-                     title: "translate",
-                     promptTemplate: "Translate the input to Spanish. If the user provides text in Spanish, translate to English instead. Reply with the translation only.",
-                     applicableTypes: [.text, .richText, .markdown]),
-            AIAction(id: "ai.translate_es_en_rich",
-                     title: "translate (rich)",
-                     promptTemplate: "Translate the input to Spanish. If the user provides text in Spanish, translate to English instead. Reply with the translation only.",
-                     applicableTypes: [.richText],
-                     preserveRichFormatting: true),
-            AIAction(id: "ai.fix_grammar",
-                     title: "fix grammar",
-                     promptTemplate: "Fix grammar, spelling, and punctuation. Preserve the original language and voice. Reply with the corrected text only.",
-                     applicableTypes: [.text, .richText, .markdown]),
-            AIAction(id: "ai.fix_grammar_rich",
-                     title: "fix grammar (rich)",
-                     promptTemplate: "Fix grammar, spelling, and punctuation. Preserve the original language and voice. Reply with the corrected text only.",
-                     applicableTypes: [.richText],
-                     preserveRichFormatting: true),
-            AIAction(id: "ai.formal_tone",
-                     title: "formal tone",
-                     promptTemplate: "Rewrite the input in a more formal, professional tone. Preserve language and meaning. Reply with the rewritten text only.",
-                     applicableTypes: [.text, .richText, .markdown])
+            CustomAIDescriptor(
+                id: "user.summarize",
+                title: "Summarize",
+                promptTemplate: "Summarize the user's input in 1–3 sentences. Reply with the summary only, no preamble.",
+                providerID: provider,
+                applicableTypes: ["text", "richText", "markdown", "code"]
+            ),
+            CustomAIDescriptor(
+                id: "user.translate",
+                title: "Translate",
+                promptTemplate: "Translate the input to Spanish. If the user provides text in Spanish, translate to English instead. Reply with the translation only.",
+                providerID: provider,
+                applicableTypes: ["text", "richText", "markdown"]
+            ),
+            CustomAIDescriptor(
+                id: "user.translate_rich",
+                title: "Translate (rich)",
+                promptTemplate: "Translate the input to Spanish. If the user provides text in Spanish, translate to English instead. Reply with the translation only.",
+                providerID: provider,
+                applicableTypes: ["richText"]
+            ),
+            CustomAIDescriptor(
+                id: "user.fix_grammar",
+                title: "Fix grammar",
+                promptTemplate: "Fix grammar, spelling, and punctuation. Preserve the original language and voice. Reply with the corrected text only.",
+                providerID: provider,
+                applicableTypes: ["text", "richText", "markdown"]
+            ),
+            CustomAIDescriptor(
+                id: "user.fix_grammar_rich",
+                title: "Fix grammar (rich)",
+                promptTemplate: "Fix grammar, spelling, and punctuation. Preserve the original language and voice. Reply with the corrected text only.",
+                providerID: provider,
+                applicableTypes: ["richText"]
+            ),
+            CustomAIDescriptor(
+                id: "user.formal_tone",
+                title: "Formal tone",
+                promptTemplate: "Rewrite the input in a more formal, professional tone. Preserve language and meaning. Reply with the rewritten text only.",
+                providerID: provider,
+                applicableTypes: ["text", "richText", "markdown"]
+            )
         ]
     }
+
+    /// Hotkey migration map: old factory action IDs → new seeded IDs.
+    /// Used in ActionRegistry to transfer per-action hotkeys after seed.
+    static let hotkeyIDMigration: [String: String] = [
+        "ai.summarize": "user.summarize",
+        "ai.translate_es_en": "user.translate",
+        "ai.translate_es_en_rich": "user.translate_rich",
+        "ai.fix_grammar": "user.fix_grammar",
+        "ai.fix_grammar_rich": "user.fix_grammar_rich",
+        "ai.formal_tone": "user.formal_tone"
+    ]
 }
 
 // MARK: - Helpers for rich text items

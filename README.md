@@ -1,170 +1,85 @@
 # DrPaste
 
-> Press, browse, paste — the Paste gesture, extended.
+A press-and-hold clipboard utility for macOS.
 
-DrPaste is a native macOS utility that doesn't try to be another clipboard manager. It tries to be an **extension of the Paste gesture itself**.
+DrPaste is a native macOS tool designed as an extension of the system Paste gesture. Hold `⌥⌘V`, browse your clipboard history and transformations in a HUD, release to paste. No separate window to manage, no panel to dismiss — the workflow is keyboard-first and gesture-driven.
 
-Hold `⌥⌘V`, see a quiet HUD over your work, browse history and transformations with arrow keys, release — and the chosen result is pasted at your cursor. Plus `⌥⌘C` for Quick Copy, `⌥⌘X` for Cut & Replace, and a context-aware action registry that adapts to whatever's in your clipboard.
+## Features
 
-## How it feels
+**Universal clipboard history.** Text, rich text, URLs, images, files, PDFs — preserved losslessly with original formatting and full source metadata (app, window title, timestamp).
 
-```
-  press     ⌥⌘V                     → HUD fades in over your work
-  ↑ ↓       in clipboard history    → preview updates instantly
-  ← →       in transformations      → live preview of the result
-  release                            → result is pasted at the cursor
-  esc                                → HUD vanishes, nothing changes
-```
+**Press-and-hold paste gesture.** Hold `⌥⌘V`, navigate the HUD with arrow keys, release to paste. The selected entry, optionally transformed by an action, is delivered to the frontmost app's text cursor.
 
-Also:
-```
-  ⌥⌘C       Quick Copy (no HUD, audio feedback)
-  ⌥⌘X       Cut & Replace — cut goes to history, then pick a replacement
-  ⌘+ / ⌘-   Adjust HUD font size, persists across sessions
-```
+**Multi-provider AI.** Connect to Anthropic Claude, OpenAI, Google Gemini, xAI Grok, Mistral, DeepSeek, Ollama (local), LM Studio (local), llama.cpp (local), or any OpenAI-compatible endpoint. API keys are stored in Keychain.
 
-## What's in the box
+**Custom AI actions.** Built-in templates for translate, summarize, fix grammar, polish prose, explain code, and more. Each action is editable — change the prompt, switch the provider, scope it to specific content types.
 
-**Universal semantic clipboard.** Each clipboard event captures every NSPasteboard representation losslessly — TSV from Excel, RTF + HTML + proprietary metadata from Word, file URLs from Finder. Paste-as-is restores every representation, so the destination app gets the exact same data the source put there. Semantic interpretation (URL / JSON / Email / code / markdown / table / files / image / PDF / unknown) is a layer on top, used only for preview and action filtering.
+**Custom transformations.** Build deterministic text manipulations using regex replace, find/replace, prepend, append, wrap, or line filter engines. Configure, test, and save without touching code.
 
-**Press-and-hold HUD.** Translucent overlay (`NSVisualEffectView.hudWindow`) over your active app. Non-activating — never steals focus. Two-dimensional navigation: vertical for history, horizontal for transformations. Release commits, Escape cancels.
+**Rich text aware.** Translate, fix grammar, or rewrite while preserving bold, italic, links, headings, lists, and inline code via Markdown round-trip. Convert rich text to Markdown, HTML, or MediaWiki markup.
 
-**Context-aware actions, computed locally.** A URL gets "Clean URL" (strips `utm_*`, `fbclid`, `gclid` etc.). JSON gets pretty/minify/flatten/extract keys. Markdown gets HTML/extract headings/extract links. Files get paths, filenames, bash-quoted lists, Markdown links, SHA-256, reveal in Finder. Images get **OCR via Vision** (extract text), **QR/barcode decode**, grayscale, rotate, resize, compress, strip metadata. Plain text gets Title/Sentence/camel/snake/kebab case, base64 encode/decode, URL encode/decode, slugify, word count, sort & unique lines.
+**Image actions.** OCR, decode QR / barcodes, strip EXIF and GPS metadata, resize, compress, rotate, grayscale, invert — local, no network calls.
 
-**★ Generate QR code from text or URL.** Highlight feature. Text → image QR through `CIQRCodeGenerator` locally. Share a link from laptop to phone by camera, no AirDrop or messaging.
+**Per-action hotkeys.** Assign any global hotkey to any action. Pressing the hotkey applies the action to the current clipboard and pastes immediately — no HUD shown. Useful for one-shot workflows like Translate or Paste as Text.
 
-**★ Type Slowly action.** Bypasses paste-blocking forms (banking, government, password fields with `onpaste="return false"`). Types character-by-character through `CGEvent.keyboardSetUnicodeString` with 200ms ± 20% jitter. Imitates human typing precisely enough that anti-paste detection treats it as real keystrokes.
+**Append Copy (`⌥⌘S`).** Accumulate multiple selections into one combined clipboard entry. Session-aware: first press starts a fresh accumulator, subsequent presses extend it. The session resets after 5 minutes of inactivity or any other DrPaste hotkey.
 
-**Bring Your Own AI.** Optional. Provide an Anthropic API key (env var `ANTHROPIC_API_KEY` or `~/Library/Application Support/DrPaste/providers.json`) and four AI actions become available: summarize, translate RU↔EN, fix grammar, formal tone. If no key — actions still appear in the list with a clear "AI provider not configured" notice, click recovery to set it up. The product is fully useful offline.
+**Type Slowly action.** Types text character-by-character with a small delay between keys. Useful for input fields that don't accept paste, demos, screen recordings, or accessibility workflows. Auto-cancels on any user activity (keystroke, click, app switch).
 
-**Visible action failures.** "Неудачная попытка тоже попытка" — failures aren't hidden. AI without a key, malformed JSON, OCR with no recognized text, all show inline notices in the HUD preview with recovery actions. On commit, the original content is still pasted (paste-as-is) so you never end up with nothing.
+**Two operating modes.** Full Gesture Mode (with Accessibility permission) uses a CGEventTap for the press-and-hold gesture. Limited Mode (without Accessibility) falls back to Carbon hotkeys with a key-window HUD that uses Enter to commit.
 
-**Two interaction modes, auto-selected.**
+**Standard macOS UX.** Menu bar status item with quick access to recent clipboard items, Settings, Welcome / Hotkeys reference, and About. iCloud sync placeholder ready for signed releases.
 
-- **Full Gesture Mode** (the real thing): `CGEventTap` intercepts the hotkey and swallows it, the HUD is a non-activating `NSPanel`, modifier release commits. Requires Accessibility permission.
-- **Limited Mode** (no permissions, no friction): `RegisterEventHotKey` summons the HUD, which becomes a regular key window. Enter commits, Escape cancels, mouse works. A banner explains how to upgrade to gesture mode.
+## Hotkeys
 
-When you grant Accessibility later, DrPaste detects it and offers to restart into Full Gesture Mode.
+| Hotkey | Action |
+|---|---|
+| `⌥⌘V` | Open HUD — press-and-hold, navigate with arrow keys, release to paste |
+| `⌥⌘C` | Quick Copy — like `⌘C` with audio feedback |
+| `⌥⌘X` | Cut & Replace — cut current selection, browse history, paste a different item in its place |
+| `⌥⌘S` | Append Copy — accumulate selections into one combined entry |
 
-**Keyboard-first, mouse-available.** Like Spotlight, like Cmd-Tab. Mouse hover highlights, single click selects, double click commits. But you never have to leave the keyboard.
+Inside the HUD: `↑↓` browse history, `←→` switch action, `⌫` delete focused item, `⌘+` / `⌘−` / `⌘0` adjust font, `Esc` cancel, release to paste.
 
-**Sound feedback.** Tink for copy success, buzz for copy failure (real detection via pasteboard.changeCount diff), click for paste success, tick for each Type Slowly character. Each sound toggleable in Settings (when Settings UI ships).
+Custom per-action hotkeys can be assigned in Settings — pressing them applies the action to the current clipboard and pastes immediately without showing the HUD.
 
-**Status menu with Recent items.** Click the menu bar icon — submenu "Recent clipboard" shows the last 15 items with type icons. Click any to paste-to-frontmost (saves the frontmost app via `menuWillOpen`, activates it, simulates ⌘V). Clear history at the top, Settings and About below.
+## Installation
 
-**System-native styling.** Translucent HUD via `NSVisualEffectView(.hudWindow)`. System accent color follows your `System Settings → Appearance` choice. Light and dark mode automatic. Source label under HUD header: "Copied from Safari — OpenAI Docs", "Copied from Excel — Budget.xlsx", "Copied from VS Code".
+DrPaste is built with Swift Package Manager. Requirements:
 
-## Install & run
-
-Requires macOS 13 or later and Swift 5.9 / Xcode 15 or later.
+- macOS 13 (Ventura) or later
+- Xcode Command Line Tools
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/ilya000/DrPaste.git
 cd DrPaste
-swift run
-```
-
-Release build:
-
-```bash
 swift build -c release
-./.build/release/DrPaste
+.build/release/DrPaste
 ```
 
-On first launch macOS will prompt for Accessibility permission. If you grant it — DrPaste runs in Full Gesture Mode immediately. If you don't — it runs in Limited Mode and the HUD shows a button to enable gesture mode later.
+For full Gesture Mode, grant Accessibility permission in System Settings → Privacy & Security → Accessibility after first launch.
 
-### Optional AI
+## Configuration
 
-Create `~/Library/Application Support/DrPaste/providers.json`:
+Open Settings from the menu bar status item. Configure:
 
-```json
-{
-  "anthropicAPIKey": "sk-ant-...",
-  "anthropicModel": "claude-sonnet-4-6"
-}
-```
+- **General** — HUD font size, sound feedback per cue (volume slider + per-cue toggles), Cut & Replace cursor preferences. iCloud sync and Launch on Login placeholders for future signed releases.
+- **AI Providers** — connect cloud providers (key stored in Keychain) and local providers (Ollama, LM Studio, llama.cpp). Test connection before saving.
+- **Content tabs** (Plain text, Rich text, URL, JSON, Table, Markdown, Code, Image, Files) — per-tab playground: pick a sample, run any action, see the result. Reorder actions via drag, rename built-ins, assign hotkeys, edit AI prompts, build custom transformations.
+- **Import/Export** — back up your configuration. API keys are never included in exports.
 
-Or set `ANTHROPIC_API_KEY` in your environment.
+## Architecture notes
 
-## Keyboard reference
-
-| Key                         | Action                                          |
-|-----------------------------|-------------------------------------------------|
-| `⌥⌘V`                       | Summon HUD                                      |
-| `⌥⌘C`                       | Quick Copy (system ⌘C + audio feedback)         |
-| `⌥⌘X`                       | Cut & Replace (cut → HUD → pick → replace)      |
-| `↑` / `↓`                   | Navigate clipboard history                      |
-| `←` / `→`                   | Navigate transformations                        |
-| release `⌥⌘` (Full Mode)    | Commit — paste at cursor                        |
-| `Return` (Limited Mode)     | Commit — paste at cursor                        |
-| double-click                | Commit                                          |
-| `Esc`                       | Cancel                                          |
-| `⌘+` / `⌘-`                 | Increase / decrease HUD font size               |
-| `⌘0`                        | Reset font size                                 |
-
-## Architecture
-
-```
-NSPasteboard ──(0.5s)──► ClipboardWatcher ──► ClipboardStore
-   |  ▲                                              │
-   |  │   raw representations                  @Published items
-   |  │   (UTType → Data) + source meta              │
-   |  │                                              ▼
-   └──┤   ┌──► hotkey ──► EventTap or Carbon ──► AppDelegate ──► HudState
-      │   │                                                          │
-      │   │   ContextDetector ───►                                    │◄──── ActionRegistry
-      │   │                                                          ▼
-      │   │                                                  HudView (SwiftUI)
-      │   │                                                          │
-      │   │                                       release / Enter / dbl-click
-      │   │                                                          ▼
-      │   │                                                ApplyOutcome routing
-      │   │                                                          │
-      │   │                              ┌─────────────┬─────────────┼──────────────┐
-      │   │                              │             │             │              │
-      │   │                            preview      failed      sideEffect   alternativeCommit
-      │   │                              │             │             │              │
-      │   │                       standard paste    paste-as-is   execute       Type Slowly
-      │   │                              │             │             │              │
-      │   └─── PasteboardWriter restores all representations + simulated ⌘V         │
-      │                                                                              │
-      └─── TypeSimulator: CGEvent.keyboardSetUnicodeString per character ────────────┘
-```
-
-Source layout:
-
-- `ClipboardModel.swift` — Universal Semantic ClipboardItem with representations + Store + Watcher + SemanticClassifier + PreviewSynthesizer + SourceResolver
-- `ContextDetector.swift` — ContentContext bitmask (URL/JSON/code/markdown/table/multiline/mixedScript/layoutWrong/qrEligible)
-- `Actions.swift` — ApplyOutcome enum, ClipboardAction protocol, core actions, ActionRegistry
-- `TextActions.swift` — case transforms, encoding, slugify, word count, **★ QR generation**
-- `URLActions.swift` — clean URL, just domain, MD link, HTML link, query params
-- `JSONActions.swift` — pretty, minify, extract keys, flatten, remove nulls
-- `MarkdownActions.swift` — to plain, extract headings, extract links
-- `MoreActions.swift` — code (wrap, tabs↔spaces), table (CSV→JSON/MD), rich→markdown
-- `FileActions.swift` — paths, filenames, bash list, MD links, size, SHA-256, reveal
-- `ImageActions.swift` — **★ OCR**, decode QR, strip metadata, resize, compress, grayscale, rotate, invert
-- `KeyboardLayoutRepair.swift` — RU↔EN swap with NSSpellChecker scoring
-- `HotkeyEngine.swift` — EventTap, Carbon, GlobalMonitor + 3 hotkeys (V/C/X)
-- `TypeSimulator.swift` — Type Slowly via keyboardSetUnicodeString
-- `SoundFeedback.swift` — 5 cues + per-cue toggle + global volume
-- `HUD.swift` — HudState, HudPanel, HudView with failure/side-effect/alternativeCommit notices
-- `AIProvider.swift` — Anthropic provider + AIAction returning ApplyOutcome
-- `PasteSimulator.swift` — ⌘V/⌘C/⌘X + lossless PasteboardWriter from representations
-- `AppBrand.swift` — name, icons (colored for HUD, template for menu bar), About credits
-- `main.swift` — AppDelegate, status menu with Recent submenu, lifecycle
-
-## Status
-
-Working pre-release proof-of-concept. Most features from the original design are implemented. Settings UI with action playground (toggle/edit/Run on each action against a sample input) is the largest remaining piece — currently the "Settings…" menu item opens `providers.json` as a stub.
-
-See [BACKLOG.md](BACKLOG.md) for planned features.
-
-## License
-
-DrPaste is licensed under **GNU GPL v3.0 or later**, with an additional attribution requirement under Section 7(d) of the GPL: derivative works must preserve the original author attribution.
-
-In plain words: fork freely, build on it freely, but the result must also be open source under a compatible license, and "iLya Os" must remain credited as the original author. See [LICENSE](LICENSE) for the exact terms.
+DrPaste is a native AppKit + SwiftUI app, single SwiftPM executable, no Xcode project. The clipboard layer preserves full pasteboard payloads (every UTType representation, ordered) and reconstructs them losslessly on paste. AI actions, transformations, and built-in actions all share a single `ClipboardAction` protocol; user-created actions are stored as `CustomAIDescriptor` or `CustomTransformationDescriptor` in JSON and seeded on first launch.
 
 ## Acknowledgements
 
-Inspired in spirit by Flycut, Maccy, Paste, and Raycast — open clipboard utilities that paved the way for keyboard-first paste UX on macOS. Different from each of them in philosophy: DrPaste is not a database of your clipboard or a productivity dashboard. It tries to be invisible.
+DrPaste's design is inspired by Flycut, Maccy, Paste, and Raycast — open clipboard utilities that paved the way for keyboard-first paste UX on macOS.
+
+Built on Apple's AppKit, SwiftUI, Core Image, Vision, and Carbon HIToolbox.
+
+## License
+
+GNU GPL v3.0-or-later with attribution requirement. See [LICENSE](LICENSE).
+
+Copyright © 2026 iLya Os.

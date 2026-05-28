@@ -6,6 +6,71 @@
 
 ## Следующая волна (накапливается)
 
+### #13 — Strip Russian from project files, neutral English style for docs
+
+**Status:** planned. Documentation cleanup. Touches all `.md` files and source comments.
+
+**Touches:** `BACKLOG.md`, `README.md`, `SKILL.md`, all `.swift` files (comment-level), any other `.md` / `.txt` / config files in repo.
+
+**Context:** project is open-source on GitHub. Russian language in docs and code comments creates:
+- Inconsistent tone (mixed Russian + English code)
+- Barriers for non-Russian contributors / reviewers
+- Risk of misinterpretation in automated tooling (license scanners, GitHub language detection)
+
+**Requirements:**
+
+1. **`BACKLOG.md`** — rewrite from scratch in neutral, strict English. Format:
+   - Section heading per item: `### #N — short title`
+   - Status, Touches, Context (1-2 paragraphs), Requirements (bullet list), Implementation notes (optional)
+   - No emoji, no conversational tone, no Russian, no "ты"/"я"/"мы"
+   - No phrases addressed to AI ("записал", "понял", "жду дальше")
+   - Strictly: wish / requirement → implementation plan
+
+2. **`README.md`** — neutral marketing English. Must be:
+   - Strict (technical, accurate, no exaggeration)
+   - Marketing-oriented (clear value proposition, feature highlights, use cases)
+   - Standard open-source README structure: Title + tagline, Description, Features, Installation, Usage, Configuration, License, Contributing
+   - No Russian, no slang, no AI-conversation artefacts
+
+3. **`SKILL.md`** — translate to English. Keep structure.
+
+4. **All `.swift` source files** — translate Russian inline comments and doc comments to English. Russian-language string literals in samples already removed (#4 in 0.8.0). Verify no remaining Russian strings except in `KeyboardLayoutRepair.swift` (Cyrillic key mapping logic — required for layout-repair functionality, justified).
+
+5. **Tone for `BACKLOG.md` going forward:** every new entry written strictly neutral, English, no first-person, no emojis, no addressed dialogue.
+
+**Sample neutral entry format:**
+
+```markdown
+### #N — Title
+
+**Status:** planned. Brief category.
+**Touches:** files affected.
+**Context:** 1-2 paragraphs explaining the why.
+**Requirements:**
+- bullet 1
+- bullet 2
+**Implementation notes:** optional Swift snippets, edge cases, migration paths.
+```
+
+**Out of scope:**
+- Russian commit messages in git history (immutable)
+- Russian in `KeyboardLayoutRepair.swift` Cyrillic-EN keyboard mapping table (required for feature)
+- Translation of SKILL.md if not needed (re-verify scope at apply time)
+
+**Implementation approach:**
+
+1. Audit pass: `grep -r '[а-яА-Я]' .` to enumerate all Russian content.
+2. `README.md` rewrite first (smaller scope, high visibility).
+3. `BACKLOG.md` rewrite: collapse historical entries into a CHANGELOG section with version markers; keep only "Next wave" active items in detail. Reduce 7000+ line file to ~1500 lines.
+4. `SKILL.md` translate.
+5. Source-comment translate pass via grep on each `.swift` file.
+
+**Verification:**
+
+After applying — `grep -rn '[а-яА-Я]'` returns matches only in `KeyboardLayoutRepair.swift` (whitelisted) and `Resources/SettingsSamples/` if any bilingual sample file remains there. All other repository content is English.
+
+---
+
 ### #12 — Action Editor «Applies to»: показывать ВСЕ типы контента + disabled state для неприменимых
 
 **Статус:** запланирована. UX правка ~30 строк (расширить allTypes + computed applicable mask + disabled binding).

@@ -35,16 +35,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     private var savedFrontmostApp: NSRunningApplication?
     private var currentSummonReason: SummonReason = .paste
 
+    // #2: Append Copy session tracking. Each ⌥⌘S press is "subsequent" only if
+    // the immediately previous DrPaste hotkey was ⌥⌘S AND ≤5 min ago.
+    private var lastAppendCopyTime: Date? = nil
+    private enum LastDrPasteAction { case none, appendCopy, other }
+    private var lastDrPasteAction: LastDrPasteAction = .none
+    private let appendSessionTimeout: TimeInterval = 300  // 5 minutes
+
     // MARK: lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSLog("DrPaste: launch started")
         store = ClipboardStore()
         watcher = ClipboardWatcher(store: store)
         watcher.start()
+        NSLog("DrPaste: store + watcher ready")
 
         registry = ActionRegistry()
+        NSLog("DrPaste: registry init complete")
 
-        // Content-aware action packs (Backlog #4)
+        // Content-aware action packs
         registry.register(TextActionsPack.all)
         registry.register(URLActionsPack.all)
         registry.register(JSONActionsPack.all)
@@ -53,42 +63,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         registry.register(TableActionsPack.all)
         registry.register(RichTextActionsPack.all)
         registry.register(FileActionsPack.all(store: store))
-
-        // Image actions (Backlog #3)
         registry.register(ImageActionsPack.all)
-
-        // Type Slowly (Backlog #7)
         registry.register(TypeSlowlyAction())
+        NSLog("DrPaste: packs registered")
 
-        // AI actions всегда регистрируются (Backlog #2): без provider'а возвращают .failed
-        // с recovery action. Правка #4: multi-provider через AIProviderRegistry.shared.
-        // Инициализируем registry (load из providers.json + миграция v1→v2 если нужно).
+        // AI provider registry singleton init
         _ = AIProviderRegistry.shared
-        registry.register(DefaultAIActions.make().map { $0 as ClipboardAction })
-        // Build custom AI actions из persisted config (Backlog #8)
-        registry.rebuildCustomAI()
-        // Build custom transformations из persisted config (правка #7 light)
-        registry.rebuildCustomTransformations()
+        NSLog("DrPaste: AIProviderRegistry ready")
 
-        // Per-action hotkeys (0.6.0) — install Carbon event handler и зарегистрировать
+        // Seed defaults (post-init to avoid didSet on partially-initialized state).
+        registry.runFirstLaunchSeeds()
+        NSLog("DrPaste: seed complete")
+
+        registry.rebuildCustomAI()
+        registry.rebuildCustomTransformations()
+        NSLog("DrPaste: rebuild complete")
+
+        // Per-action hotkeys
         ActionHotkeyManager.shared.registry = registry
         ActionHotkeyManager.shared.delegate = self
         ActionHotkeyManager.shared.install()
         ActionHotkeyManager.shared.reload()
+        NSLog("DrPaste: hotkey manager ready")
 
         settingsController = SettingsWindowController(registry: registry, store: store)
-
         hudState = HudState()
-        startEngine()
-        installStatusItem()
-        startAXMonitor()
+        NSLog("DrPaste: state objects ready")
 
-        // #13 Welcome window — показывается при первом запуске
-        // (после 0.5s чтобы UI основные элементы успели mount'нуться)
+        startEngine()
+        NSLog("DrPaste: engine started")
+
+        installStatusItem()
+        NSLog("DrPaste: status item installed")
+
+        startAXMonitor()
+        NSLog("DrPaste: AX monitor started")
+
+        // Welcome window — auto-shown on first launch, suppressible via "Don't show again".
         WelcomeWindowController.shared.configure(registry: registry)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             WelcomeWindowController.shared.showIfNeeded()
         }
+        NSLog("DrPaste: launch complete")
     }
 
     // MARK: engine bootstrap
@@ -314,6 +330,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
 
     nonisolated func hotkeyEngineDidSummon(reason: SummonReason) {
         Task { @MainActor in
+            self.markOtherDrPasteAction()
             self.currentSummonReason = reason
             if reason == .cutAndReplace {
                 // Правка #16 слой 5: event-driven verification вместо fixed asyncAfter.
@@ -385,9 +402,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     /// Реальная детекция success/failure через pasteboard.changeCount diff.
     // MARK: - Per-action hotkey direct trigger (0.6.0)
 
-    /// Hotkey assigned to action был нажат. Без HUD: применяем action к текущему
-    /// clipboard content и paste'им результат в frontmost app.
+    /// Hotkey assigned to action was pressed. Without HUD: apply action to current
+    /// clipboard content and paste result into frontmost app.
     func actionHotkeyDidFire(actionID: String) {
+        markOtherDrPasteAction()
         guard let action = registry.actions.first(where: { $0.id == actionID }) else { return }
         guard let frontmost = NSWorkspace.shared.frontmostApplication,
               frontmost.bundleIdentifier != Bundle.main.bundleIdentifier else {
@@ -436,37 +454,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         }
     }
 
-    /// #12 ⌥⌘S — Sum/Append Copy. Простая модель:
-    /// 1) симулируем ⌘C чтобы захватить текущую selection в clipboard
-    /// 2) ждём pasteboard change
-    /// 3) объединяем newly-copied content с previous clipboard content
-    /// 4) пишем результат обратно в clipboard
-    /// Text: concat с separator (default \n). Files: append URL list. Images: write first image
-    /// (multi-image нет нативного pasteboard pattern; user может paste через HUD multi-select).
+    /// ⌥⌘S — Sum/Append Copy with session-based reset (#2):
+    /// • First press in a session (>5 min gap OR previous DrPaste action was not ⌥⌘S):
+    ///   pushes current clipboard to history, clears it, captures selection as fresh start.
+    /// • Subsequent presses in same session: append to accumulator with separator.
+    /// Files: append URL list. Other types: text concatenation with \n.
     nonisolated func hotkeyEngineDidAppendCopy() {
         Task { @MainActor in
             let pb = NSPasteboard.general
-            let separator = UserDefaults.standard.string(forKey: "drpaste.append.separator") ?? "\n"
+            let separator = "\n"
 
-            // Сохраняем существующий clipboard как "previous"
-            let previousText = pb.string(forType: .string)
-            let previousFiles = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL]
+            // Determine session state
+            let isNewSession: Bool = {
+                if self.lastDrPasteAction != .appendCopy { return true }
+                if let last = self.lastAppendCopyTime,
+                   Date().timeIntervalSince(last) > self.appendSessionTimeout { return true }
+                return false
+            }()
+
+            if isNewSession {
+                // Push existing clipboard to history (watcher will pick it up if changed)
+                self.watcher.forceTick()
+                pb.clearContents()
+            }
+
+            // Capture previous accumulator (only relevant for subsequent presses)
+            let previousText = isNewSession ? nil : pb.string(forType: .string)
+            let previousFiles = isNewSession ? nil :
+                pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL]
 
             let countBefore = pb.changeCount
             PasteSimulator.simulateCopy()
 
-            // Ждём pasteboard изменение до 250ms
+            // Poll pasteboard change up to 250ms
             let start = Date()
             while Date().timeIntervalSince(start) < 0.25 {
                 try? await Task.sleep(nanoseconds: 20_000_000)
                 if pb.changeCount > countBefore { break }
             }
+            self.lastAppendCopyTime = Date()
+            self.lastDrPasteAction = .appendCopy
+
             if pb.changeCount == countBefore {
                 SoundFeedback.play(.copyFailure)
                 return
             }
 
-            // Объединяем
+            // For new session — clipboard already holds the just-copied selection. Done.
+            if isNewSession {
+                self.watcher.ignoreNextChange = false
+                self.watcher.forceTick()
+                SoundFeedback.play(.copySuccess)
+                self.flashStatusItem()
+                return
+            }
+
+            // Subsequent press — merge previous with newly captured
             let newText = pb.string(forType: .string)
             let newFiles = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL]
 
@@ -490,14 +533,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                 self.flashStatusItem()
                 return
             }
-            // Нет previous — просто copy success (как обычный ⌥⌘C)
             SoundFeedback.play(.copySuccess)
             self.flashStatusItem()
         }
     }
 
+    /// Mark that some DrPaste hotkey other than ⌥⌘S was used.
+    /// Causes next ⌥⌘S to be treated as a new session (#2).
+    @MainActor
+    private func markOtherDrPasteAction() {
+        lastDrPasteAction = .other
+        lastAppendCopyTime = Date()
+    }
+
     nonisolated func hotkeyEngineDidQuickCopy() {
         Task { @MainActor in
+            self.markOtherDrPasteAction()
             let countBefore = NSPasteboard.general.changeCount
             PasteSimulator.simulateCopy()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {

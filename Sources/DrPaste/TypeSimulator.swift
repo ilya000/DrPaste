@@ -6,18 +6,39 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Type Slowly (Backlog #7). Печатает текст символ за символом через
-//  CGEvent.keyboardSetUnicodeString с задержкой. Обходит paste-block
-//  в банковских формах и других input fields с onpaste=false.
+//  Type Slowly. Types text character-by-character through
+//  CGEvent.keyboardSetUnicodeString with a small delay between keys.
+//  Useful for input fields that don't accept paste, demos, screen recordings.
 //
 
 import AppKit
 import Carbon.HIToolbox
 
+/// Internal session state for an in-progress Type Slowly run.
+/// Holds cancellation flag and installed event monitors.
+/// `@unchecked Sendable` because we serialise access via main queue / atomic-like reads
+/// of a single Bool flag; closures only mutate `cancelled` on main thread.
+final class TypeSlowlySession: @unchecked Sendable {
+    var cancelled: Bool = false
+    var monitors: [Any] = []
+    var observers: [NSObjectProtocol] = []
+    let originalFrontmostPID: pid_t
+
+    init() {
+        self.originalFrontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+    }
+}
+
 enum TypeSimulator {
-    /// Печатает строку символ за символом. Каждый символ — отдельный keyDown/keyUp event.
-    /// Cancellation closure проверяется перед каждым символом.
-    /// onProgress(current, total) вызывается после каждого символа.
+    /// Types text character-by-character. Each character is a discrete keyDown/keyUp pair.
+    /// Cancellation flag is checked before each character.
+    /// onProgress(current, total) is called after each character.
+    ///
+    /// #4: Auto-cancellation triggers if the user:
+    ///   - presses any key (not our own synthetic markers)
+    ///   - clicks any mouse button
+    ///   - changes frontmost application
+    ///   - switches workspace / space
     static func typeSlowly(_ text: String,
                            baseDelay: TimeInterval = 0.2,
                            jitter: Double = 0.2,
@@ -27,11 +48,17 @@ enum TypeSimulator {
         let chars = Array(text)
         let total = chars.count
         let source = CGEventSource(stateID: .combinedSessionState)
+        let session = TypeSlowlySession()
+        installCancellationMonitors(session)
 
         Task.detached {
             for (idx, ch) in chars.enumerated() {
-                if cancellation() {
-                    await MainActor.run { completion() }
+                if cancellation() || session.cancelled {
+                    await MainActor.run {
+                        removeCancellationMonitors(session)
+                        SoundFeedback.play(.pasteFailure)
+                        completion()
+                    }
                     return
                 }
 
@@ -53,8 +80,63 @@ enum TypeSimulator {
                 let delay = baseDelay * factor
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
-            await MainActor.run { completion() }
+            await MainActor.run {
+                removeCancellationMonitors(session)
+                completion()
+            }
         }
+    }
+
+    /// Install global monitors that cancel typing on user activity.
+    /// Must be called on main thread (NSEvent global monitors require it).
+    private static func installCancellationMonitors(_ session: TypeSlowlySession) {
+        // Key press monitor — filter out our own synthetic events
+        let keyMon = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown]) { event in
+            let isSynthetic = event.cgEvent?.getIntegerValueField(.eventSourceUserData)
+                == DrPasteSyntheticMarker
+            if !isSynthetic {
+                session.cancelled = true
+            }
+        }
+        if let m = keyMon { session.monitors.append(m) }
+
+        // Mouse clicks
+        let mouseMon = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { _ in
+            session.cancelled = true
+        }
+        if let m = mouseMon { session.monitors.append(m) }
+
+        // Frontmost app change
+        let appObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil, queue: .main
+        ) { note in
+            let newPID = (note.userInfo?[NSWorkspace.applicationUserInfoKey]
+                as? NSRunningApplication)?.processIdentifier ?? 0
+            if newPID != session.originalFrontmostPID {
+                session.cancelled = true
+            }
+        }
+        session.observers.append(appObserver)
+
+        // Workspace / space change
+        let spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil, queue: .main
+        ) { _ in session.cancelled = true }
+        session.observers.append(spaceObserver)
+    }
+
+    /// Must be called on main thread (matches NSEvent.removeMonitor expectations).
+    private static func removeCancellationMonitors(_ session: TypeSlowlySession) {
+        for m in session.monitors { NSEvent.removeMonitor(m) }
+        for o in session.observers {
+            NSWorkspace.shared.notificationCenter.removeObserver(o)
+        }
+        session.monitors.removeAll()
+        session.observers.removeAll()
     }
 
     private static func postUnicode(source: CGEventSource?, character: Character) {
@@ -81,7 +163,7 @@ enum TypeSimulator {
 
 struct TypeSlowlyAction: ClipboardAction {
     let id = "builtin.type_slowly"
-    let title = "Type Slowly (bypass paste-block)"
+    let title = "Type Slowly"
     let isLocal = true
 
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {

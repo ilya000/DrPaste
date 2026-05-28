@@ -14,47 +14,48 @@ import AppKit
 import SwiftUI
 
 @MainActor
-final class WelcomeWindowController: NSWindowController {
+final class WelcomeWindowController {
     static let shared = WelcomeWindowController()
     private static let dontShowKey = "drpaste.welcome.dontShow"
     private var registry: ActionRegistry?
+    private var window: NSWindow?
 
-    private init() {
-        let placeholder = NSHostingController(rootView: Text("Loading…"))
-        let window = NSWindow(contentViewController: placeholder)
-        window.styleMask = [.titled, .closable, .fullSizeContentView]
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
-        window.isMovableByWindowBackground = true
-        window.setContentSize(NSSize(width: 600, height: 620))
-        window.center()
-        window.title = "Welcome to \(AppBrand.name)"
-        window.isReleasedWhenClosed = false
-        super.init(window: window)
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
+    private init() {}
 
     func configure(registry: ActionRegistry) {
         self.registry = registry
     }
 
-    /// Показать только если не выбрано "Don't show again".
     func showIfNeeded() {
         guard !UserDefaults.standard.bool(forKey: Self.dontShowKey) else { return }
         show()
     }
 
     func show() {
-        if let reg = registry {
+        if window == nil { buildWindow() }
+        if let reg = registry, let w = window {
             let view = WelcomeView(registry: reg, onClose: { [weak self] in
                 self?.window?.orderOut(nil)
             })
-            window?.contentViewController = NSHostingController(rootView: view)
+            w.contentViewController = NSHostingController(rootView: view)
         }
-        showWindow(nil)
+        window?.center()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func buildWindow() {
+        let w = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 620),
+            styleMask: [.titled, .closable, .fullSizeContentView],
+            backing: .buffered, defer: false
+        )
+        w.titlebarAppearsTransparent = true
+        w.titleVisibility = .hidden
+        w.isMovableByWindowBackground = true
+        w.title = "Welcome to \(AppBrand.name)"
+        w.isReleasedWhenClosed = false
+        window = w
     }
 }
 
@@ -69,6 +70,7 @@ struct WelcomeView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+                    axWarningSection
                     description
                     featuresSection
                     hotkeysSection
@@ -80,6 +82,63 @@ struct WelcomeView: View {
         }
         .frame(width: 600, height: 620)
         .background(Color(NSColor.windowBackgroundColor))
+    }
+
+    /// #1: Show warning if Accessibility access is not granted.
+    @ViewBuilder
+    private var axWarningSection: some View {
+        if !AXIsProcessTrusted() {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text("Limited Mode — Accessibility access not granted")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                Text("DrPaste needs Accessibility permission to detect press-and-hold gestures, intercept HUD keyboard navigation, and simulate paste into the frontmost app.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Without it, DrPaste runs in Limited Mode — open the HUD with ⌥⌘V and press Enter to paste (no press-and-hold).")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("To enable full Gesture Mode:")
+                    .font(.system(size: 12, weight: .medium))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("1. Open System Settings → Privacy & Security → Accessibility")
+                    Text("2. Find DrPaste in the list and turn the toggle ON")
+                    Text("3. Restart DrPaste")
+                }
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                HStack {
+                    Button("Open Accessibility Settings…") { openAXSettings() }
+                    Button("Restart DrPaste") { restartApp() }
+                    Spacer()
+                }
+                .padding(.top, 4)
+            }
+            .padding(14)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.10)))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.orange.opacity(0.3), lineWidth: 1)
+            )
+        }
+    }
+
+    private func openAXSettings() {
+        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
+        NSWorkspace.shared.open(url)
+    }
+
+    private func restartApp() {
+        let exePath = Bundle.main.executablePath ?? Bundle.main.bundleURL.path
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: exePath)
+        try? process.run()
+        NSApp.terminate(nil)
     }
 
     private var header: some View {

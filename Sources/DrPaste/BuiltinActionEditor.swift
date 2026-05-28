@@ -65,7 +65,7 @@ enum BuiltinActionMetadata {
         "builtin.image_grayscale": "Converts the image to grayscale.",
         "builtin.image_rotate_90": "Rotates the image 90° clockwise.",
         "builtin.image_invert": "Inverts the image colors.",
-        "builtin.type_slowly": "Types the text character-by-character via key events — bypasses paste blockers (banking forms, anti-cheat).",
+        "builtin.type_slowly": "Types the text character-by-character with a small delay between keys. Useful for input fields that don't accept paste, demos, screen recordings, or accessibility workflows.",
         "builtin.files_paths": "Returns absolute file paths as text, one per line.",
         "builtin.files_names": "Returns just the filenames (without paths).",
         "builtin.files_md_links": "Wraps files as Markdown links [name](file:///path).",

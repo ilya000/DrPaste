@@ -349,7 +349,19 @@ struct ProviderEditor: View {
     @State private var showKey = false
     @State private var testResult: String? = nil
     @State private var testing = false
+    @State private var initialKey: String? = nil
+    @State private var initialProvider: ConfiguredProvider? = nil
     let onClose: (ProviderEditorResult) -> Void
+
+    /// True if auth-relevant fields differ from initial state — save must re-test.
+    private var authDirty: Bool {
+        guard let initial = initialProvider else { return true }
+        if apiKey != (initialKey ?? "") { return true }
+        if provider.model != initial.model { return true }
+        if provider.baseURL != initial.baseURL { return true }
+        if provider.kind != initial.kind { return true }
+        return false
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -422,17 +434,67 @@ struct ProviderEditor: View {
             HStack {
                 Spacer()
                 Button("Cancel") { onClose(ProviderEditorResult(config: nil, apiKey: nil)) }
-                Button("Save") {
-                    onClose(ProviderEditorResult(config: provider,
-                                                 apiKey: apiKey.isEmpty ? nil : apiKey))
+                Button(testing ? "Testing…" : "Save") {
+                    saveWithTest()
                 }
                 .keyboardShortcut(.defaultAction)
+                .disabled(testing)
             }
+            Text("Save runs the connection test first. Save only succeeds if the test passes.")
+                .font(.caption2).foregroundStyle(.tertiary)
         }
         .padding(20)
         .frame(width: 520)
+        .onAppear {
+            initialKey = APIKeyStorage.load(for: provider.id)
+            initialProvider = provider
+        }
     }
 
+    /// #5: Save now runs test connection first. Editor stays open if test fails.
+    private func saveWithTest() {
+        // If auth-relevant fields didn't change AND existing key works — skip test, commit immediately.
+        if !authDirty && testResult?.hasPrefix("✓") == true {
+            commit()
+            return
+        }
+        testing = true; testResult = nil
+        let providerCopy = provider
+        let keyForTest = apiKey.isEmpty ? (initialKey ?? "") : apiKey
+        Task { @MainActor in
+            if !keyForTest.isEmpty {
+                APIKeyStorage.save(keyForTest, for: providerCopy.id)
+            }
+            AIProviderRegistry.shared.upsert(providerCopy)
+            let result = await AIProviderRegistry.shared.testConnection(providerID: providerCopy.id)
+            testing = false
+            switch result {
+            case .success(let msg):
+                testResult = "✓ \(msg)"
+                commit()
+            case .failure(let e):
+                testResult = "✗ \(errorMessage(e))"
+                // Editor remains open — user can adjust and retry.
+            }
+        }
+    }
+
+    private func commit() {
+        onClose(ProviderEditorResult(config: provider,
+                                     apiKey: apiKey.isEmpty ? nil : apiKey))
+    }
+
+    private func errorMessage(_ e: AIProviderError) -> String {
+        switch e {
+        case .missingAPIKey: return "API key required"
+        case .missingBaseURL: return "Base URL required"
+        case .http(let status, _): return "HTTP \(status)"
+        case .networkUnreachable: return "Network unreachable"
+        case .decode(let s): return s
+        }
+    }
+
+    /// Manual standalone test (без save) — keeps editor open regardless of result.
     private func runTest() {
         testing = true; testResult = nil
         let temp = provider
@@ -446,14 +508,7 @@ struct ProviderEditor: View {
             testing = false
             switch result {
             case .success(let msg): testResult = "✓ \(msg)"
-            case .failure(let e):
-                switch e {
-                case .missingAPIKey: testResult = "✗ API key required"
-                case .missingBaseURL: testResult = "✗ Base URL required"
-                case .http(let status, _): testResult = "✗ HTTP \(status)"
-                case .networkUnreachable: testResult = "✗ Network unreachable"
-                case .decode(let s): testResult = "✗ \(s)"
-                }
+            case .failure(let e): testResult = "✗ \(errorMessage(e))"
             }
         }
     }
@@ -732,13 +787,18 @@ struct ContentTypeTab: View {
         let rowBg: Color = Color.primary.opacity(0.03)
         return HStack(spacing: 8) {
             // #2 Drag handle affordance — visual grip
-            // Identity (Paste as is) показывается как locked icon (нельзя двигать).
+            // Identity (Paste as is) shown as locked (cannot be moved).
             Image(systemName: isLocked ? "lock.fill" : "line.3.horizontal")
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
                 .frame(width: 12)
             Toggle("", isOn: enabledBinding(action.id))
                 .labelsHidden()
+            // #11 Type icon — visual consistency across all action rows.
+            Image(systemName: BuiltinActionIcons.iconName(for: action.id))
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
             VStack(alignment: .leading, spacing: 1) {
                 Text(displayTitle)
                     .lineLimit(1)
@@ -931,14 +991,9 @@ struct ResultPane: View {
                 .resizable().aspectRatio(contentMode: .fit)
                 .frame(maxHeight: 200)
         } else if item.semantic == .richText,
-                  let attr = loadRichAttributedString(item) {
-            // #5: render bold/italic/links visually
-            ScrollView {
-                Text(attr)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(6)
-            }
+                  let attr = RichTextLoader.attributedString(from: item) {
+            // #7: native NSTextView rendering preserves bold/italic/links/colors.
+            RichTextPreviewView(attributedString: attr)
         } else {
             ScrollView {
                 Text(item.previewText ?? "")
@@ -957,16 +1012,6 @@ struct ResultPane: View {
         }
     }
 
-    /// #5: Load NSAttributedString из rich text item для рендеринга в preview.
-    private func loadRichAttributedString(_ item: ClipboardItem) -> AttributedString? {
-        guard let rel = item.representations["public.rtf"],
-              let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
-              let ns = try? NSAttributedString(data: data,
-                                                options: [.documentType: NSAttributedString.DocumentType.rtf],
-                                                documentAttributes: nil)
-        else { return nil }
-        return try? AttributedString(ns, including: \.swiftUI)
-    }
 }
 
 // MARK: - Import/Export tab

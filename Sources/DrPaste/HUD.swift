@@ -496,32 +496,11 @@ struct HudView: View {
 
     @ViewBuilder
     private func richTextView(_ item: ClipboardItem) -> some View {
-        if let attr = makeAttributedString(from: item) {
-            Text(attr).font(.system(size: sz(12)))
+        if let attr = RichTextLoader.attributedString(from: item) {
+            RichTextPreviewView(attributedString: attr, fontScale: state.fontScale)
         } else {
             Text(item.previewText ?? "").font(.system(size: sz(12)))
         }
-    }
-
-    private func makeAttributedString(from item: ClipboardItem) -> AttributedString? {
-        // Try RTF
-        if let rel = item.representations["public.rtf"],
-           let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
-           let ns = try? NSAttributedString(data: data,
-                                            options: [.documentType: NSAttributedString.DocumentType.rtf],
-                                            documentAttributes: nil) {
-            return try? AttributedString(ns, including: \.swiftUI)
-        }
-        // Try HTML
-        if let rel = item.representations["public.html"],
-           let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
-           let ns = try? NSAttributedString(data: data,
-                                            options: [.documentType: NSAttributedString.DocumentType.html,
-                                                      .characterEncoding: String.Encoding.utf8.rawValue],
-                                            documentAttributes: nil) {
-            return try? AttributedString(ns, including: \.swiftUI)
-        }
-        return nil
     }
 
     // MARK: failure / side-effect / alternativeCommit notices
@@ -619,8 +598,14 @@ struct HudView: View {
         let title = state.actionTitleProvider?(a.id, a.title) ?? a.title
         return HStack(spacing: 4) {
             if let badge = providerBadge(for: a) {
+                // AI action — provider badge with brand color
                 ProviderBadgeView(text: badge.label, color: badge.color,
                                   fontSize: sz(9), iconName: badge.icon)
+            } else {
+                // Built-in or transformation — type icon
+                Image(systemName: actionTypeIcon(for: a))
+                    .font(.system(size: sz(10), weight: .medium))
+                    .foregroundStyle(isActive ? Color.primary : .secondary)
             }
             Text(title)
                 .font(.system(size: sz(11), weight: isActive ? .semibold : .regular))
@@ -645,7 +630,19 @@ struct HudView: View {
         }
     }
 
-    /// Provider badge для AI actions (#9). Возвращает label, color и SF Symbol.
+    /// SF Symbol icon for non-AI actions (built-in or transformation).
+    private func actionTypeIcon(for action: ClipboardAction) -> String {
+        if action.id.hasPrefix("user.transform.") {
+            // Custom transformation — engine-derived icon if available
+            if let desc = AIProviderRegistry.shared.config.providers.first(where: { $0.id == action.id }) {
+                _ = desc  // placeholder — engines aren't on AIProviderRegistry
+            }
+            return "function"
+        }
+        return BuiltinActionIcons.iconName(for: action.id)
+    }
+
+    /// Provider badge for AI actions (#9). Returns label, color, and SF Symbol.
     private func providerBadge(for action: ClipboardAction)
         -> (label: String, color: Color, icon: String)?
     {
@@ -692,7 +689,7 @@ struct HudView: View {
             }
             keyHint("esc", "cancel")
             Spacer()
-            keyHint("⌘+/-", "zoom")
+            keyHint("⌘+/-", "zoom \(Int(state.fontScale * 100))%")
         }
         .font(.system(size: sz(10), design: .monospaced))
         .foregroundStyle(.secondary)

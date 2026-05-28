@@ -179,7 +179,7 @@ final class ActionRegistry: ObservableObject {
     var aiProvider: AIProvider?
 
     init() {
-        // Built-in core actions. Дальше AppDelegate регистрирует action packs.
+        // Built-in core actions. AppDelegate registers additional action packs.
         actions = [
             IdentityAction(),
             LayoutRepairAction(),
@@ -188,6 +188,32 @@ final class ActionRegistry: ObservableObject {
             UppercaseAction(),
             LowercaseAction()
         ]
+    }
+
+    /// #9: On first launch (or upgrade with new defaults), seed default AI actions
+    /// into config.customAI as regular editable entries.
+    /// MUST be called by AppDelegate AFTER init, before rebuildCustomAI().
+    /// Not called from init() to avoid didSet side-effects on partially-initialized state.
+    func runFirstLaunchSeeds() {
+        guard config.seedAIVersion < DefaultAISeed.currentSeedVersion else { return }
+        var copy = config
+
+        // Migrate per-action hotkeys from old factory IDs to new seeded IDs.
+        for (oldID, newID) in DefaultAISeed.hotkeyIDMigration {
+            if let hk = copy.actionHotkeys[oldID] {
+                copy.actionHotkeys[newID] = hk
+                copy.actionHotkeys.removeValue(forKey: oldID)
+            }
+        }
+
+        // Seed defaults that aren't already present (avoid duplicates on upgrade).
+        for desc in DefaultAISeed.defaults() {
+            if !copy.customAI.contains(where: { $0.id == desc.id }) {
+                copy.customAI.append(desc)
+            }
+        }
+        copy.seedAIVersion = DefaultAISeed.currentSeedVersion
+        config = copy
     }
 
     func register(_ action: ClipboardAction) {

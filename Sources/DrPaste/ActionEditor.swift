@@ -81,7 +81,9 @@ struct ActionEditor: View {
     @State private var conflictMessage: String? = nil
     @State private var showRegexHelp: Bool = false
 
-    private let allTypes: [SemanticKind] = [.text, .richText, .url, .json, .table, .markdown, .code, .files]
+    private let allTypes: [SemanticKind] = [
+        .text, .richText, .url, .email, .json, .code, .markdown, .table, .image, .pdf, .files
+    ]
 
     private var isEditing: Bool {
         switch context {
@@ -223,18 +225,45 @@ struct ActionEditor: View {
             let columns = [GridItem(.adaptive(minimum: 110), spacing: 6)]
             LazyVGrid(columns: columns, alignment: .leading, spacing: 4) {
                 ForEach(allTypes, id: \.self) { type in
+                    let applicable = isTypeApplicable(type)
                     Toggle(isOn: Binding(
                         get: { applicableTypes.contains(type) },
                         set: { isOn in
+                            guard applicable else { return }
                             if isOn { applicableTypes.insert(type) }
                             else { applicableTypes.remove(type) }
                         }
                     )) {
-                        Text(type.displayName).font(.system(size: 12))
+                        Text(type.displayName)
+                            .font(.system(size: 12))
+                            .foregroundStyle(applicable ? .primary : .tertiary)
                     }
                     .toggleStyle(.checkbox)
+                    .disabled(!applicable)
                 }
             }
+        }
+    }
+
+    /// #12: Is the action capable of handling this content type at all?
+    /// Inapplicable types are shown disabled and unchecked.
+    private func isTypeApplicable(_ type: SemanticKind) -> Bool {
+        switch kind {
+        case .builtin:
+            let id: String
+            if case .editBuiltin(let actionID, _, _) = context { id = actionID }
+            else if !builtinID.isEmpty { id = builtinID }
+            else { return true }
+            guard let action = registry.actions.first(where: { $0.id == id }) else { return true }
+            let sample = SettingsSamples.sample(for: type)
+            let ctx = ContextDetector.detect(sample)
+            return action.isApplicable(item: sample, context: ctx)
+        case .transformation:
+            // Text-based engines apply to text-based content. Image/files engines not yet defined.
+            return [.text, .richText, .markdown, .code, .table, .url, .email, .json].contains(type)
+        case .ai:
+            // AI prompts operate on text content. Images/PDF/files require extraction first.
+            return [.text, .richText, .markdown, .code, .url, .email, .json, .table].contains(type)
         }
     }
 
@@ -359,6 +388,46 @@ struct ActionEditor: View {
                 Picker("", selection: paramBinding(key: "mode", default: "keep")) {
                     Text("Keep matching").tag("keep")
                     Text("Remove matching").tag("remove")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+        case .caseChange:
+            HStack {
+                Text("Case:").font(.caption).foregroundStyle(.secondary)
+                    .frame(width: 100, alignment: .leading)
+                Picker("", selection: paramBinding(key: "case", default: "upper")) {
+                    Text("UPPER").tag("upper")
+                    Text("lower").tag("lower")
+                    Text("Title Case").tag("title")
+                    Text("Sentence case").tag("sentence")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+        case .sortLines:
+            HStack {
+                Text("Direction:").font(.caption).foregroundStyle(.secondary)
+                    .frame(width: 100, alignment: .leading)
+                Picker("", selection: paramBinding(key: "direction", default: "asc")) {
+                    Text("Ascending").tag("asc")
+                    Text("Descending").tag("desc")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            paramToggle(label: "Case insensitive", key: "caseInsensitive")
+        case .uniqueLines:
+            Text("Removes consecutive duplicate lines, preserves order.")
+                .font(.caption).foregroundStyle(.tertiary)
+        case .jsonFormat:
+            HStack {
+                Text("Operation:").font(.caption).foregroundStyle(.secondary)
+                    .frame(width: 100, alignment: .leading)
+                Picker("", selection: paramBinding(key: "operation", default: "pretty")) {
+                    Text("Pretty").tag("pretty")
+                    Text("Minify").tag("minify")
+                    Text("Extract keys").tag("extractKeys")
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()

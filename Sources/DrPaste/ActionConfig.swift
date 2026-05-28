@@ -38,12 +38,15 @@ struct ActionConfig: Codable, Equatable {
     /// Key — SemanticKind.rawValue, value — [actionID] в порядке отображения.
     /// Actions не в массиве идут после, в default order.
     var actionOrder: [String: [String]] = [:]
-    /// User-defined transformations (правка #7 light — engine architecture).
+    /// User-defined transformations (engine architecture, light version).
     var customTransformations: [CustomTransformationDescriptor] = []
-    /// Per-action hotkeys (0.6.0): actionID → ActionHotkey.
-    /// При нажатии — direct trigger без HUD.
+    /// Per-action hotkeys: actionID → ActionHotkey.
+    /// When pressed, action triggers directly without opening the HUD.
     var actionHotkeys: [String: ActionHotkey] = [:]
-    /// Полный snapshot для export (preferences тоже).
+    /// Seed version counter — increments when new default AI actions are bundled.
+    /// Existing users get new defaults on upgrade; existing entries are not duplicated.
+    var seedAIVersion: Int = 0
+    /// Full snapshot for export (also includes preferences).
     var preferences: ActionConfigPreferences = ActionConfigPreferences()
 
     init() {}
@@ -60,13 +63,14 @@ struct ActionConfig: Codable, Equatable {
                                                             forKey: .customTransformations) ?? []
         self.actionHotkeys = try c.decodeIfPresent([String: ActionHotkey].self,
                                                     forKey: .actionHotkeys) ?? [:]
+        self.seedAIVersion = try c.decodeIfPresent(Int.self, forKey: .seedAIVersion) ?? 0
         self.preferences = try c.decodeIfPresent(ActionConfigPreferences.self,
                                                  forKey: .preferences) ?? ActionConfigPreferences()
     }
 
     private enum CodingKeys: String, CodingKey {
         case version, enabledFlags, customAI, customTitles, actionOrder,
-             customTransformations, actionHotkeys, preferences
+             customTransformations, actionHotkeys, seedAIVersion, preferences
     }
 
     static func load() -> ActionConfig {
