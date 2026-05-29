@@ -178,7 +178,7 @@ always navigate the filtered set; `esc` clears the filter without closing.
 
 ### #A9 — Stream AI responses token-by-token into HUD preview pane
 
-**Status:** planned. UX upgrade for slow AI actions.
+**Status:** planned. Next major UX upgrade after 0.13.0 ships.
 **Touches:** `AIProvider.swift` protocol (new streaming entry point),
 provider concrete classes (Anthropic / OpenAI-compatible / Gemini SSE),
 `HUD.swift` (preview pane that accumulates partial tokens), `main.swift`
@@ -191,6 +191,17 @@ stream the response: switch `AIProvider.run` to an async sequence
 preview pane append tokens as they arrive, and surface the partial text
 exactly like the final result would look. Result: the user sees the
 translation / summary materialize live, no opaque wait.
+**Why this matters for real users:** offline-tolerant workflows. People
+work on planes, trains, hotel Wi-Fi, conference networks — connections
+drop, slow down, and occasionally come back. Without streaming, a
+flaky link means staring at a spinner for 20+ seconds and either
+getting the whole answer or nothing. With streaming the user sees
+content materializing token by token, and if the link cuts at 60%
+they've still got 60% of the translation visible in the preview pane
+to read, copy, or send to ⌥⌘Space chain. The provider-elapsed badge
+already in the preview pane stays valuable as a heartbeat — combined
+with visible token flow it makes the difference between "is this
+hung?" and "this is working, just slow".
 **Requirements:**
 - Add `func stream(prompt:input:) -> AsyncThrowingStream<String, Error>`
   next to the existing `run(...)`. Default implementation: call `run`,
@@ -244,6 +255,196 @@ recovered via `git log --follow BACKLOG.md` and inspected with
 `git show <commit>:BACKLOG.md`. The early revisions are bilingual and
 include verbose technical reasoning per "Правка"; this current revision is
 the curated, English-only working document.
+
+### 0.13.0 — Fancy text, image polish, HUD super-powers
+
+A heavily user-driven cycle. The action surface grew by 25 entries
+covering Unicode pseudo-fonts, Cyrillic transliteration, and ASCII art;
+the HUD gained two foundational shortcuts (in-HUD clip accumulator with
+a green carrier, and ⌥⌘Space chain-preview) that turn the HUD into a
+miniature workspace instead of a one-shot picker; image actions stopped
+showing stale previews; the Welcome screen tightened up and now does
+its own visual demo of Fancy Unicode as a marketing line.
+
+**Action surface — Fancy text and friends**
+
+- 22 Unicode pseudo-font actions covering the full Math Alphanumerics
+  block plus enclosed / fullwidth / small-caps / upside-down: Bold,
+  Italic, Bold Italic, Script, Bold Script, Fraktur, Bold Fraktur,
+  Double-struck, Sans, Sans Bold, Sans Italic, Sans Bold Italic,
+  Monospace, Fullwidth, Small Caps, Circled, Filled Circled, Squared,
+  Filled Squared, Upside Down, and Plain ASCII (the reverse pass that
+  strips any styled Unicode back to plain Latin via NFKC + a custom
+  reverse map for upside-down / small-caps). Titles use the styled
+  glyph itself as the prefix so each action shows what it produces:
+  "𝐀 Bold", "𝒜 Script", "𝔄 Fraktur", "𝒜 → ABC Plain ASCII". All
+  applicable to plain `.text` only — decorative glyphs don't belong
+  in code, URLs, or markdown where exact characters matter. Curated
+  on by default; one engine (`TransformationEngine.unicodeStyle`),
+  one style picker in the editor with live samples per option.
+- "Unicode Fancy" — standalone Rich Text action that walks rich-text
+  runs and renders bold runs as Unicode Bold (𝐁𝐨𝐥𝐝), italic as
+  Italic (𝐼𝑡𝑎𝑙𝑖𝑐), bold-italic as 𝑩𝒐𝒍𝒅 𝑰𝒕𝒂𝒍𝒊𝒄, monospace runs as
+  𝙼𝚘𝚗𝚘𝚜𝚙𝚊𝚌𝚎. Result is plain text that preserves emphasis in
+  platforms with no rich-text formatting (Twitter / X, Telegram bios,
+  LinkedIn captions, Discord profile descriptions). Only applies to
+  `.richText` so it never clutters plain-text HUD chip rows.
+- "К → K Cyrillic transliteration" with auto-detected script variant.
+  Heuristic by marker letters: ћ ђ ј љ њ џ ѓ ќ ѕ → Serbian / Macedonian
+  (Gaj's Latin: ж→ž, ч→č, ш→š, х→h, ц→c, plus the script-specific
+  letters); ъ without ы/э/ё → Bulgarian (Streamlined 2009: щ→sht,
+  ъ→a, ь→y); є ї ґ → Ukrainian extensions; ў → Belarusian; default
+  Russian digraphs (zh, ch, sh, kh, ts, shch). Preserves word case by
+  scanning the nearest Cyrillic neighbour — "Привет" → "Privet",
+  "ПРИЩУР" → "PRISHCHUR" (not "PRIShchUR"). Chains beautifully into
+  the Fancy Unicode actions: paste Cyrillic name → transliterate →
+  ⌥⌘Space → "𝐀 Bold" → styled Latin output.
+- "ASCII art" — local tonal-density renderer for small images.
+  Rasterizes the source to a 100-column grayscale grid, applies a
+  brightness threshold so light backgrounds (white, mint, beige) become
+  whitespace instead of a sea of dots, maps the remaining range to a
+  density gradient (" .:-=+*#%@" with the lightest slot reserved for
+  background), then auto-crops to the bounding box of non-space cells.
+  Tight result that frames the subject. Chains nicely with "Wrap in
+  code block" via ⌥⌘Space for Discord / GitHub posting. No AI required.
+
+**HUD super-powers**
+
+- In-HUD clip accumulator on ⌥⌘S, redesigned to the "walking carrier"
+  model. First press anchors the focused clip and paints it green
+  (distinct from the standard accent-blue focus highlight). The user
+  can then navigate up / down without dropping the accumulator (consumed
+  rows skip automatically). Pressing ⌥⌘S on a *different* clip folds
+  the previous carrier into `consumed` (visually removed from the list)
+  and the newly focused clip becomes the new carrier showing the
+  merged text right in its own row. Pressing ⌥⌘S on the same green
+  carrier toggles the accumulator off — consumed rows reappear, green
+  vanishes, preview reverts. Commit pastes the merged text; close /
+  Esc discards.
+- ⌥⌘Space — promote current preview to a new history clip placed
+  one row above the focused position. Enables chained transformations
+  without leaving the HUD: pick clip → apply action → ⌥⌘Space →
+  result becomes a real history item → apply another action → ⌥⌘Space.
+  Skips silently when no `.preview` outcome is available (e.g. AI still
+  loading); preserves image metadata so image-chain workflows (resize →
+  grayscale → strip metadata) don't lose pixel dimensions.
+- Backspace honours the accumulator. Deleting a clip while a merge
+  is active now correctly shifts `consumed` indices and decrements
+  `anchorIndex` so the green carrier stays on the same logical row.
+  Deleting the carrier itself drops the entire accumulator (no clean
+  way to re-anchor). Cursor repositions onto the next visible row,
+  skipping any consumed rows that would otherwise feel like a stuck
+  cursor.
+- HUD footer key legend now lists `S merge` and `␣ chain` alongside
+  the existing navigation / delete / paste / esc / zoom hints. Hints
+  use bare keys because the modifiers are either implicitly held
+  (Gesture Mode: ⌥⌘V is the open-gesture), or absent altogether
+  (Limited Mode: the HUD has no text-input context, so bare letters
+  read as commands). Limited Mode local key monitor accepts both bare
+  S and ⌥⌘S, bare Space and ⌥⌘Space — covers muscle memory either way.
+- Removed the "tap" badge from the HUD header (next to the close-X).
+  It was the internal `HotkeyEngineKind` raw value surfaced as a tiny
+  monospace chip — dev-jargon that read like "tab" at the rendering
+  size. Mode is already conveyed by the footer's `release` vs `⏎`
+  paste hint, so the badge had no remaining purpose.
+
+**Image actions**
+
+- "Grayscale", "Invert", "Rotate", "Resize", "Compress JPEG", "Strip
+  metadata" — all previously displayed the *pre*-transformation image
+  in the HUD preview pane. Root cause: `saveImage(_:originalItem:)`
+  uses `var copy = originalItem` which preserves the source UUID; the
+  HUD's `ImagePreview` view keyed `.id(item.id)` and SwiftUI saw the
+  transformed item as the same view it had already rendered, so it
+  reused the cached `Image(nsImage:)` and the new PNG file was never
+  loaded. Fixed by extending the SwiftUI identity key to include
+  `previewImageRel` (which always changes per transformation result).
+- "Rotate right (90° CW)" and "Rotate left (90° CCW)" — added the
+  left rotation as a peer to the existing right rotation. Both share
+  a `rotateImage(_:radians:)` primitive that translates the CIImage
+  extent back to (0, 0) before rasterizing, so the saved PNG is tight
+  to the rotated content with no transparent border. Both curated.
+  Title clarified: "Rotate 90° CW" → "Rotate right (90° CW)".
+
+**Multi-monitor**
+
+- Both the main HUD and the ProgressHUD mini-window now position
+  themselves relative to the mouse cursor's screen instead of
+  `NSScreen.main`. `NSScreen.main` returns "screen with the focused
+  key window", which is fine in Gesture Mode (DrPaste never grabs
+  focus) but can land on the wrong display in Limited Mode after
+  `NSApp.activate(ignoringOtherApps:)`. The cursor's screen is the
+  most reliable signal for "where the user is actually working right
+  now".
+- ProgressHUD positions ~30 pt above the cursor, centered horizontally,
+  clamped to the active screen's visible frame with an 8 pt margin.
+  Keeps the spinner inside the user's visual focus area so they don't
+  have to glance across the display to confirm the hotkey fired. Main
+  HUD continues to center on the cursor's screen (it's too large for
+  cursor-relative placement to make sense).
+
+**Welcome screen polish**
+
+- "Key features" and "Hotkeys" sections rebuilt with SwiftUI Grid for
+  consistent column alignment. Emoji icons (📋✨🛠⌨🖼🌐) had ragged
+  widths that pulled the text column out of line; replaced with cleanly
+  sized SF Symbols in a fixed-width icon column.
+- New "Fancy Unicode" feature row that demonstrates itself: the row
+  text reads "𝐅𝐚𝐧𝐜𝐲 𝐔𝐧𝐢𝐜𝐨𝐝𝐞 — paste 𝑩𝒐𝒍𝒅, 𝐼𝑡𝑎𝑙𝑖𝑐, 𝒮𝒸𝓇𝒾𝓅𝓉
+  anywhere (Twitter, Telegram, LinkedIn)" using the actual Unicode
+  pseudo-fonts the action produces. Marketing line that visually
+  proves the feature on the welcome screen itself.
+- Hotkey grid limited strictly to the four system-level shortcuts
+  (⌥⌘V, ⌥⌘C, ⌥⌘X, ⌥⌘S) plus the user's custom action hotkeys. HUD-
+  internal shortcuts (S, ␣, ↑↓, ←→, ⌫, ⌘+/-) live in the HUD footer
+  where they have context. The welcome window now respects the
+  "system hotkeys here, HUD hotkeys there" boundary.
+- Custom action hotkey rows use uniform 64 pt key badges with light
+  borders so combinations of different glyph widths align in the same
+  column.
+
+**Migrations**
+
+- Existing 0.12.0 installs had 22 `builtin.font_*` descriptors with
+  "Font: <Style>" titles and `applicableTypes = [text, markdown, code]`.
+  Seed version bumped to 4; new launch runs `rebrandFancyTextIfNeeded`
+  which: replaces titles that still match the old factory default with
+  the new stylized-glyph prefix; narrows applicableTypes from the
+  legacy seeded set to `[text]` only if it's still the exact legacy
+  set (so any user customization survives); deletes the
+  `builtin.font_regional_indicator` entry outright (boxed regional-
+  indicator letters were unreadable as a curated default). User-set
+  custom titles and hotkeys are preserved across the rebrand.
+- `BuiltinActionIcons.iconName(for:)` now returns `textformat` for
+  any `builtin.font_*` id via a hasPrefix check at the top of the
+  function. Avoids 22 case-by-case mappings; the engine icon is
+  uniform across the fancy-text family.
+
+**Reliability fixes**
+
+- ⌥⌘Space chain-preview was rejecting every transformed outcome.
+  Root cause: `makeTextItem(_:from:)` copies the source ClipboardItem
+  with the same UUID, and the original guard rejected any preview
+  whose `id` matched the focused item. So every transformation
+  preview hit the "no change, no-op" failure beep. Fixed by removing
+  the UUID-equality guard — the promoted clip gets a fresh `UUID()`
+  at insertion time so duplicates are impossible by construction.
+- Limited Mode `S` / `Space` bare-key handling correctly masks
+  `event.modifierFlags` with `.deviceIndependentFlagsMask` before
+  checking for "no modifiers held", avoiding stray device-level
+  flags that would otherwise prevent the bare-key path from firing.
+
+**Internal naming and renames**
+
+- "Rich → Unicode style" (the standalone Rich Text action) renamed
+  to "Unicode Fancy" to match the marketing line used on the Welcome
+  screen and the popular term users actually search for. Action ID
+  unchanged (`builtin.rich_to_unicode_style`) so existing hotkeys
+  and enabled flags carry over.
+- HUD accumulator data model documented as a "walking carrier" with
+  `consumed: Set<Int>`, `anchorIndex: Int`, `text: String`. Previous
+  indices-array model from the original 0.12.0 implementation was
+  replaced wholesale per the user's UX redesign.
 
 ### 0.12.0 — Internal alpha: editable built-ins, design philosophy, polish
 
