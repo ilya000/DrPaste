@@ -34,6 +34,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     /// in flight. Owned by AppDelegate so it can be invalidated when the HUD
     /// closes or the user navigates between actions before the response arrives.
     private var aiTickTimer: Timer?
+    /// Outstanding AI streaming task — kept so we can explicitly cancel it
+    /// when the user navigates to a different action mid-stream or closes
+    /// the HUD. Cancellation propagates to the underlying URLSession via
+    /// the provider's `continuation.onTermination` hook, closing the
+    /// connection promptly and stopping token usage from running away.
+    private var aiStreamingTask: Task<Void, Never>?
     private var lastAXTrusted: Bool = false
     private var localKeyMonitor: Any?
     private var savedFrontmostApp: NSRunningApplication?
@@ -890,6 +896,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     private func closeHUD() {
         removeLocalKeyMonitor()
         stopAITickTimer()
+        // Cancel any in-flight AI streaming. Cancellation cascades through
+        // the AsyncThrowingStream continuation's onTermination hook into
+        // the underlying URLSession data task, dropping the connection and
+        // stopping further token billing.
+        aiStreamingTask?.cancel()
+        aiStreamingTask = nil
         hudState.aiInflight = nil
         hudState.accumulator = nil
         hudPanel?.orderOut(nil)
@@ -956,6 +968,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             return
         }
 
+        // Cancel any prior AI streaming task whose preview is now stale —
+        // the user moved on, no reason to keep burning provider tokens.
+        aiStreamingTask?.cancel()
+        aiStreamingTask = nil
+
         if action.isLocal {
             Task { @MainActor in
                 let outcome = await action.apply(item: item, context: ctx)
@@ -974,8 +991,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             hudState.aiInflight = makeAIInflight(for: action)
             hudState.aiElapsed = 0
             startAITickTimer()
-            Task {
-                let outcome = await action.apply(item: item, context: ctx)
+            // Stream the response. The `onPartial` closure runs on the
+            // main actor for each accumulated chunk; the first chunk
+            // flips `isPreviewLoading` off so the user sees content
+            // appear in place of the spinner. `previewToken` guards
+            // against stale chunks landing after the user navigated to
+            // a different action.
+            aiStreamingTask = Task {
+                let outcome = await action.applyStreaming(
+                    item: item,
+                    context: ctx,
+                    onPartial: { [weak self] partial in
+                        guard let self = self else { return }
+                        if myToken == self.previewToken {
+                            self.hudState.outcome = .preview(partial)
+                            self.hudState.isPreviewLoading = false
+                        }
+                    }
+                )
                 await MainActor.run {
                     if myToken == self.previewToken {
                         self.hudState.outcome = outcome

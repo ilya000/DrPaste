@@ -56,21 +56,35 @@ notarizes. Future contributors should not need Xcode.
 
 **Release-day checklist (do not skip):**
 
-- Default `APIKeyStorage.fallbackOnly` back to `false` for shipped builds
-  (currently `false` already, but the per-user toggle in Settings → AI may
-  have been flipped on by developers running unsigned `swift run`). Surface
-  a migration path so users who have keys in the fallback file get moved
-  back into Keychain on first signed launch: detect the fallback file at
-  startup, prompt "Move N API keys from local file into Keychain?", on
-  accept call `APIKeyStorage.save(...)` for each (which now hits Keychain
-  cleanly thanks to the stable code signature), then delete the file. On
-  decline, leave the toggle on for that install.
-- Remove the "API key storage" section from Settings → AI **only after**
-  the signed-build migration path is in place. Until then the toggle stays
-  visible so power users still on unsigned builds keep their escape hatch.
-- Re-evaluate whether iCloud Keychain sync (`kSecAttrSynchronizable`)
-  should be on by default for cloud provider keys (depends on App Sandbox
-  state and entitlements — see #A3).
+- **Re-enable Keychain code paths in `APIKeyStorage.swift`.** In 0.14.0
+  every call to `save`, `load`, `remove` was hardwired to route through
+  the plain-JSON fallback file because unsigned builds were prompting
+  for the login password on every rebuild (Keychain ACL is bound to
+  the code signature, which changes per build). The original Keychain
+  code is preserved verbatim as block comments inside each function,
+  prefixed with `/* ORIGINAL KEYCHAIN CODE — restore in #A1 ... */`.
+  Restoring is mechanical: remove the comment markers, delete the
+  temporary `return saveFallback(...)` / `return loadFallback(...)` /
+  `return true` early returns, flip `fallbackOnly` back to reading
+  `UserDefaults.standard.bool(forKey: fallbackOnlyDefaultsKey)`, and
+  delete the `_ = enabled` no-op in `setFallbackOnly`.
+- **Migrate JSON-file keys into Keychain on first signed launch.**
+  Detect `~/Library/Application Support/DrPaste/provider-keys-fallback.json`
+  at startup, prompt "Move N API keys from local file into Keychain?",
+  on accept call `APIKeyStorage.save(...)` for each (which now hits
+  Keychain cleanly thanks to the stable code signature), then delete
+  the file. On decline, leave the file in place and keep
+  `fallbackOnly` toggleable for the install.
+- **Restore the Settings → AI key-storage section.** In 0.14.0
+  `keyStorageSection` was hidden behind `keyStorageDisabledNotice` in
+  `SettingsWindow.swift`. Restore by un-commenting the
+  `keyStorageSection` line and removing `keyStorageDisabledNotice`
+  along with its single call site. The toggle reactivates the moment
+  `fallbackOnly`'s getter and setter touch UserDefaults again, so no
+  further UI work is required.
+- **Re-evaluate iCloud Keychain sync.** Decide whether
+  `kSecAttrSynchronizable` should be on by default for cloud provider
+  keys (depends on App Sandbox state and entitlements — see #A3).
 
 ---
 
@@ -145,18 +159,157 @@ Xcode). Today the active provider is global.
 
 ---
 
-### #A6 — Drag-and-drop image into HUD
+### #A6 — Bidirectional drag-and-drop in HUD
 
-**Status:** planned. Onboarding affordance.
-**Touches:** `HudPanel`, `HUD.swift`.
-**Context:** Currently the only way to get content into DrPaste is to copy
-it. Letting users drop an image (file or in-pane data) onto the HUD would
-make image actions discoverable without a copy step.
-**Requirements:**
-- HudPanel registers as drag destination for image UTTypes
-- On drop, synthesize a ClipboardItem from the dropped data (image data →
-  image item, file URL → image item via NSImage(contentsOf:))
-- Visual feedback: drop zone overlay, cursor change
+**Status:** planned. Promotes the HUD from a passive picker to a real
+workspace surface — content flows in from Finder / browsers / Mail and
+out to folders / apps without the user ever pressing ⌘C.
+**Touches:** `HudPanel` (drag destination registration), `HUD.swift`
+(row drag source, drop overlay), new `ClipboardImporter.swift` for
+turning dropped payloads into `ClipboardItem`s, new `ClipboardExporter.swift`
+for the inverse — turning items into temp files with sensible names and
+extensions, `ClipboardModel.swift` (optional `originalFileName` field
+to round-trip file names across drop-in / drag-out).
+
+**Context:** Today the only way to get content into DrPaste is to copy
+it. The user mostly works inside the HUD while holding ⌥⌘V — letting
+them drag a file from Finder straight onto the open HUD (and having
+the HUD accept it even with the modifiers held, as a held gesture)
+removes the "copy first, then open HUD" step entirely. The inverse —
+dragging a clip out of the HUD into a folder — turns the HUD into a
+stash drawer for files-in-flight without needing to commit anything
+to the pasteboard.
+
+**Requirements — drag IN:**
+
+- `HudPanel.contentView` registers as a drag destination for
+  `kUTTypeFileURL`, `kUTTypeImage`, `kUTTypeRTF`, `kUTTypeRichTextFormat`,
+  `kUTTypeURL`, `kUTTypeText`, `kUTTypePlainText`, and the generic
+  `kUTTypeData` fallback.
+- Drops are accepted even when ⌥⌘ are currently held (NSDraggingDestination
+  delegate methods fire regardless of held modifiers, but verify on a
+  real machine — the EventTap in Gesture Mode could theoretically
+  intercept the drag flag-change events; if it does, allow-list those
+  events through.
+- During `draggingEntered` / `draggingUpdated`, render a soft accent
+  overlay on the HUD panel (rounded rect, 2 pt accent stroke, faint
+  accent tint) as a "drop here" affordance. Hide on `draggingExited` /
+  `performDragOperation`.
+- On `performDragOperation`, classify the payload via
+  `ClipboardImporter.importDrop(_:)`:
+  - File URLs: read the file's UTType, build a matching ClipboardItem.
+    Text files → `.text` (or `.markdown` / `.code` if classifier
+    recognises the extension), images → `.image` (PNG / JPEG / HEIC /
+    TIFF), PDFs → `.pdf`, anything else → `.files` with the URL
+    preserved in representations.
+  - Inline text drops (no file) → `.text` item.
+  - Inline image drops (e.g. drag from Safari) → `.image` item with
+    PNG re-encoded for storage.
+  - URL drops (e.g. drag a link from the browser address bar) → `.url`
+    item using the URL string as previewText.
+  - Rich text drops → `.richText` item with the RTF data preserved as
+    `public.rtf` representation.
+- Imported item lands at index 0 (top of history) via `store.add(_:)`,
+  same path as a fresh pasteboard observation. The HUD list refreshes
+  and the new item becomes the focused row so the user can immediately
+  apply an action.
+- Preserve the source file name when dragging in a single file: add
+  `originalFileName: String?` to ClipboardItem; populate it from the
+  dropped URL's `lastPathComponent`. Used later by drag-out to
+  round-trip the same name back into Finder.
+
+**Failure handling — drag IN:**
+
+- If the import fails after `performDragOperation` returns true
+  (file disappeared between `draggingEntered` and the actual read,
+  permission denied on the source path, corrupt image data,
+  unsupported binary format, OOM on a huge payload), the importer
+  returns nil and no ClipboardItem is added to the store.
+- User-visible response: play the `copyFailure` sound cue once,
+  remove the drop-zone overlay. No alert, no notification, no inline
+  failure banner inside the HUD. The HUD stays open with the existing
+  history intact so the user can try dragging something else or
+  switch to copy / paste.
+- Rationale: same as drag-out — convenience layer, not a primary
+  flow. If a file vanishes mid-drop the user's mental model already
+  expects the drop to "not work"; a modal would just add a click.
+- Error is NSLog-ed (`"DrPaste: drag-in import failed: <reason>"`)
+  so issues are diagnosable without disrupting the user.
+
+**Requirements — drag OUT:**
+
+- Each history row in the HUD is a drag source via SwiftUI's
+  `.onDrag { ... }`. The closure builds an `NSItemProvider` configured
+  for the appropriate UTType and a file representation that lazily
+  writes a temp file on demand (so the disk write only happens if the
+  user actually drops on a destination, not on every drag-attempt).
+- Format selection by semantic kind:
+
+  | Semantic | File extension | Notes |
+  |---|---|---|
+  | text | .txt | UTF-8, no BOM |
+  | url | .webloc | Standard macOS draggable URL |
+  | email | .txt | Just the address; .vcf is overkill (we don't store full contact) |
+  | json | .json | Pretty-printed (2-space indent) |
+  | code | .txt | Language unknown; shebang preserved when present |
+  | markdown | .md | Standard |
+  | table | .csv | Universal import; .tsv if source contained tabs |
+  | richText | .rtf | Native macOS, opens in TextEdit / Pages / Word with formatting intact |
+  | image | .png by default, .jpg when `imageFormat == "JPEG"` | Lossless default; preserve JPEG to avoid 10× size inflation |
+  | pdf | .pdf | Passthrough from representations |
+  | files (single) | original URL | No re-encode — Finder copies the file directly |
+  | files (multiple) | original URLs | Multi-item drag, each with its own URL |
+  | unknown | .bin, or .txt when previewText present | Catch-all |
+
+- Filename rules:
+  - Primary: `originalFileName` when present (round-trip from drag-in).
+  - Otherwise: first 40 characters of `previewText`, sanitized — replace
+    `/ \ : * ? " < > |` with `_`, collapse runs of whitespace into a
+    single `_`, trim trailing `.` and `_`.
+  - Fallback when previewText is empty: `<semantic>-<yyyyMMdd-HHmmss>`
+    (e.g. `image-20260530-143022.png`).
+  - For images carrying source-app metadata: `<sourceApp>-<timestamp>.png`.
+- Temp file location: `FileManager.default.temporaryDirectory`. Files
+  are written into a per-launch subfolder so the system cleans them up
+  naturally; never written into the user's clipboard storage directory.
+
+**Failure handling — drag OUT:**
+
+- If the destination refuses the drop (write-protected folder,
+  read-only volume, disk full, sandbox denial, network share lost),
+  the file-promise closure completes with `(nil, false, error)` and
+  the system informs the drag source that the drop failed.
+- User-visible response: play the `copyFailure` sound cue once, and
+  that's it. No alert, no notification banner, no inline notice, no
+  follow-up prompt. The HUD stays open with the clip intact so the
+  user can drop somewhere else.
+- Rationale: drag-out is a convenience layer over the existing
+  copy / paste flow, not a primary workflow. Modal interruption on a
+  drag failure would be more disruptive than the failure itself. The
+  user already has clear sensory feedback (the drag preview snaps back,
+  the failure sound fires) — that's enough to tell them "try a
+  different folder" without yanking their focus.
+- Error is still NSLog-ed for debugging (`"DrPaste: drag-out write
+  failed: <reason>"`) so issues are diagnosable without surfacing the
+  detail to the user.
+
+**Implementation notes:**
+
+- The NSItemProvider file-representation closure runs on a background
+  queue. It must be self-contained — no main-actor calls — and complete
+  with `(URL, coordinated: false, nil)` on success or `(nil, false, error)`
+  on failure.
+- For multi-representation items (e.g. an image clip that also carries
+  RTF), register multiple type identifiers on the same NSItemProvider so
+  the drag destination picks the best one (e.g. Finder picks the image
+  type, Mail picks RTF).
+- Drag preview: SwiftUI snapshots the row view by default, which is fine.
+  If row width is too wide (~260 pt) consider providing a custom
+  preview via `.itemProvider { ... }` with a smaller composite icon.
+- Drop overlay: a single overlay state on `HudState` (e.g.
+  `@Published var isReceivingDrop: Bool`) toggled by the
+  NSDraggingDestination methods, consumed by the HUD root view to
+  render the overlay.
 
 ---
 
@@ -178,7 +331,9 @@ always navigate the filtered set; `esc` clears the filter without closing.
 
 ### #A9 — Stream AI responses token-by-token into HUD preview pane
 
-**Status:** planned. Next major UX upgrade after 0.13.0 ships.
+**Status:** ✅ Shipped in 0.14.0. Entry kept for historical context;
+the implementation rationale (offline-on-a-plane use case) is the
+canonical record of why streaming is non-negotiable for this product.
 **Touches:** `AIProvider.swift` protocol (new streaming entry point),
 provider concrete classes (Anthropic / OpenAI-compatible / Gemini SSE),
 `HUD.swift` (preview pane that accumulates partial tokens), `main.swift`
@@ -255,6 +410,174 @@ recovered via `git log --follow BACKLOG.md` and inspected with
 `git show <commit>:BACKLOG.md`. The early revisions are bilingual and
 include verbose technical reasoning per "Правка"; this current revision is
 the curated, English-only working document.
+
+### 0.15.0 — Key storage hardening, provider onboarding polish
+
+Small, focused release. Two themes — both about the API-key surface
+inside Settings → AI. First: stop fighting Keychain in unsigned builds
+by routing every key to the JSON fallback unconditionally (the
+existing per-user toggle was a half-measure that still tripped the
+login-password prompt on launch). Second: cut the friction in setting
+up a new provider by linking directly to that provider's API-key
+console from inside the editor.
+
+**Keychain disabled across the board (#A1 will restore)**
+
+- `APIKeyStorage` now routes every save / load / remove to the plain
+  JSON fallback file at
+  `~/Library/Application Support/DrPaste/provider-keys-fallback.json`
+  (user-only `0o600` permissions). The Keychain code paths in all
+  three functions are preserved verbatim as `/* ORIGINAL KEYCHAIN
+  CODE — restore in #A1 ... */` block comments so the reactivation in
+  #A1 is mechanical: remove the comment markers and the temporary
+  early-return `return saveFallback(...)`, flip `fallbackOnly` back
+  to reading `UserDefaults`, and the original behaviour returns.
+- The "Skip macOS Keychain" toggle in Settings → AI is hidden behind
+  a short informational notice that tells the user where keys live
+  in 0.15.0 and confirms Keychain integration returns with the
+  signed `.app` distribution. The `keyStorageSection` view is left
+  defined in source so re-enabling is a one-line uncomment when #A1
+  ships.
+- Export / Import / Replace dialog copy revised to drop the "kept in
+  Keychain" framing that became misleading after this change. New
+  copy: "API keys are kept separately and never written to the
+  export" / "Your stored API keys are not touched".
+- #A1 release-day checklist updated with the concrete restoration
+  steps and a JSON-file → Keychain migration prompt for first signed
+  launch, so users who already have keys in the fallback file get
+  moved into Keychain cleanly without re-entering them.
+
+**Provider editor — "Get an API key" deep link**
+
+- Every cloud provider now exposes an `apiKeyDocsURL` that deep-links
+  to the provider's API-key console page (not their marketing front
+  door). Six providers covered:
+
+  | Provider | Link target |
+  |---|---|
+  | Anthropic | `console.anthropic.com/settings/keys` |
+  | OpenAI | `platform.openai.com/api-keys` |
+  | Gemini (Google) | `aistudio.google.com/app/apikey` |
+  | Grok (xAI) | `console.x.ai/team/default/api-keys` |
+  | Mistral | `console.mistral.ai/api-keys` |
+  | DeepSeek | `platform.deepseek.com/api_keys` |
+
+- `ProviderEditor` shows a `🔑 Get an API key from <Provider Name> →`
+  link directly under the API Key field, indented to match the other
+  form rows so the visual rhythm stays consistent. The link only
+  appears when `apiKeyDocsURL` is non-nil, so local providers
+  (Ollama, LM Studio, llama.cpp) and the kind-agnostic `.custom`
+  endpoint type don't show it — they don't need a key.
+- Rationale: most providers bury the API-key console several clicks
+  deep under "Documentation" or "Developer", with the term spelled
+  differently each time ("API keys" / "API keys & tokens" / "Access
+  keys"). The deep-link saves an internet search every time the user
+  configures a fresh provider.
+
+### 0.14.0 — Streaming AI responses
+
+AI actions now stream their responses into the HUD preview pane token
+by token instead of producing a single opaque wait followed by the full
+result. Same provider list as 0.13.0 (Anthropic, OpenAI, Grok, Mistral,
+DeepSeek, Gemini, Ollama, LM Studio, llama.cpp, custom OpenAI-compatible);
+every one of them now streams.
+
+**Why this matters**
+
+- Live-feedback: the user sees the translation / summary / rewrite
+  materialise word by word; the spinner disappears the moment the first
+  token arrives. No more staring at a 20-second wait wondering whether
+  the request is alive.
+- Offline-tolerant: when a flaky connection cuts mid-stream (planes,
+  trains, hotel Wi-Fi, conference networks), the partial content that
+  already arrived is surfaced as a recoverable preview. A 60 %
+  translation is still 60 % useful — the user can read it, copy it,
+  chain it into ⌥⌘Space, or commit it directly into the target app.
+
+**Protocol layer**
+
+- New `AIProvider.stream(prompt:input:) -> AsyncThrowingStream<String, Error>`
+  declared on the protocol with a default extension implementation
+  that wraps the existing `run()` and emits the whole result as a
+  single chunk. Providers without native streaming continue to work
+  unchanged; only the user-facing perception of "live" requires the
+  override.
+- New `ClipboardAction.applyStreaming(item:context:onPartial:)`
+  declared on the protocol so dynamic dispatch picks up the AIAction
+  override even when called through a `ClipboardAction` existential.
+  Default extension falls back to `apply()` and produces no
+  intermediate updates, so local transformations, image actions, and
+  files actions keep working identically.
+
+**Provider implementations**
+
+- `AnthropicProvider.stream` — `/v1/messages` with `stream: true`,
+  parses SSE `event: content_block_delta` lines for
+  `delta.text` chunks.
+- `OpenAICompatibleProvider.stream` — single implementation that
+  covers **eight providers** in one shot: OpenAI proper, xAI Grok,
+  Mistral, DeepSeek, Ollama (OpenAI mode), LM Studio, llama.cpp,
+  and the custom OpenAI-compatible endpoint type. SSE
+  `data: { choices: [{ delta: { content: "…" } }] }` with a
+  `data: [DONE]` terminator.
+- `GeminiProvider.stream` — `:streamGenerateContent?alt=sse`
+  variant, parses `data: { candidates: [{ content: { parts: […] } }] }`
+  per chunk. Multiple text parts per chunk are yielded sequentially
+  to keep the consumer logic simple.
+
+**HUD wiring**
+
+- `AIAction.applyStreaming` consumes the provider's stream, builds
+  partial ClipboardItems from the accumulating text, and surfaces
+  them to the HUD through an `@MainActor` `onPartial` callback. The
+  HUD's preview pane flips `isPreviewLoading` to false on the first
+  token (spinner gone) and refreshes the text on every subsequent
+  one. `previewToken` check inside `onPartial` discards updates from
+  any stream the user has navigated away from.
+- During streaming the partial preview is always rendered as plain
+  text (`semantic = .text`), even for rich-text-preserving actions.
+  This keeps SwiftUI's Text view re-render cheap at token rate.
+  The final outcome rehydrates rich text via
+  `RichTextHelpers.markdownToAttributedString` exactly once at
+  completion, so NSTextView reflow only happens at the end.
+- New `aiStreamingTask: Task<Void, Never>?` field on AppDelegate
+  tracks the outstanding stream. Cancellation fires in two places:
+  on every fresh `refreshPreview()` call (the user navigated to a
+  different action mid-stream — stale stream is no longer
+  meaningful) and inside `closeHUD()` (HUD closed). Cancellation
+  cascades through the `AsyncThrowingStream.continuation`'s
+  `onTermination` hook into the underlying URLSession data task,
+  closing the connection promptly so the provider stops billing for
+  unconsumed tokens.
+
+**Heartbeat and offline-tolerance**
+
+- Shared `StreamingHTTP.session` with
+  `timeoutIntervalForRequest = 15` gives every streaming request a
+  native heartbeat: URLSession resets the timer on every received
+  byte, so 15 idle seconds without any chunk throws
+  `URLError.timedOut`. Reused across all three concrete provider
+  implementations so the behavior is uniform — no per-provider
+  tuning, no Settings UI for the timeout (15 seconds is plenty for
+  any reasonable model).
+- `applyStreaming`'s catch path distinguishes the heartbeat-hit
+  ("Stream stalled — N chars received, no further data for 15 s")
+  from a hard mid-stream drop ("Stream interrupted — N chars received:
+  &lt;reason&gt;"). Both surface accumulated content as
+  `.failed(original: partialItem, …)` so the partial is still
+  available to copy, chain, or commit.
+- `timeoutIntervalForResource = 600` (10 minutes) is the hard ceiling
+  for any single response — generous but bounded against runaway
+  requests.
+
+**Compatibility**
+
+- Existing actions, providers, and tests all keep working. The only
+  visible change for non-streaming providers (none after this
+  release, but the architecture supports adding one without breaking
+  others) would be a single-chunk emission on completion via the
+  default extension — semantically identical to the current
+  experience.
 
 ### 0.13.0 — Fancy text, image polish, HUD super-powers
 

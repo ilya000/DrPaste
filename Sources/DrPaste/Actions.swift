@@ -52,6 +52,27 @@ protocol ClipboardAction {
     var isLocal: Bool { get }
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome
+    /// Streaming variant — emits intermediate `.preview` updates through
+    /// `onPartial` as content arrives, returning the final outcome at the
+    /// end. Declared in the protocol so dynamic dispatch picks up
+    /// `AIAction.applyStreaming` when called through a `ClipboardAction`
+    /// existential. The extension below provides a default fallback to
+    /// `apply()` for actions that don't override (every local transformation,
+    /// every image action keep working unchanged).
+    func applyStreaming(item: ClipboardItem,
+                        context: ContentContext,
+                        onPartial: @escaping @MainActor (ClipboardItem) -> Void)
+        async -> ApplyOutcome
+}
+
+extension ClipboardAction {
+    func applyStreaming(item: ClipboardItem,
+                        context: ContentContext,
+                        onPartial: @escaping @MainActor (ClipboardItem) -> Void)
+        async -> ApplyOutcome
+    {
+        await apply(item: item, context: context)
+    }
 }
 
 // MARK: - Identity

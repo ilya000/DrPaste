@@ -27,6 +27,37 @@ protocol AIProvider {
     /// True when the provider has everything it needs (API key for cloud, base URL for local).
     var isReady: Bool { get }
     func run(prompt: String, input: String) async throws -> String
+
+    /// Streaming variant — yields partial token deltas as the provider's
+    /// SSE / NDJSON response arrives. Default implementation falls back to
+    /// `run()` and emits the entire result in a single chunk, so providers
+    /// without streaming support keep working without code changes. SSE-
+    /// capable providers (Anthropic Messages, OpenAI chat/completions,
+    /// Gemini streamGenerateContent, Ollama, …) override this to yield
+    /// per-token deltas as they arrive.
+    func stream(prompt: String, input: String) -> AsyncThrowingStream<String, Error>
+}
+
+extension AIProvider {
+    /// Default fallback wrapping the non-streaming `run()` so any caller
+    /// can use the streaming entry point uniformly. Result is emitted as
+    /// one chunk on completion.
+    func stream(prompt: String, input: String) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let result = try await run(prompt: prompt, input: input)
+                    if !result.isEmpty { continuation.yield(result) }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
 }
 
 enum AIProviderError: Error {
@@ -144,6 +175,24 @@ enum ProviderKind: String, Codable, CaseIterable {
         case .deepseek:  return ["deepseek-chat", "deepseek-reasoner"]
         case .ollama:    return ["llama3.2:latest", "llama3.1:latest", "qwen2.5:latest", "deepseek-r1:latest"]
         default: return []
+        }
+    }
+
+    /// Direct deep-link to the provider's API key console / dashboard.
+    /// Surfaced as a "Get an API key" link in `ProviderEditor` so the user
+    /// doesn't have to dig through marketing pages to find the actual key
+    /// creation flow. Returns `nil` for local providers (Ollama, LM Studio,
+    /// llama.cpp) where no key is needed, and for `custom` which is
+    /// endpoint-agnostic.
+    var apiKeyDocsURL: URL? {
+        switch self {
+        case .anthropic: return URL(string: "https://console.anthropic.com/settings/keys")
+        case .openai:    return URL(string: "https://platform.openai.com/api-keys")
+        case .gemini:    return URL(string: "https://aistudio.google.com/app/apikey")
+        case .grok:      return URL(string: "https://console.x.ai/team/default/api-keys")
+        case .mistral:   return URL(string: "https://console.mistral.ai/api-keys")
+        case .deepseek:  return URL(string: "https://platform.deepseek.com/api_keys")
+        case .ollama, .lmstudio, .llamaCpp, .custom: return nil
         }
     }
 }
@@ -469,6 +518,87 @@ final class AnthropicProvider: AIProvider {
         let decoded = try JSONDecoder().decode(Resp.self, from: data)
         return decoded.content.compactMap { $0.type == "text" ? $0.text : nil }.joined()
     }
+
+    /// Anthropic Messages SSE streaming. Endpoint is the same `/v1/messages`
+    /// with `stream: true` added to the request body. The server emits
+    /// `event: <type>` + `data: <json>` line pairs; we only care about
+    /// `content_block_delta` whose JSON contains `delta.text` with a
+    /// partial token. Other event types (`message_start`, `ping`,
+    /// `message_stop`, etc.) are ignored. The HTTP connection closes when
+    /// the stream finishes — that's our signal to call `continuation.finish()`.
+    func stream(prompt: String, input: String) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    guard let apiKey = apiKey, !apiKey.isEmpty else {
+                        throw AIProviderError.missingAPIKey
+                    }
+                    let url = URL(string: "https://api.anthropic.com/v1/messages")!
+                    var req = URLRequest(url: url)
+                    req.httpMethod = "POST"
+                    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+                    req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+                    let body: [String: Any] = [
+                        "model": model,
+                        "max_tokens": 4096,
+                        "stream": true,
+                        "system": prompt,
+                        "messages": [["role": "user", "content": input]]
+                    ]
+                    req.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+                    let (bytes, resp): (URLSession.AsyncBytes, URLResponse)
+                    do {
+                        (bytes, resp) = try await StreamingHTTP.session.bytes(for: req)
+                    } catch {
+                        throw AIProviderError.networkUnreachable
+                    }
+                    guard let http = resp as? HTTPURLResponse else {
+                        throw AIProviderError.decode("no http response")
+                    }
+                    guard (200..<300).contains(http.statusCode) else {
+                        // Drain a bounded amount of the error body for a
+                        // human-readable message; the API's error JSON is
+                        // usually under 1 KB.
+                        var errBody = ""
+                        for try await line in bytes.lines {
+                            errBody += line + "\n"
+                            if errBody.count > 4096 { break }
+                        }
+                        throw AIProviderError.http(status: http.statusCode, body: errBody)
+                    }
+
+                    for try await line in bytes.lines {
+                        try Task.checkCancellation()
+                        // Skip blank lines and `event: ...` framing — only
+                        // `data: <json>` lines carry payload.
+                        guard line.hasPrefix("data: ") else { continue }
+                        let payload = String(line.dropFirst(6))
+                        guard let data = payload.data(using: .utf8),
+                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                        else { continue }
+                        // Expected: {"type":"content_block_delta","index":0,
+                        //            "delta":{"type":"text_delta","text":"..."}}
+                        if let type = json["type"] as? String,
+                           type == "content_block_delta",
+                           let delta = json["delta"] as? [String: Any],
+                           let text = delta["text"] as? String,
+                           !text.isEmpty {
+                            continuation.yield(text)
+                        }
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
 }
 
 // MARK: - OpenAICompatibleProvider
@@ -542,6 +672,86 @@ final class OpenAICompatibleProvider: AIProvider {
         let decoded = try JSONDecoder().decode(Resp.self, from: data)
         return decoded.choices.first?.message.content ?? ""
     }
+
+    /// OpenAI-compatible SSE streaming. One implementation handles every
+    /// provider on this protocol: OpenAI proper, xAI Grok, Mistral,
+    /// DeepSeek, Ollama (OpenAI mode), LM Studio, llama.cpp,
+    /// custom endpoints — they all share the chat/completions SSE format.
+    /// Server emits `data: { ... }` lines with a `[DONE]` terminator;
+    /// per-chunk JSON exposes `choices[0].delta.content` for the delta text.
+    func stream(prompt: String, input: String) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    if requiresAuth, (apiKey ?? "").isEmpty {
+                        throw AIProviderError.missingAPIKey
+                    }
+                    guard let url = URL(string: "\(baseURL)/chat/completions") else {
+                        throw AIProviderError.missingBaseURL
+                    }
+                    var req = URLRequest(url: url)
+                    req.httpMethod = "POST"
+                    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    if requiresAuth, let key = apiKey {
+                        req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+                    }
+                    let body: [String: Any] = [
+                        "model": model,
+                        "stream": true,
+                        "messages": [
+                            ["role": "system", "content": prompt],
+                            ["role": "user", "content": input]
+                        ]
+                    ]
+                    req.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+                    let (bytes, resp): (URLSession.AsyncBytes, URLResponse)
+                    do {
+                        (bytes, resp) = try await StreamingHTTP.session.bytes(for: req)
+                    } catch {
+                        throw AIProviderError.networkUnreachable
+                    }
+                    guard let http = resp as? HTTPURLResponse else {
+                        throw AIProviderError.decode("no http response")
+                    }
+                    guard (200..<300).contains(http.statusCode) else {
+                        var errBody = ""
+                        for try await line in bytes.lines {
+                            errBody += line + "\n"
+                            if errBody.count > 4096 { break }
+                        }
+                        throw AIProviderError.http(status: http.statusCode, body: errBody)
+                    }
+
+                    for try await line in bytes.lines {
+                        try Task.checkCancellation()
+                        guard line.hasPrefix("data: ") else { continue }
+                        let payload = String(line.dropFirst(6))
+                        // `[DONE]` is the OpenAI-style terminator.
+                        if payload == "[DONE]" { break }
+                        guard let data = payload.data(using: .utf8),
+                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                        else { continue }
+                        // Expected: {"choices":[{"delta":{"content":"..."},...}]}
+                        if let choices = json["choices"] as? [[String: Any]],
+                           let first = choices.first,
+                           let delta = first["delta"] as? [String: Any],
+                           let content = delta["content"] as? String,
+                           !content.isEmpty {
+                            continuation.yield(content)
+                        }
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
 }
 
 // MARK: - GeminiProvider
@@ -587,6 +797,105 @@ final class GeminiProvider: AIProvider {
         let decoded = try JSONDecoder().decode(Resp.self, from: data)
         return decoded.candidates.first?.content.parts.compactMap { $0.text }.joined() ?? ""
     }
+
+    /// Gemini SSE streaming via the `:streamGenerateContent?alt=sse`
+    /// variant. Server emits `data: <json>` lines where each JSON
+    /// contains zero or more candidates, each with a content block of
+    /// text parts. The stream closes when the response is complete —
+    /// no explicit terminator like OpenAI's `[DONE]`. Multiple text
+    /// parts within a single chunk are yielded sequentially so the
+    /// downstream accumulator stays simple.
+    func stream(prompt: String, input: String) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    guard let apiKey = apiKey, !apiKey.isEmpty else {
+                        throw AIProviderError.missingAPIKey
+                    }
+                    let urlString = "https://generativelanguage.googleapis.com/v1beta/models/\(model):streamGenerateContent?alt=sse&key=\(apiKey)"
+                    guard let url = URL(string: urlString) else {
+                        throw AIProviderError.missingBaseURL
+                    }
+                    var req = URLRequest(url: url)
+                    req.httpMethod = "POST"
+                    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    let body: [String: Any] = [
+                        "systemInstruction": ["parts": [["text": prompt]]],
+                        "contents": [["role": "user", "parts": [["text": input]]]]
+                    ]
+                    req.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+                    let (bytes, resp): (URLSession.AsyncBytes, URLResponse)
+                    do {
+                        (bytes, resp) = try await StreamingHTTP.session.bytes(for: req)
+                    } catch {
+                        throw AIProviderError.networkUnreachable
+                    }
+                    guard let http = resp as? HTTPURLResponse else {
+                        throw AIProviderError.decode("no http response")
+                    }
+                    guard (200..<300).contains(http.statusCode) else {
+                        var errBody = ""
+                        for try await line in bytes.lines {
+                            errBody += line + "\n"
+                            if errBody.count > 4096 { break }
+                        }
+                        throw AIProviderError.http(status: http.statusCode, body: errBody)
+                    }
+
+                    for try await line in bytes.lines {
+                        try Task.checkCancellation()
+                        guard line.hasPrefix("data: ") else { continue }
+                        let payload = String(line.dropFirst(6))
+                        guard let data = payload.data(using: .utf8),
+                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                        else { continue }
+                        // Expected: {"candidates":[{"content":{"parts":[{"text":"..."}],"role":"model"},...}]}
+                        if let candidates = json["candidates"] as? [[String: Any]],
+                           let first = candidates.first,
+                           let content = first["content"] as? [String: Any],
+                           let parts = content["parts"] as? [[String: Any]] {
+                            for part in parts {
+                                if let text = part["text"] as? String, !text.isEmpty {
+                                    continuation.yield(text)
+                                }
+                            }
+                        }
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
+// MARK: - Streaming session
+
+/// Shared URLSession used by every provider's streaming entry point.
+/// `timeoutIntervalForRequest = 15` gives a native heartbeat: the timer
+/// resets on every byte received, so if a provider stalls mid-stream
+/// (network drop, hung connection, model genuinely paused) URLSession
+/// throws `URLError.timedOut` after 15 idle seconds. The applyStreaming
+/// catch path surfaces any partial content as a `.failed` outcome with
+/// the partial text accessible, so the user can still copy / commit what
+/// arrived. 600s `timeoutIntervalForResource` is the hard ceiling for
+/// any single response (10 minutes — generous, but bounded).
+private enum StreamingHTTP {
+    static let session: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 600
+        // SSE responses are framed by newlines; no need to wait for the
+        // entire response before yielding bytes.
+        config.httpAdditionalHeaders = ["Accept-Encoding": "identity"]
+        return URLSession(configuration: config)
+    }()
 }
 
 // MARK: - HTTP helper
@@ -691,6 +1000,115 @@ struct AIAction: ClipboardAction {
             return NSAttributedString(string: item.previewText ?? "")
         }
         return attr
+    }
+
+    /// Streaming entry point — same logic flow as `apply()` but consumes
+    /// the provider's incremental stream and surfaces every accumulated
+    /// chunk through `onPartial`. The final ApplyOutcome is returned at
+    /// the end exactly like `apply()` would. Mid-stream failures with
+    /// non-empty content are surfaced as `.failed(original: partialItem,
+    /// reason: ..., recovery: nil)` so the user can still copy / commit
+    /// what arrived before the connection cut — critical for offline-
+    /// tolerant workflows where a 60% translation is still 60% useful.
+    func applyStreaming(item: ClipboardItem,
+                        context: ContentContext,
+                        onPartial: @escaping @MainActor (ClipboardItem) -> Void)
+        async -> ApplyOutcome
+    {
+        let provider: AIProvider? = await MainActor.run { resolveProvider() }
+        guard let provider = provider else {
+            return .failed(original: item,
+                          reason: "AI provider not configured. Add API key in Settings.",
+                          recovery: .openProvidersConfig)
+        }
+
+        // Same rich-text / markdown round-trip prep as the non-streaming
+        // path. During streaming we keep the partial preview as plain
+        // text (semantic = .text) so SwiftUI's text view updates cheaply
+        // at token rate; the final outcome rehydrates rich text via
+        // markdownToAttributedString once at the end, so NSTextView
+        // reflow only happens once.
+        let useRich = preserveRichFormatting && item.semantic == .richText
+        let inputText: String
+        let systemAddition: String
+        if useRich, let md = RichTextHelpers.attributedStringToMarkdown(loadAttr(item: item)) {
+            inputText = md
+            systemAddition = "\n\nThe input is in Markdown format. Preserve all Markdown markup exactly (bold **, italic *, links [text](url), code `inline`, code blocks ```, headings #, lists -/1.). Only modify the text content, never the markup."
+        } else {
+            inputText = item.previewText ?? ""
+            systemAddition = ""
+        }
+
+        var accumulated = ""
+        do {
+            for try await chunk in provider.stream(prompt: promptTemplate + systemAddition,
+                                                    input: inputText) {
+                accumulated += chunk
+                let partialItem = makeTextItem(accumulated, from: item)
+                await onPartial(partialItem)
+            }
+            // Final outcome — rich-text rehydration if the action asked for it.
+            if useRich,
+               let ns = RichTextHelpers.markdownToAttributedString(accumulated) {
+                return .preview(makeRichTextItem(ns, from: item))
+            }
+            return .preview(makeTextItem(accumulated, from: item))
+        } catch AIProviderError.missingAPIKey {
+            return .failed(original: item,
+                          reason: "AI provider not configured. Add API key in Settings.",
+                          recovery: .openProvidersConfig)
+        } catch AIProviderError.http(let status, _) {
+            return .failed(original: item,
+                          reason: "AI provider HTTP \(status). Check API key and model.",
+                          recovery: .openProvidersConfig)
+        } catch AIProviderError.networkUnreachable {
+            return .failed(original: item,
+                          reason: "Network unreachable. Check that the provider endpoint is online.",
+                          recovery: nil)
+        } catch is CancellationError {
+            // Cancellation is normal (user navigated away). Caller's
+            // previewToken check drops these updates anyway. Return the
+            // accumulated text so the path stays type-stable; the caller
+            // will discard it.
+            return .preview(makeTextItem(accumulated, from: item))
+        } catch {
+            // Mid-stream failure with partial content — surface it so the
+            // user can copy what arrived. This is the offline-on-a-plane
+            // use case: a flaky Wi-Fi gives us 60% of a translation, the
+            // connection cuts; user still has 60% in the preview pane to
+            // read, copy, or chain into ⌥⌘Space.
+            //
+            // URLError.timedOut is the heartbeat hit: StreamingHTTP.session
+            // has `timeoutIntervalForRequest = 15` so the connection
+            // throws timedOut if 15 idle seconds pass with no chunks.
+            // Distinguish it from a hard network drop so the user sees a
+            // helpful "stalled" message instead of just "timed out".
+            let isStall: Bool = {
+                if let urlErr = error as? URLError, urlErr.code == .timedOut { return true }
+                return false
+            }()
+            if !accumulated.isEmpty {
+                let reason: String
+                if isStall {
+                    reason = "Stream stalled (\(accumulated.count) chars received, no further data for 15 s)"
+                } else {
+                    reason = "Stream interrupted (\(accumulated.count) chars received): \(error.localizedDescription)"
+                }
+                return .failed(
+                    original: makeTextItem(accumulated, from: item),
+                    reason: reason,
+                    recovery: nil
+                )
+            }
+            if isStall {
+                return .failed(original: item,
+                              reason: "Stream stalled before any data arrived (no chunks for 15 s). Check connection.",
+                              recovery: nil)
+            }
+            return .failed(original: item,
+                          reason: "AI provider error: \(error.localizedDescription)",
+                          recovery: nil)
+        }
     }
 }
 

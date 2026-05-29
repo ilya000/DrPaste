@@ -146,7 +146,7 @@ struct GeneralTab: View {
                     Button("Replace from file…") { confirmReplace = true }
                     Spacer()
                 }
-                Text("Export saves your actions, hotkeys, and preferences to a JSON file. API keys are kept in Keychain and never written to the export.")
+                Text("Export saves your actions, hotkeys, and preferences to a JSON file. API keys are kept separately and never written to the export.")
                     .font(.caption).foregroundStyle(.secondary)
 
                 HStack(spacing: 10) {
@@ -186,7 +186,7 @@ struct GeneralTab: View {
             Button("Replace", role: .destructive) { importConfig(strategy: .replace) }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Your current actions, hotkeys, and preferences will be replaced with the contents of the selected file. API keys in Keychain are not touched.")
+            Text("Your current actions, hotkeys, and preferences will be replaced with the contents of the selected file. Your stored API keys are not touched.")
         }
         .confirmationDialog(
             "Reset DrPaste to factory defaults?",
@@ -343,14 +343,15 @@ struct AIProvidersTab: View {
 
             Divider()
 
-            // API key storage policy. Defaults to Keychain. The toggle exists
-            // because unsigned builds (current state of this project) trigger
-            // a Keychain login-password prompt on every launch — Keychain's
-            // ACL is tied to the binary's code signature and every rebuild
-            // changes the hash. Flipping to file storage moves keys to
-            // `~/Library/Application Support/DrPaste/provider-keys-fallback.json`
-            // with 0o600 perms. Same protection level as ~/.aws/credentials.
-            keyStorageSection
+            // TEMPORARY (#A1): Keychain is fully disabled in 0.14.0, so the
+            // user-controllable "Skip macOS Keychain" toggle has no remaining
+            // purpose — every key is in the JSON fallback file regardless.
+            // The section returns when #A1 ships a signed `.app`; the
+            // implementation below is preserved verbatim and ready to
+            // re-enable by uncommenting this single line.
+            //
+            // keyStorageSection
+            keyStorageDisabledNotice
         }
         .padding()
         .sheet(item: $editingProvider) { p in
@@ -394,6 +395,26 @@ struct AIProvidersTab: View {
     /// password prompt on every launch (typical for unsigned development
     /// builds — Keychain ACL is bound to the binary's code signature and
     /// every rebuild changes the hash).
+    /// Replacement for `keyStorageSection` while Keychain is disabled
+    /// (#A1). Tells the user where keys actually live in 0.14.0 so the
+    /// absence of the toggle doesn't read as a bug, and pins the
+    /// expectation that storage will move back into Keychain in a
+    /// future release.
+    @ViewBuilder
+    private var keyStorageDisabledNotice: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "lock.shield").foregroundStyle(.secondary)
+                Text("API key storage")
+                    .font(.subheadline)
+                Spacer()
+            }
+            Text("Keys are stored in ~/Library/Application Support/DrPaste/provider-keys-fallback.json with user-only file permissions (0o600). macOS Keychain integration is temporarily disabled and returns in a future release alongside the signed `.app` distribution.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     @ViewBuilder
     private var keyStorageSection: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -562,8 +583,26 @@ struct ProviderEditor: View {
                     }
                     .buttonStyle(.borderless)
                 }
+                // "Get an API key" deep-link to the provider's dashboard.
+                // Saves the user a Google search every time they need a key
+                // for a fresh provider — most providers bury this URL
+                // several clicks deep under "Documentation" or "Developers".
+                if let docsURL = provider.kind.apiKeyDocsURL {
+                    HStack {
+                        Spacer().frame(width: 110)
+                        Link(destination: docsURL) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "key.fill")
+                                    .font(.caption2)
+                                Text("Get an API key from \(provider.kind.displayName) →")
+                                    .font(.caption)
+                            }
+                        }
+                        Spacer()
+                    }
+                }
                 if APIKeyStorage.load(for: provider.id) != nil && apiKey.isEmpty {
-                    Text("A key is already saved in Keychain. Leave blank to keep it.")
+                    Text("A key is already saved. Leave blank to keep it.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
