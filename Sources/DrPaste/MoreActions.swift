@@ -177,8 +177,59 @@ struct PasteAsTextAction: ClipboardAction {
     }
 }
 
+// MARK: - Unicode Fancy (rich text → Unicode pseudo-font)
+
+/// Walks the rich-text runs and renders each run in the corresponding
+/// Unicode pseudo-font: bold runs become 𝐁𝐨𝐥𝐝, italic runs become 𝐼𝑡𝑎𝑙𝑖𝑐,
+/// bold-italic runs become 𝑩𝒐𝒍𝒅 𝑰𝒕𝒂𝒍𝒊𝒄, monospace runs become 𝙼𝚘𝚗𝚘.
+/// Output is plain text suitable for pasting into platforms that don't
+/// support rich-text formatting (Twitter / X, Telegram bios, LinkedIn
+/// captions, Discord profile descriptions, etc.). Letterforms outside
+/// ASCII A-Z / a-z / 0-9 pass through unchanged.
+struct RichTextToUnicodeStyledAction: ClipboardAction {
+    let id = "builtin.rich_to_unicode_style"
+    let title = "Unicode Fancy"
+    let isLocal = true
+    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
+        context.contains(.richText)
+    }
+    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
+        guard let rel = item.representations["public.rtf"],
+              let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
+              let attr = try? NSAttributedString(data: data,
+                                                  options: [.documentType: NSAttributedString.DocumentType.rtf],
+                                                  documentAttributes: nil) else {
+            return .failed(original: item, reason: "No RTF representation found", recovery: nil)
+        }
+        var result = ""
+        attr.enumerateAttributes(in: NSRange(location: 0, length: attr.length), options: []) { attrs, range, _ in
+            let substring = attr.attributedSubstring(from: range).string
+            let font = attrs[.font] as? NSFont
+            let traits = font?.fontDescriptor.symbolicTraits ?? []
+            let isBold = traits.contains(.bold)
+            let isItalic = traits.contains(.italic)
+            let isMono = traits.contains(.monoSpace)
+            let style: UnicodeFontStyle
+            if isMono              { style = .monospace }
+            else if isBold && isItalic { style = .boldItalic }
+            else if isBold         { style = .bold }
+            else if isItalic       { style = .italic }
+            else                   { style = .plain }
+            // .plain runs go through normalize() which is essentially a no-op
+            // for already-plain ASCII — keeps the body of the text legible.
+            if style == .plain {
+                result += substring
+            } else {
+                result += UnicodeStylizer.apply(to: substring, style: style)
+            }
+        }
+        return .preview(makeTextItem(result, from: item))
+    }
+}
+
 enum RichTextActionsPack {
     static var all: [ClipboardAction] {
-        [RichTextToMarkdownAction(), RichTextToHTMLAction(), RichTextToWikiAction(), PasteAsTextAction()]
+        [RichTextToMarkdownAction(), RichTextToHTMLAction(), RichTextToWikiAction(),
+         RichTextToUnicodeStyledAction(), PasteAsTextAction()]
     }
 }

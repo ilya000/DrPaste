@@ -30,10 +30,11 @@ enum CuratedDefaults {
         "builtin.word_count",
         "builtin.generate_qr",               // QR from URL.
 
-        // Rich text — all three (narrow category).
+        // Rich text — all four (narrow category).
         "builtin.rich_to_md",
         "builtin.rich_to_html",
         "builtin.rich_to_wiki",
+        "builtin.rich_to_unicode_style",
 
         // URL — core 3.
         "builtin.url_strip_tracking",
@@ -57,12 +58,15 @@ enum CuratedDefaults {
         "builtin.code_wrap",
         "builtin.tabs_to_spaces",
 
-        // Image — core 5.
+        // Image — core 8 (added ASCII art + Rotate left/right pair).
         "builtin.image_ocr",
         "builtin.image_decode_qr",
         "builtin.image_strip_metadata",
         "builtin.image_resize_1920",
         "builtin.image_grayscale",
+        "builtin.image_rotate",         // right (90° CW)
+        "builtin.image_rotate_left",    // left (90° CCW)
+        "builtin.image_ascii_art",
 
         // Files — core 4.
         "builtin.files_paths",
@@ -71,7 +75,36 @@ enum CuratedDefaults {
         "builtin.files_reveal",
 
         // Type Slowly (optional, useful for forms that block paste).
-        "builtin.type_slowly"
+        "builtin.type_slowly",
+
+        // Unicode pseudo-font family — "Font: <style>". All on by default per
+        // the marketing brief; user can disable individual styles in Settings.
+        "builtin.font_bold",
+        "builtin.font_italic",
+        "builtin.font_bold_italic",
+        "builtin.font_script",
+        "builtin.font_bold_script",
+        "builtin.font_fraktur",
+        "builtin.font_bold_fraktur",
+        "builtin.font_double_struck",
+        "builtin.font_sans",
+        "builtin.font_sans_bold",
+        "builtin.font_sans_italic",
+        "builtin.font_sans_bold_italic",
+        "builtin.font_monospace",
+        "builtin.font_fullwidth",
+        "builtin.font_small_caps",
+        "builtin.font_circled",
+        "builtin.font_filled_circled",
+        "builtin.font_squared",
+        "builtin.font_filled_squared",
+        "builtin.font_upside_down",
+        "builtin.font_plain",
+
+        // Cyrillic transliteration — small but high-utility helper for
+        // Russian / Ukrainian / Belarusian / Bulgarian / Serbian /
+        // Macedonian text needing romanization or Latin-only contexts.
+        "builtin.cyrillic_translit"
 
         // AI actions (ids beginning with "ai.") are managed separately by the
         // provider registry; their enabled state does not flow through this table.

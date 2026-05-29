@@ -30,6 +30,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     private var recentMenu: NSMenu!
     private var previewToken: Int = 0
     private var axTrustPollTimer: Timer?
+    /// Repeating timer that ticks `hudState.aiElapsed` while an AI request is
+    /// in flight. Owned by AppDelegate so it can be invalidated when the HUD
+    /// closes or the user navigates between actions before the response arrives.
+    private var aiTickTimer: Timer?
     private var lastAXTrusted: Bool = false
     private var localKeyMonitor: Any?
     private var savedFrontmostApp: NSRunningApplication?
@@ -386,24 +390,226 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         Task { @MainActor in self.hudState.adjustFontScale(change) }
     }
 
-    /// Backspace in the HUD deletes the focused item.
+    /// ⌥⌘S inside the HUD — drive the "walking" clip accumulator.
+    ///
+    ///   • First press:   the focused clip becomes the carrier (anchor) and
+    ///                    changes color. Nothing else moves.
+    ///   • Press on the same green anchor again: TOGGLE OFF — drops the
+    ///                    whole accumulator (consumed rows reappear in the
+    ///                    list, preview returns to the focused clip's
+    ///                    normal content). Symmetric on/off so a user who
+    ///                    started the merge by mistake can cancel with the
+    ///                    same key, no Esc needed.
+    ///   • Subsequent press on a *different* clip: the previous carrier is
+    ///                    folded into `consumed` (disappears from the list),
+    ///                    and the newly focused clip becomes the new carrier
+    ///                    showing the merged text right in its row.
+    ///
+    /// Navigation between presses (↑/↓) does NOT clear the accumulator —
+    /// only HUD close / cancel / commit / toggle-off do.
+    nonisolated func hotkeyEngineDidRequestHUDAccumulate() {
+        Task { @MainActor in self.extendAccumulator() }
+    }
+
+    @MainActor
+    private func extendAccumulator() {
+        guard !hudState.items.isEmpty else { return }
+        let focused = hudState.itemIndex
+        guard focused >= 0, focused < hudState.items.count else { return }
+
+        // First press — start carrier on the focused item, no merge yet.
+        guard var acc = hudState.accumulator else {
+            let text = hudState.items[focused].previewText ?? ""
+            hudState.accumulator = HUDClipAccumulator(
+                consumed: [],
+                anchorIndex: focused,
+                text: text
+            )
+            // Preview = the (single-clip) accumulator content so it reflects
+            // exactly what would be pasted on commit.
+            hudState.outcome = .preview(accumulatorItem(text: text))
+            return
+        }
+
+        // Same anchor — toggle the accumulator off. Drops the entire merge
+        // state so the HUD returns to normal mode: consumed rows become
+        // visible again, green highlight disappears, preview reverts to the
+        // focused clip's standard content.
+        if acc.anchorIndex == focused {
+            hudState.accumulator = nil
+            refreshPreview()
+            updateContentMeta()
+            return
+        }
+        // Defensive: focused row should never be consumed (it's hidden), but
+        // guard anyway to keep the model consistent.
+        if acc.consumed.contains(focused) { return }
+
+        // Fold the previous carrier into consumed, absorb its text into the
+        // merge, and adopt the focused row as the new carrier.
+        let appended = hudState.items[focused].previewText ?? ""
+        acc.consumed.insert(acc.anchorIndex)
+        acc.text = acc.text + "\n" + appended
+        acc.anchorIndex = focused
+        hudState.accumulator = acc
+        hudState.outcome = .preview(accumulatorItem(text: acc.text))
+    }
+
+    /// ⌥⌘Space inside the HUD — promote the current action preview into a
+    /// new history clip placed just above the focused row, so the user can
+    /// immediately apply additional actions to the transformed content
+    /// without closing and reopening the HUD.
+    nonisolated func hotkeyEngineDidRequestPromotePreview() {
+        Task { @MainActor in self.promotePreviewToHistory() }
+    }
+
+    @MainActor
+    private func promotePreviewToHistory() {
+        guard !hudState.items.isEmpty else { return }
+        // Async (AI) actions in flight: their outcome is a stale placeholder
+        // — skip rather than promote the unfinished content. Single failure
+        // beep so the user knows the press was registered but the AI is
+        // still working.
+        if hudState.isPreviewLoading {
+            SoundFeedback.play(.copyFailure)
+            return
+        }
+        // Only .preview is meaningful to promote. For .failed / .sideEffect
+        // / .alternativeCommit / nil, silently no-op — these aren't usable
+        // content to chain further actions on, and a failure beep would feel
+        // noisy when the user is just exploring actions.
+        guard let outcome = hudState.outcome,
+              case .preview(let previewItem) = outcome else {
+            return
+        }
+        // NOTE: makeTextItem() reuses the source ClipboardItem's UUID, so we
+        // CANNOT gate on previewItem.id == focusedItem.id (that gate rejected
+        // every transformation, leaving only the no-op "Paste as is" path,
+        // which itself was rejected). The promoted clip's freshness is
+        // guaranteed by the UUID() below.
+        let insertionIdx = max(0, hudState.itemIndex)
+        // Re-stamp with a fresh UUID and createdAt so duplicates in history
+        // remain individually addressable and ordered.
+        let promoted = ClipboardItem(
+            id: UUID(),
+            semantic: previewItem.semantic,
+            createdAt: Date(),
+            representations: previewItem.representations,
+            typesOrdered: previewItem.typesOrdered,
+            previewText: previewItem.previewText,
+            previewImageRel: previewItem.previewImageRel,
+            originalImageWidth: previewItem.originalImageWidth,
+            originalImageHeight: previewItem.originalImageHeight,
+            originalImageFileSize: previewItem.originalImageFileSize,
+            imageFormat: previewItem.imageFormat,
+            sourceBundleID: previewItem.sourceBundleID,
+            sourceAppName: "DrPaste · chain",
+            sourceWindowTitle: previewItem.sourceWindowTitle,
+            tags: previewItem.tags
+        )
+        store.insertSnapshot(promoted, at: insertionIdx)
+        hudState.items = store.items
+        // Focus the newly inserted clip — the old focused row has shifted
+        // down by one, so insertionIdx is the new clip's position.
+        hudState.itemIndex = insertionIdx
+        hudState.actionIndex = 0
+        // Promote breaks the merge model — any in-flight accumulator must
+        // be dropped because its indices are now off by one.
+        hudState.accumulator = nil
+        recomputeActions()
+        refreshPreview()
+        updateContentMeta()
+        SoundFeedback.play(.copySuccess)
+    }
+
+    /// Wraps an accumulated text blob in a temporary ClipboardItem so the
+    /// existing preview-rendering machinery (which expects a ClipboardItem)
+    /// can render it without special-casing. Item is never written to history
+    /// or store — purely transient for the preview pane.
+    @MainActor
+    private func accumulatorItem(text: String) -> ClipboardItem {
+        ClipboardItem(
+            id: UUID(),
+            semantic: .text,
+            createdAt: Date(),
+            representations: [:],
+            typesOrdered: [],
+            previewText: text,
+            previewImageRel: nil,
+            sourceBundleID: nil,
+            sourceAppName: "DrPaste · accumulator",
+            sourceWindowTitle: nil,
+            tags: []
+        )
+    }
+
+    /// Backspace in the HUD deletes the focused item. Has two extra
+    /// responsibilities when an accumulator is active:
+    ///   1. Shift `accumulator.consumed` and `accumulator.anchorIndex` to
+    ///      match the new (shrunk) items array. Without this every
+    ///      deletion at or below a consumed/anchor index silently corrupts
+    ///      the merge — the indices stay numeric but point to the wrong
+    ///      rows, so the wrong items hide/highlight on the next tick.
+    ///   2. After picking the next focus position, skip past any consumed
+    ///      rows so the cursor never lands on something invisible.
     nonisolated func hotkeyEngineDidDeleteFocused() {
         Task { @MainActor in
             guard let item = self.hudState.currentItem else { return }
             let position = self.hudState.itemIndex
             self.store.remove(item.id)
+            self.adjustAccumulatorForDeletion(at: position)
             self.hudState.items = self.store.items
             SoundFeedback.play(.delete)
             if self.hudState.items.isEmpty {
                 self.closeHUD()
                 return
             }
-            self.hudState.itemIndex = min(position, self.hudState.items.count - 1)
+            // Pick the next focus position. Prefer the row that visually
+            // slides up to fill the deleted slot; fall back to the previous
+            // row if forward is past end. Skip consumed rows in either
+            // direction so the cursor never lands on something invisible.
+            let consumed = self.hudState.accumulator?.consumed ?? []
+            var target = min(position, self.hudState.items.count - 1)
+            while target < self.hudState.items.count && consumed.contains(target) {
+                target += 1
+            }
+            if target >= self.hudState.items.count {
+                target = min(position, self.hudState.items.count - 1)
+                while target > 0 && consumed.contains(target) {
+                    target -= 1
+                }
+            }
+            self.hudState.itemIndex = max(0, target)
             self.hudState.actionIndex = 0
             self.recomputeActions()
             self.refreshPreview()
             self.updateContentMeta()
         }
+    }
+
+    /// Shifts `accumulator.consumed` and `accumulator.anchorIndex` to keep
+    /// pointing at the same logical clips after one item has been removed
+    /// from `store.items`. Dropping the accumulator entirely is the only
+    /// safe option when the anchor itself was the deleted item — the
+    /// carrier is gone, the merged text would no longer match a visible
+    /// row, and there's no clean way to "re-anchor" it.
+    @MainActor
+    private func adjustAccumulatorForDeletion(at deletedIdx: Int) {
+        guard var acc = self.hudState.accumulator else { return }
+        if acc.anchorIndex == deletedIdx {
+            self.hudState.accumulator = nil
+            return
+        }
+        var newConsumed = Set<Int>()
+        for ci in acc.consumed {
+            if ci == deletedIdx { continue }
+            newConsumed.insert(ci > deletedIdx ? ci - 1 : ci)
+        }
+        acc.consumed = newConsumed
+        if acc.anchorIndex > deletedIdx {
+            acc.anchorIndex -= 1
+        }
+        self.hudState.accumulator = acc
     }
 
     /// Quick Copy via ⌥⌘C. Success/failure is detected by diffing pasteboard.changeCount.
@@ -419,9 +625,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
               frontmost.bundleIdentifier != Bundle.main.bundleIdentifier else {
             return
         }
-        // Show progress HUD immediately — actions like AI calls or image transforms may take a noticeable time.
+        // Show progress HUD immediately — actions like AI calls or image
+        // transforms may take a noticeable time. For AI actions also pass the
+        // AIInflight descriptor so the mini-window can surface provider · model
+        // · elapsed seconds, matching the main HUD preview pane treatment.
         let actionTitle = registry.displayTitle(forActionID: action.id, defaultTitle: action.title)
-        ProgressHUDController.shared.show(label: actionTitle)
+        let aiInflight = makeAIInflight(for: action)
+        ProgressHUDController.shared.show(label: actionTitle, inflight: aiInflight)
         // Snapshot the current pasteboard as a ClipboardItem.
         let pb = NSPasteboard.general
         let textValue = pb.string(forType: .string) ?? ""
@@ -679,19 +889,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
 
     private func closeHUD() {
         removeLocalKeyMonitor()
+        stopAITickTimer()
+        hudState.aiInflight = nil
+        hudState.accumulator = nil
         hudPanel?.orderOut(nil)
     }
 
     private func navigate(_ direction: NavDirection) {
+        // Navigation does NOT drop the accumulator — the user is scouting
+        // candidate clips to fold in. Consumed indices are skipped so the
+        // visible list and the cursor stay in sync.
+        let consumed = hudState.accumulator?.consumed ?? []
         switch direction {
         case .up:
-            if hudState.itemIndex > 0 {
-                hudState.itemIndex -= 1; hudState.actionIndex = 0
+            var t = hudState.itemIndex - 1
+            while t >= 0 && consumed.contains(t) { t -= 1 }
+            if t >= 0 {
+                hudState.itemIndex = t; hudState.actionIndex = 0
                 recomputeActions(); refreshPreview(); updateContentMeta()
             }
         case .down:
-            if hudState.itemIndex + 1 < hudState.items.count {
-                hudState.itemIndex += 1; hudState.actionIndex = 0
+            var t = hudState.itemIndex + 1
+            while t < hudState.items.count && consumed.contains(t) { t += 1 }
+            if t < hudState.items.count {
+                hudState.itemIndex = t; hudState.actionIndex = 0
                 recomputeActions(); refreshPreview(); updateContentMeta()
             }
         case .left:
@@ -719,6 +940,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         let myToken = previewToken
         let ctx = ContextDetector.detect(item)
 
+        // Clear any prior AI-inflight state from a previous focused action
+        // (the timer would otherwise keep ticking against a now-irrelevant
+        // start time). The AI branch below sets it again for actual AI calls.
+        stopAITickTimer()
+        hudState.aiInflight = nil
+        hudState.aiElapsed = 0
+
+        // When a clip accumulator is active the preview always shows the
+        // accumulated text — the focused action's transformation is bypassed
+        // because the user is in "merge clips" mode, not "transform clip" mode.
+        if let acc = hudState.accumulator {
+            hudState.isPreviewLoading = false
+            hudState.outcome = .preview(accumulatorItem(text: acc.text))
+            return
+        }
+
         if action.isLocal {
             Task { @MainActor in
                 let outcome = await action.apply(item: item, context: ctx)
@@ -730,16 +967,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         } else {
             hudState.isPreviewLoading = true
             hudState.outcome = .preview(item)
+            // Surface provider / model / action title so the HUD preview pane
+            // can show "Anthropic claude-sonnet-4-6 · 4.2s" instead of an
+            // opaque spinner. Tick timer drives `aiElapsed` until the call
+            // returns.
+            hudState.aiInflight = makeAIInflight(for: action)
+            hudState.aiElapsed = 0
+            startAITickTimer()
             Task {
                 let outcome = await action.apply(item: item, context: ctx)
                 await MainActor.run {
                     if myToken == self.previewToken {
                         self.hudState.outcome = outcome
                         self.hudState.isPreviewLoading = false
+                        self.stopAITickTimer()
+                        self.hudState.aiInflight = nil
                     }
                 }
             }
         }
+    }
+
+    /// Resolves the AI provider / model labels for the in-progress action so
+    /// the HUD preview pane can render a transparent "thinking…" panel.
+    /// Returns nil for non-AI actions (which take the generic "processing…"
+    /// path), or for AI actions whose configured provider is missing.
+    @MainActor
+    private func makeAIInflight(for action: ClipboardAction) -> AIInflight? {
+        guard let ai = action as? AIAction else { return nil }
+        // Resolve providerID: nil/empty means "follow the default".
+        let resolvedID: String? = {
+            if let id = ai.providerID, !id.isEmpty { return id }
+            return AIProviderRegistry.shared.config.defaultProviderID
+        }()
+        guard let id = resolvedID, !id.isEmpty,
+              let cp = AIProviderRegistry.shared.config.providers.first(where: { $0.id == id })
+        else {
+            return AIInflight(providerLabel: "AI",
+                              modelName: "unknown",
+                              actionTitle: action.title,
+                              startedAt: Date())
+        }
+        return AIInflight(providerLabel: cp.displayName,
+                          modelName: cp.model,
+                          actionTitle: action.title,
+                          startedAt: Date())
+    }
+
+    /// Starts a 10 Hz timer that refreshes `hudState.aiElapsed` while an AI
+    /// request is in flight. Stopped via `stopAITickTimer()` when the response
+    /// arrives, the user navigates away, or the HUD closes.
+    @MainActor
+    private func startAITickTimer() {
+        stopAITickTimer()
+        let started = hudState.aiInflight?.startedAt ?? Date()
+        aiTickTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.hudState.aiElapsed = Date().timeIntervalSince(started)
+            }
+        }
+    }
+
+    @MainActor
+    private func stopAITickTimer() {
+        aiTickTimer?.invalidate()
+        aiTickTimer = nil
     }
 
     private func showPanel() {
@@ -792,7 +1085,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     }
 
     private func centerOnActiveScreen(_ panel: NSPanel) {
-        let screen = NSScreen.main ?? NSScreen.screens.first
+        // Multi-monitor: pick the screen containing the mouse cursor, not
+        // NSScreen.main. NSScreen.main returns "screen with the focused
+        // key window" — fine in Gesture Mode (DrPaste never grabs focus),
+        // but in Limited Mode we call NSApp.activate(ignoringOtherApps:),
+        // which can shift NSScreen.main onto whichever screen our prior
+        // window was on. The cursor's screen is a stable proxy for "where
+        // the user is actually working right now" across both modes.
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) })
+                    ?? NSScreen.main
+                    ?? NSScreen.screens.first
         guard let s = screen else { return }
         let visible = s.visibleFrame
         let size = panel.frame.size
@@ -847,6 +1150,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                     self.hudState.adjustFontScale(.reset); return nil
                 default: break
                 }
+            }
+            // S / ⌥⌘S in HUD — drive the walking clip accumulator.
+            // In Limited Mode the user isn't holding any modifiers (the HUD
+            // is a regular key window), so bare S works in addition to the
+            // chord version — keeps the footer legend in sync with Gesture
+            // Mode and removes one mental step for "merge this row".
+            let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let isBare = mods.intersection([.command, .option, .control, .shift]).isEmpty
+            let isOptCmd = mods.contains(.command) && mods.contains(.option)
+            if kc == kVK_ANSI_S, (isBare || isOptCmd) {
+                self.hotkeyEngineDidRequestHUDAccumulate()
+                return nil
+            }
+            // Space / ⌥⌘Space in HUD — promote the current preview to a
+            // new history clip above the focused row, enabling chained
+            // transformations without exiting the HUD.
+            if kc == kVK_Space, (isBare || isOptCmd) {
+                self.hotkeyEngineDidRequestPromotePreview()
+                return nil
             }
             return event
         }

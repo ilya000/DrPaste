@@ -29,6 +29,26 @@ final class HudState: ObservableObject {
     /// Most recent action.apply result — drives the preview and the inline failure notice.
     @Published var outcome: ApplyOutcome? = nil
     @Published var isPreviewLoading: Bool = false
+    /// When an async (AI) action is mid-flight, this carries the provider
+    /// name, model identifier, action title, and start instant so the HUD can
+    /// surface a transparent "Anthropic claude-sonnet-4-6 · 4.2s" status line
+    /// instead of an opaque spinner. Reset to nil when the outcome arrives.
+    @Published var aiInflight: AIInflight? = nil
+    /// Tick counter driven by AppDelegate's timer while `aiInflight != nil`.
+    /// Surfaced as the elapsed-time label so the user sees that the request
+    /// is still progressing (rather than wondering whether DrPaste is frozen).
+    @Published var aiElapsed: TimeInterval = 0
+
+    /// In-HUD clip accumulator. First ⌥⌘S on the focused clip starts the
+    /// accumulator — that clip becomes the "carrier" (anchor) and changes
+    /// color. The user can then navigate up/down (↑/↓) to any other clip
+    /// without losing the accumulator, and a subsequent ⌥⌘S on a different
+    /// clip causes the previous carrier to disappear from the visible list
+    /// (folded into `consumed`) and the newly focused row to become the new
+    /// carrier showing the merged text — the accumulator "walks" through the
+    /// list, eating clips as it goes. Commit pastes the merged text; close /
+    /// cancel discards. Session-local and never persisted.
+    @Published var accumulator: HUDClipAccumulator? = nil
     @Published var mode: HudMode = .gesture
     @Published var engineLabel: String = ""
 
@@ -64,6 +84,39 @@ final class HudState: ObservableObject {
         guard actionIndex >= 0, actionIndex < actions.count else { return nil }
         return actions[actionIndex]
     }
+}
+
+// MARK: - HUD clip accumulator
+
+/// Session-local "walking" accumulator for the in-HUD ⌥⌘S "merge clips"
+/// feature. Model:
+///   • `anchorIndex` — the row currently carrying the merged text. Rendered
+///     with a distinctive (green) highlight so the user can see at a glance
+///     which row is "the accumulator".
+///   • `consumed`   — set of indices that have been folded into the merge
+///     and are visually hidden from the HUD list (the rows literally
+///     disappear so it's obvious they're inside the carrier now).
+///   • `text`       — concatenated text (joined with "\n"), in absorption
+///     order: the original anchor, then each subsequent target in the order
+///     the user pressed ⌥⌘S on them.
+struct HUDClipAccumulator: Equatable {
+    var consumed: Set<Int>
+    var anchorIndex: Int
+    var text: String
+}
+
+// MARK: - AI inflight descriptor
+
+/// Snapshot of an in-progress AI action. Surfaced in the HUD preview pane
+/// while the network call is outstanding so the user sees which provider is
+/// being talked to, on which model, and how long the wait has been so far.
+/// Provider / model are resolved at request-start time from the AIAction's
+/// configured providerID (or the user's default if the action follows it).
+struct AIInflight: Equatable {
+    let providerLabel: String   // e.g. "Anthropic"
+    let modelName: String       // e.g. "claude-sonnet-4-6"
+    let actionTitle: String     // e.g. "Translate to Spanish"
+    let startedAt: Date
 }
 
 // MARK: - Panel
@@ -201,13 +254,11 @@ struct HudView: View {
                     .help(absoluteTimestampLabel ?? "")
             }
             Spacer()
-            if !state.engineLabel.isEmpty {
-                Text(state.engineLabel)
-                    .font(.system(size: sz(9), design: .monospaced))
-                    .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(Capsule().fill(Color.primary.opacity(0.08)))
-                    .foregroundStyle(.secondary)
-            }
+            // The hotkey-engine kind ("tap" / "carbon") used to be surfaced
+            // here as a small badge — that was internal dev info and was
+            // confusing to users (especially "tap", which looked like "tab"
+            // at small monospace sizes). Mode is already conveyed by the
+            // footer key hint (release vs ⏎), so the badge has been removed.
             Button(action: onClose) {
                 Image(systemName: "xmark.circle.fill")
                     .symbolRenderingMode(.hierarchical)
@@ -311,22 +362,36 @@ struct HudView: View {
 
     // MARK: history
 
+    /// Item indices that should appear in the list. Rows folded into the
+    /// accumulator (consumed) are hidden so the carrier "swallowing" them is
+    /// visible to the user.
+    private var visibleIndices: [Int] {
+        let consumed = state.accumulator?.consumed ?? []
+        if consumed.isEmpty { return Array(state.items.indices) }
+        return state.items.indices.filter { !consumed.contains($0) }
+    }
+
     private var visibleRowCount: Int {
         let base = 11
         let v = Int(round(Double(base) / state.fontScale))
-        return max(5, min(v, state.items.count))
+        return max(5, min(v, visibleIndices.count))
     }
 
+    /// Window expressed as positions INTO `visibleIndices` (not raw item
+    /// indices) so consumed rows never count toward the row budget.
     private var visibleWindow: (start: Int, end: Int) {
-        let n = state.items.count
+        let vis = visibleIndices
+        let n = vis.count
+        guard n > 0 else { return (0, 0) }
         let count = visibleRowCount
-        var start = state.itemIndex - count / 2
-        start = max(0, min(start, n - count))
+        let focusedPos = vis.firstIndex(of: state.itemIndex) ?? 0
+        var start = focusedPos - count / 2
+        start = max(0, min(start, max(0, n - count)))
         let end = min(start + count, n)
         return (start, end)
     }
     private var hasItemsAbove: Bool { visibleWindow.start > 0 }
-    private var hasItemsBelow: Bool { visibleWindow.end < state.items.count }
+    private var hasItemsBelow: Bool { visibleWindow.end < visibleIndices.count }
 
     private var historyColumn: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -339,7 +404,9 @@ struct HudView: View {
             }
 
             let win = visibleWindow
-            ForEach(win.start..<win.end, id: \.self) { idx in
+            let vis = visibleIndices
+            ForEach(win.start..<win.end, id: \.self) { pos in
+                let idx = vis[pos]
                 itemRow(state.items[idx], absoluteIdx: idx)
             }
 
@@ -357,21 +424,49 @@ struct HudView: View {
     private func itemRow(_ item: ClipboardItem, absoluteIdx: Int) -> some View {
         let isActive = absoluteIdx == state.itemIndex
         let isHover = hoveredItemID == item.id
+        // Accumulator carrier: the row currently holding the merged text.
+        // Rendered in a distinctive green tint so it's never confused with
+        // the standard accent-blue focus highlight.
+        let isAnchor = state.accumulator?.anchorIndex == absoluteIdx
+        let displayedText: String = {
+            if isAnchor, let acc = state.accumulator {
+                // Show merged content directly in the row so the user sees
+                // the accumulator literally "live" at this position.
+                return acc.text
+                    .prefix(80)
+                    .replacingOccurrences(of: "\n", with: " ⏎ ")
+            }
+            return snippet(item)
+        }()
+        let rowIcon: String = isAnchor ? "rectangle.stack.fill" : item.semantic.sfSymbol
+        let anchorColor = Color.green
         return HStack(spacing: 6) {
-            Image(systemName: item.semantic.sfSymbol).frame(width: sz(14))
-            Text(snippet(item))
+            Image(systemName: rowIcon)
+                .foregroundStyle(isAnchor ? anchorColor : .primary)
+                .frame(width: sz(14))
+            Text(displayedText)
                 .lineLimit(1)
-                .font(.system(size: sz(12)))
-                .foregroundStyle(isActive ? .primary : .secondary)
+                .font(.system(size: sz(12), weight: isAnchor ? .semibold : .regular))
+                .foregroundStyle(isActive || isAnchor ? .primary : .secondary)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 8).padding(.vertical, 4)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(isActive
-                      ? accent.opacity(0.22)
-                      : (isHover ? Color.primary.opacity(0.06) : Color.clear))
+                .fill(isAnchor
+                      ? anchorColor.opacity(isActive ? 0.32 : 0.22)
+                      : (isActive
+                         ? accent.opacity(0.22)
+                         : (isHover ? Color.primary.opacity(0.06) : Color.clear)))
         )
+        .overlay(alignment: .leading) {
+            if isAnchor {
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(anchorColor)
+                    .frame(width: 3)
+                    .padding(.vertical, 2)
+            }
+        }
         .contentShape(Rectangle())
         .onHover { hovering in hoveredItemID = hovering ? item.id : nil }
         .onTapGesture(count: 2) {
@@ -412,17 +507,46 @@ struct HudView: View {
             }
 
             if state.isPreviewLoading {
-                VStack {
-                    ProgressView().controlSize(.small)
-                    Text("processing…")
-                        .font(.system(size: sz(11)))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                aiLoadingPanel
             } else {
                 previewContent
             }
         }
+    }
+
+    /// Loading state shown while an async (AI) action is awaiting a network
+    /// response. Surfaces provider name, model, and elapsed seconds so the
+    /// user can tell the wait is progress, not a hang. Falls back to the
+    /// generic "processing…" copy for any non-AI async path.
+    @ViewBuilder
+    private var aiLoadingPanel: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                if let inflight = state.aiInflight {
+                    Text("\(inflight.providerLabel) · \(inflight.modelName)")
+                        .font(.system(size: sz(11), weight: .medium, design: .monospaced))
+                        .foregroundStyle(.primary)
+                } else {
+                    Text("processing…")
+                        .font(.system(size: sz(11)))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if state.aiInflight != nil {
+                Text(String(format: "thinking… %.1fs", state.aiElapsed))
+                    .font(.system(size: sz(10), design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8).padding(.vertical, 2)
+                    .background(Capsule().fill(Color.primary.opacity(0.06)))
+            }
+            if let inflight = state.aiInflight {
+                Text("Action: \(inflight.actionTitle)")
+                    .font(.system(size: sz(10)))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     @ViewBuilder
@@ -680,18 +804,28 @@ struct HudView: View {
     // MARK: footer
 
     private var footer: some View {
-        HStack(spacing: 12) {
+        // S / Space work bare in BOTH modes: Gesture Mode has ⌥⌘ implicitly
+        // held (releasing dismisses the HUD); Limited Mode accepts bare key
+        // presses too because the HUD has no text-input scope and bare keys
+        // remove a friction step. Zoom stays mode-aware — in Gesture Mode
+        // ⌘ is already held so +/- alone works; in Limited Mode ⌘+/- is the
+        // expected macOS convention.
+        let gesture = state.mode == .gesture
+        let zoomKey = gesture ? "+/-" : "⌘+/-"
+        return HStack(spacing: 12) {
             keyHint("↑↓", "history")
             keyHint("←→", "actions")
             keyHint("⌫", "delete")
-            if state.mode == .gesture {
+            keyHint("S", "merge")
+            keyHint("␣", "chain")
+            if gesture {
                 keyHint("release", "paste")
             } else {
                 keyHint("⏎", "paste")
             }
             keyHint("esc", "cancel")
             Spacer()
-            keyHint("⌘+/-", "zoom \(Int(state.fontScale * 100))%")
+            keyHint(zoomKey, "zoom \(Int(state.fontScale * 100))%")
         }
         .font(.system(size: sz(10), design: .monospaced))
         .foregroundStyle(.secondary)
@@ -847,7 +981,17 @@ struct ImagePreview: View {
                         RoundedRectangle(cornerRadius: 8)
                             .stroke(Color.primary.opacity(0.1), lineWidth: 0.5)
                     )
-                    .id(item.id)   // force re-render when item changes
+                    // Force a fresh view identity whenever the underlying
+                    // PNG file changes — image transformations (grayscale,
+                    // invert, rotate, resize, compress, strip metadata)
+                    // reuse the source item's UUID via saveImage's
+                    // `var copy = originalItem`. If we keyed on `item.id`
+                    // alone, SwiftUI would treat the transformed result as
+                    // the same view as the original and skip the re-render,
+                    // leaving the user staring at the pre-transformation
+                    // image. previewImageRel is the unique PNG filename the
+                    // transformation wrote, so it changes per result.
+                    .id("\(item.id)-\(item.previewImageRel ?? "")")
             } else {
                 Image(systemName: "photo")
                     .font(.system(size: 36))

@@ -62,6 +62,15 @@ protocol HotkeyEngineDelegate: AnyObject {
     func hotkeyEngineDidQuickCopy()
     func hotkeyEngineDidDeleteFocused()
     func hotkeyEngineDidAppendCopy()
+    /// Fired when ⌥⌘S is pressed while the HUD is active. Drives the in-HUD
+    /// clip accumulator (different code path from the outside-HUD Append Copy
+    /// which goes through hotkeyEngineDidAppendCopy).
+    func hotkeyEngineDidRequestHUDAccumulate()
+    /// Fired when ⌥⌘Space is pressed while the HUD is active. Promotes the
+    /// current action preview into a new history clip inserted just above
+    /// the focused row, so the user can chain further transformations
+    /// without leaving the HUD.
+    func hotkeyEngineDidRequestPromotePreview()
 }
 
 /// Marker for our own synthetic CGEvents — filters recursion when the engine
@@ -182,6 +191,17 @@ final class EventTapEngine: HotkeyEngine {
                     return nil
                 case kVK_ANSI_0, kVK_ANSI_Keypad0:
                     DispatchQueue.main.async { self.delegate?.hotkeyEngineDidRequestFontChange(.reset) }
+                    return nil
+                case Int(config.appendKeyCode) where modsPresent:
+                    // ⌥⌘S while the HUD is up — fire the in-HUD accumulator
+                    // path, distinct from the outside-HUD Append Copy flow.
+                    DispatchQueue.main.async { self.delegate?.hotkeyEngineDidRequestHUDAccumulate() }
+                    return nil
+                case kVK_Space where modsPresent:
+                    // ⌥⌘Space — promote the current preview to a new clip in
+                    // history (above the focused row) so the user can chain
+                    // additional actions on the transformed content.
+                    DispatchQueue.main.async { self.delegate?.hotkeyEngineDidRequestPromotePreview() }
                     return nil
                 default:
                     return nil

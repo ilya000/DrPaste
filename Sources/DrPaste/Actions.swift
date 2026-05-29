@@ -184,8 +184,86 @@ final class ActionRegistry: ObservableObject {
 
         if seedAI(into: &copy)             { changed = true }
         if seedTransformations(into: &copy) { changed = true }
+        if rebrandFancyTextIfNeeded(into: &copy) { changed = true }
 
         if changed { config = copy }
+    }
+
+    /// One-shot migration that brings existing installs (which already have
+    /// `builtin.font_*` descriptors seeded under the old "Font: <Style>"
+    /// naming) onto the new stylized-letter title scheme, restricts them
+    /// to .text only, and removes the regional-indicator entry. Runs once
+    /// per install, gated by `seedTransformationVersion >= 3`. Skips any
+    /// descriptor whose title the user has manually edited (anything not
+    /// starting with "Font: ").
+    private func rebrandFancyTextIfNeeded(into copy: inout ActionConfig) -> Bool {
+        // Mapping from id → (old-default-title-prefix, new-title) for the
+        // descriptors that need rebrand. The "old prefix" is checked so we
+        // only overwrite titles still on the factory default.
+        let oldTitles: [String: String] = [
+            "builtin.font_bold":               "Font: Bold",
+            "builtin.font_italic":             "Font: Italic",
+            "builtin.font_bold_italic":        "Font: Bold Italic",
+            "builtin.font_script":             "Font: Script",
+            "builtin.font_bold_script":        "Font: Bold Script",
+            "builtin.font_fraktur":            "Font: Fraktur",
+            "builtin.font_bold_fraktur":       "Font: Bold Fraktur",
+            "builtin.font_double_struck":      "Font: Double-struck",
+            "builtin.font_sans":               "Font: Sans-serif",
+            "builtin.font_sans_bold":          "Font: Sans-serif Bold",
+            "builtin.font_sans_italic":        "Font: Sans-serif Italic",
+            "builtin.font_sans_bold_italic":   "Font: Sans-serif Bold Italic",
+            "builtin.font_monospace":          "Font: Monospace",
+            "builtin.font_fullwidth":          "Font: Fullwidth",
+            "builtin.font_small_caps":         "Font: Small Caps",
+            "builtin.font_circled":            "Font: Circled",
+            "builtin.font_filled_circled":     "Font: Filled Circled",
+            "builtin.font_squared":            "Font: Squared",
+            "builtin.font_filled_squared":     "Font: Filled Squared",
+            "builtin.font_upside_down":        "Font: Upside Down",
+            "builtin.font_plain":              "Font: Plain (strip styling)"
+        ]
+        // Look up new title + applicableTypes directly from the seed table
+        // so we have a single source of truth.
+        let newDefaults: [String: CustomTransformationDescriptor] = {
+            var dict: [String: CustomTransformationDescriptor] = [:]
+            for desc in DefaultTransformationSeed.defaults() {
+                dict[desc.id] = desc
+            }
+            return dict
+        }()
+
+        var didChange = false
+        // Drop the discontinued regional-indicator entry — readability of the
+        // boxed-letter glyphs is too poor to keep as a curated default.
+        if let idx = copy.customTransformations.firstIndex(where: { $0.id == "builtin.font_regional_indicator" }) {
+            copy.customTransformations.remove(at: idx)
+            copy.actionHotkeys.removeValue(forKey: "builtin.font_regional_indicator")
+            didChange = true
+        }
+        for idx in copy.customTransformations.indices {
+            let d = copy.customTransformations[idx]
+            guard oldTitles[d.id] != nil, let new = newDefaults[d.id] else { continue }
+            // Rebrand title only if the user hasn't edited it (still matches the
+            // factory default for this version of the seed).
+            if d.title == oldTitles[d.id] {
+                copy.customTransformations[idx].title = new.title
+                didChange = true
+            }
+            // Narrow applicableTypes from the legacy seeded set [text,
+            // markdown, code] to [text] only — these decorative styles
+            // don't belong in code / URLs / markdown. ONLY runs when the
+            // descriptor still has the exact legacy set so that any user
+            // customization (added or removed types after the migration)
+            // is preserved across subsequent launches.
+            let legacy: Set<String> = ["text", "markdown", "code"]
+            let currentTypes = Set(copy.customTransformations[idx].applicableTypes)
+            if currentTypes == legacy {
+                copy.customTransformations[idx].applicableTypes = ["text"]
+                didChange = true
+            }
+        }
+        return didChange
     }
 
     /// Returns true if any AI seeds were appended or migrated.

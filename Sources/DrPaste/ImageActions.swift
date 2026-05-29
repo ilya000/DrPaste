@@ -267,24 +267,64 @@ struct ImageInvertAction: ClipboardAction {
     }
 }
 
-struct ImageRotate90Action: ClipboardAction {
-    let id = "builtin.image_rotate"; let title = "Rotate 90° CW"; let isLocal = true
+/// Shared rotation primitive used by both directions. Positive angle =
+/// counter-clockwise (Core Graphics convention). After transform, the image
+/// extent has a non-zero origin; we translate it back to (0, 0) before
+/// rasterizing so the saved PNG has a tight bounding box and no spurious
+/// transparent border.
+private func rotateImage(_ item: ClipboardItem, radians: CGFloat) -> ClipboardItem? {
+    guard let img = loadImage(item),
+          let tiff = img.tiffRepresentation,
+          let bitmap = NSBitmapImageRep(data: tiff),
+          let cgImg = bitmap.cgImage else {
+        return nil
+    }
+    let ciImage = CIImage(cgImage: cgImg)
+    let rotated = ciImage.transformed(by: CGAffineTransform(rotationAngle: radians))
+    let normalized = rotated.transformed(
+        by: CGAffineTransform(translationX: -rotated.extent.origin.x,
+                              y: -rotated.extent.origin.y)
+    )
+    let context = CIContext(options: [.useSoftwareRenderer: false])
+    guard let outputCG = context.createCGImage(normalized, from: normalized.extent) else {
+        return nil
+    }
+    let rep = NSBitmapImageRep(cgImage: outputCG)
+    let result = NSImage(size: NSSize(width: rep.pixelsWide, height: rep.pixelsHigh))
+    result.addRepresentation(rep)
+    return saveImage(result, originalItem: item)
+}
+
+/// Rotate 90° clockwise (the existing built-in — keeps its stable id so
+/// existing user customizations / hotkeys carry over). Title clarified to
+/// say "right" since "CW" alone isn't intuitive at a glance.
+struct ImageRotateRightAction: ClipboardAction {
+    let id = "builtin.image_rotate"
+    let title = "Rotate right (90° CW)"
+    let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         imageActionApplies(item: item, context: context)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        guard let img = loadImage(item),
-              let tiff = img.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiff),
-              let cgImg = bitmap.cgImage else {
-            return .failed(original: item, reason: "Couldn't read image", recovery: nil)
+        guard let saved = rotateImage(item, radians: -.pi / 2) else {
+            return .failed(original: item, reason: "Rotation failed", recovery: nil)
         }
-        let ciImage = CIImage(cgImage: cgImg)
-        let rotated = ciImage.transformed(by: CGAffineTransform(rotationAngle: -.pi / 2))
-        let rep = NSCIImageRep(ciImage: rotated)
-        let result = NSImage(size: rep.size)
-        result.addRepresentation(rep)
-        guard let saved = saveImage(result, originalItem: item) else {
+        return .preview(saved)
+    }
+}
+
+/// Rotate 90° counter-clockwise (new). Paired with the right rotation so
+/// the user can quickly straighten a sideways-captured photo from either
+/// direction without thinking about which way it tipped.
+struct ImageRotateLeftAction: ClipboardAction {
+    let id = "builtin.image_rotate_left"
+    let title = "Rotate left (90° CCW)"
+    let isLocal = true
+    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
+        imageActionApplies(item: item, context: context)
+    }
+    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
+        guard let saved = rotateImage(item, radians: .pi / 2) else {
             return .failed(original: item, reason: "Rotation failed", recovery: nil)
         }
         return .preview(saved)
@@ -372,13 +412,155 @@ struct ImageStripMetadataAction: ClipboardAction {
     }
 }
 
+// MARK: - ASCII art
+
+/// Renders the image as a monospaced ASCII-art block by downsampling to a
+/// character grid, converting each cell's average luminance to a glyph from
+/// a darkness gradient. Local and deterministic — no AI, no network call.
+/// For best results in fixed-width terminals / Discord code blocks, use the
+/// result wrapped in a code fence (the "Wrap in code block" action chains
+/// nicely after this one via ⌥⌘Space).
+struct ImageToASCIIArtAction: ClipboardAction {
+    let id = "builtin.image_ascii_art"
+    let title = "ASCII art"
+    let isLocal = true
+
+    // Wider character → cell aspect compensates for the fact that monospace
+    // characters are roughly twice as tall as they are wide; using a 2:1
+    // sampling ratio keeps the rendered art visually proportional.
+    private static let outWidth: Int = 100
+    private static let charAspect: Double = 0.5
+
+    // Gradient from "transparent" (whitespace) → "fully filled". Order
+    // determines the brightness mapping (index 0 = lightest, last = darkest).
+    private static let ramp: [Character] = Array(" .:-=+*#%@")
+
+    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
+        imageActionApplies(item: item, context: context)
+    }
+
+    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
+        guard let img = loadImage(item) else {
+            return .failed(original: item, reason: "Couldn't read image", recovery: nil)
+        }
+        let result = Self.render(image: img)
+        guard !result.isEmpty else {
+            return .failed(original: item, reason: "ASCII conversion produced empty output", recovery: nil)
+        }
+        return .preview(makeTextItem(result, from: item))
+    }
+
+    /// Pure renderer — split out so it's testable.
+    ///
+    /// Pipeline:
+    ///   1. Rasterize to an 8-bit grayscale buffer at the target grid.
+    ///   2. Apply a "background" threshold — pixels above the brightness cap
+    ///      become space, NOT the lightest gradient glyph. This stops light
+    ///      backgrounds (white, pastel) from being painted as a sea of dots.
+    ///   3. Map remaining (foreground) values across the ramp with the
+    ///      lightest dot reserved for near-background tones so the visible
+    ///      content has clear separation from the canvas.
+    ///   4. Auto-crop to the bounding box of non-space cells so the result
+    ///      tightly frames the subject and doesn't waste rows on empty
+    ///      borders. Critical for cartoon / logo / icon source images,
+    ///      which are typically padded with whitespace.
+    static func render(image: NSImage) -> String {
+        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              cg.width > 0, cg.height > 0 else {
+            return ""
+        }
+        let srcW = cg.width
+        let srcH = cg.height
+        let aspect = Double(srcH) / Double(srcW)
+        let cols = outWidth
+        let rows = max(1, Int(Double(cols) * aspect * charAspect))
+
+        // Render scaled grayscale image into an 8-bit single-channel buffer
+        // so we can read luminance per cell directly without per-pixel
+        // CIContext queries.
+        var pixels = [UInt8](repeating: 0, count: cols * rows)
+        let colorSpace = CGColorSpaceCreateDeviceGray()
+        guard let ctx = CGContext(
+            data: &pixels,
+            width: cols,
+            height: rows,
+            bitsPerComponent: 8,
+            bytesPerRow: cols,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.none.rawValue
+        ) else {
+            return ""
+        }
+        ctx.interpolationQuality = .high
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: cols, height: rows))
+
+        // Build a 2D char grid first so auto-crop can scan it efficiently.
+        var grid = [[Character]](repeating: [Character](repeating: " ", count: cols),
+                                  count: rows)
+        let lastIdx = ramp.count - 1
+        // Brightness above this threshold is treated as background → space.
+        // Tuned against typical light backgrounds (white, mint, beige, gray
+        // page chrome). Increases foreground-vs-background contrast and
+        // makes auto-crop tight against the subject.
+        let backgroundCutoff: Double = 0.78
+        for row in 0..<rows {
+            // Bitmap origin is bottom-left in Core Graphics; iterate top-down
+            // so the resulting text reads in the same orientation as the image.
+            let srcRow = rows - 1 - row
+            for col in 0..<cols {
+                let v = Double(pixels[srcRow * cols + col]) / 255.0
+                if v >= backgroundCutoff {
+                    // Background — leave as space (initial value).
+                    continue
+                }
+                // Foreground range remapped to (1..lastIdx). Index 0 (space)
+                // is reserved for background only, so visible content always
+                // has at least minimum density and never blends with bg.
+                let norm = (backgroundCutoff - v) / backgroundCutoff
+                let idx = max(1, min(lastIdx, Int((norm * Double(lastIdx)).rounded())))
+                grid[row][col] = ramp[idx]
+            }
+        }
+
+        // Auto-crop to bounding box of non-space cells.
+        var top = 0
+        while top < rows && grid[top].allSatisfy({ $0 == " " }) { top += 1 }
+        guard top < rows else { return "" }    // empty image
+        var bottom = rows - 1
+        while bottom > top && grid[bottom].allSatisfy({ $0 == " " }) { bottom -= 1 }
+        var left = cols
+        var right = -1
+        for r in top...bottom {
+            for c in 0..<cols where grid[r][c] != " " {
+                if c < left  { left = c }
+                if c > right { right = c }
+            }
+        }
+        guard left <= right else { return "" }
+
+        // Emit the cropped region.
+        var output = ""
+        output.reserveCapacity((bottom - top + 1) * (right - left + 2))
+        for r in top...bottom {
+            for c in left...right {
+                output.append(grid[r][c])
+            }
+            output.append("\n")
+        }
+        return output
+    }
+}
+
 enum ImageActionsPack {
     static var all: [ClipboardAction] {
         [
             ImageOCRAction(), ImageDecodeQRAction(),
             ImageStripMetadataAction(), ImageResize1920Action(),
             ImageCompressJPEGAction(),
-            ImageGrayscaleAction(), ImageRotate90Action(), ImageInvertAction()
+            ImageGrayscaleAction(),
+            ImageRotateRightAction(), ImageRotateLeftAction(),
+            ImageInvertAction(),
+            ImageToASCIIArtAction()
         ]
     }
 }

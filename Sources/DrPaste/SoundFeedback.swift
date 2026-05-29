@@ -27,7 +27,13 @@ enum SoundCue: String {
     /// System NSSound name used as a fallback when no bundled asset is available.
     var systemFallback: NSSound.Name {
         switch self {
-        case .copySuccess, .pasteSuccess: return NSSound.Name("Tink")
+        // Different cues for copy vs paste so the user can hear which one
+        // just happened. "Tink" was previously used for both but its short
+        // metallic click reads as a UI dismiss / skip in macOS grammar,
+        // not a completion. "Pop" is a quick clean "captured" feel; "Glass"
+        // is the canonical macOS "successful action completed" ding.
+        case .copySuccess:                return NSSound.Name("Pop")
+        case .pasteSuccess:               return NSSound.Name("Glass")
         case .copyFailure, .pasteFailure: return NSSound.Name("Funk")
         case .typeTick:                   return NSSound.Name("Morse")
         case .delete:                     return NSSound.Name("Bottle")

@@ -174,65 +174,107 @@ struct WelcomeView: View {
     }
 
     private var featuresSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             Text("Key features")
                 .font(.headline)
-            feature("📋", "Universal clipboard history — text, images, files, URLs, rich text")
-            feature("✨", "AI actions — multi-provider (Claude, GPT, Gemini, Ollama, etc.)")
-            feature("🛠", "Custom transformations — regex, find/replace, prepend/append, wrap")
-            feature("⌨", "Per-action hotkeys — direct trigger without HUD")
-            feature("🖼", "Image actions — OCR, QR decode, resize, grayscale, strip metadata")
-            feature("🌐", "Format converters — Rich → Markdown / HTML / Wiki")
+            // Grid keeps the icon column at a fixed width so the text column
+            // is perfectly aligned even when SF Symbols differ in glyph width.
+            // Using SF Symbols (instead of emoji) also guarantees uniform
+            // rendering across light/dark mode and font scaling.
+            Grid(alignment: .leadingFirstTextBaseline,
+                 horizontalSpacing: 12,
+                 verticalSpacing: 10) {
+                featureGridRow("doc.on.clipboard.fill", Color.blue,
+                               "Universal clipboard history — text, images, files, URLs, rich text")
+                featureGridRow("sparkles", Color.purple,
+                               "AI actions — multi-provider (Claude, GPT, Gemini, Ollama, etc.)")
+                featureGridRow("wrench.and.screwdriver.fill", Color.orange,
+                               "Custom transformations — regex, find/replace, prepend/append, wrap")
+                featureGridRow("keyboard.fill", Color.gray,
+                               "Per-action hotkeys — direct trigger without HUD")
+                featureGridRow("photo.fill", Color.teal,
+                               "Image actions — OCR, QR decode, resize, grayscale, rotate, ASCII art")
+                featureGridRow("textformat", Color.pink,
+                               "𝐅𝐚𝐧𝐜𝐲 𝐔𝐧𝐢𝐜𝐨𝐝𝐞 — paste 𝑩𝒐𝒍𝒅, 𝐼𝑡𝑎𝑙𝑖𝑐, 𝒮𝒸𝓇𝒾𝓅𝓉 anywhere (Twitter, Telegram, LinkedIn)")
+                featureGridRow("globe", Color.indigo,
+                               "Format converters — Rich → Markdown / HTML / Wiki, Cyrillic → Latin")
+            }
         }
     }
 
-    private func feature(_ icon: String, _ text: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Text(icon).font(.system(size: 16))
-            Text(text).font(.system(size: 12))
+    @ViewBuilder
+    private func featureGridRow(_ icon: String,
+                                _ tint: Color,
+                                _ text: String) -> some View {
+        GridRow(alignment: .firstTextBaseline) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 20, alignment: .center)
+            Text(text)
+                .font(.system(size: 12))
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
-            Spacer()
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private var hotkeysSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
             Text("Hotkeys")
                 .font(.headline)
-            hotkeyRow("⌥⌘V", "Open HUD — press-and-hold, navigate with arrow keys, release to paste")
-            hotkeyRow("⌥⌘C", "Quick Copy — like ⌘C but with sound feedback")
-            hotkeyRow("⌥⌘X", "Cut & Replace — cut selection, choose what to paste in its place")
-            hotkeyRow("⌥⌘S", "Append Copy — accumulate copies into one combined clipboard entry")
+            Grid(alignment: .leadingFirstTextBaseline,
+                 horizontalSpacing: 14,
+                 verticalSpacing: 8) {
+                hotkeyGridRow("⌥⌘V", "Open HUD — press-and-hold, navigate with arrow keys, release to paste")
+                hotkeyGridRow("⌥⌘C", "Quick Copy — like ⌘C but with sound feedback")
+                hotkeyGridRow("⌥⌘X", "Cut & Replace — cut selection, choose what to paste in its place")
+                hotkeyGridRow("⌥⌘S", "Append Copy — accumulate copies into one combined clipboard entry")
+            }
 
             if !registry.config.actionHotkeys.isEmpty {
                 Text("Your custom action hotkeys")
-                    .font(.subheadline)
-                    .padding(.top, 8)
-                ForEach(Array(registry.config.actionHotkeys.keys.sorted()), id: \.self) { actionID in
-                    if let hk = registry.config.actionHotkeys[actionID],
-                       let action = registry.actions.first(where: { $0.id == actionID }) {
-                        let title = registry.displayTitle(forActionID: actionID,
-                                                           defaultTitle: action.title)
-                        hotkeyRow(hk.displayString, title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 6)
+                Grid(alignment: .leadingFirstTextBaseline,
+                     horizontalSpacing: 14,
+                     verticalSpacing: 8) {
+                    ForEach(Array(registry.config.actionHotkeys.keys.sorted()), id: \.self) { actionID in
+                        if let hk = registry.config.actionHotkeys[actionID],
+                           let action = registry.actions.first(where: { $0.id == actionID }) {
+                            let title = registry.displayTitle(forActionID: actionID,
+                                                               defaultTitle: action.title)
+                            hotkeyGridRow(hk.displayString, title)
+                        }
                     }
                 }
             }
         }
     }
 
-    private func hotkeyRow(_ key: String, _ description: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+    @ViewBuilder
+    private func hotkeyGridRow(_ key: String, _ description: String) -> some View {
+        GridRow(alignment: .firstTextBaseline) {
+            // Fixed-width key badge so badges of different glyph widths
+            // (⌥⌘V vs ⌥⌘E vs longer combos) all align to the same column.
             Text(key)
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .padding(.horizontal, 6).padding(.vertical, 2)
-                .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
-                .frame(minWidth: 110, alignment: .leading)
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color.primary.opacity(0.08))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+                )
+                .frame(width: 64, alignment: .center)
             Text(description)
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
-            Spacer()
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 

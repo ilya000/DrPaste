@@ -43,6 +43,8 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
     case mdExtractHeadings = "md_extract_headings"
     case mdExtractLinks    = "md_extract_links"
     case urlStripTracking  = "url_strip_tracking"
+    case unicodeStyle      = "unicode_style"        // style: bold/italic/script/...
+    case cyrillicToLatin   = "cyrillic_to_latin"    // auto-detects ru/uk/be/bg/sr/mk
 
     var id: String { rawValue }
 
@@ -72,6 +74,8 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
         case .mdExtractHeadings: return "Extract Markdown headings"
         case .mdExtractLinks:    return "Extract Markdown links"
         case .urlStripTracking:  return "Strip URL tracking params"
+        case .unicodeStyle:      return "Stylize (Unicode font)"
+        case .cyrillicToLatin:   return "Cyrillic → Latin transliteration"
         }
     }
 
@@ -101,6 +105,8 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
         case .mdExtractHeadings: return "list.bullet.indent"
         case .mdExtractLinks:    return "link"
         case .urlStripTracking:  return "shield.lefthalf.filled"
+        case .unicodeStyle:      return "textformat"
+        case .cyrillicToLatin:   return "character.book.closed"
         }
     }
 
@@ -154,6 +160,10 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
             return "Extract every URL referenced by an inline Markdown link, one per line."
         case .urlStripTracking:
             return "Drop common tracking query parameters (utm_*, fbclid, gclid, igshid, ref, _ga, etc.)."
+        case .unicodeStyle:
+            return "Convert ASCII letters and digits into a stylized Unicode pseudo-font (Bold, Italic, Script, Fraktur, Double-struck, Monospace, Fullwidth, Small Caps, Circled, Upside-down, etc.). Plain reverses any styled input back to ASCII."
+        case .cyrillicToLatin:
+            return "Transliterate Cyrillic text (Russian, Ukrainian, Belarusian, Bulgarian, Serbian, Macedonian) to Latin. Auto-detects the script variant by marker letters: ћ ђ ј љ њ џ ѓ ќ ѕ → Serbian/Macedonian (Gaj's diacritic scheme: ж→ž, ч→č, ш→š); ъ without ы/э/ё → Bulgarian (Streamlined 2009: щ→sht, ъ→a); є ї ґ → Ukrainian; ў → Belarusian; otherwise Russian default. Preserves word case (Привет→Privet, ПРИВЕТ→PRIVET). Useful for URL slugs, name romanization, plain-Latin contexts, and chaining into Unicode pseudo-font styling."
         }
     }
 
@@ -169,13 +179,15 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
         case .sortLines:    return ["direction": "asc", "caseInsensitive": "false"]
         case .uniqueLines:  return [:]
         case .jsonFormat:   return ["operation": "pretty"]
+        case .unicodeStyle: return ["style": UnicodeFontStyle.bold.rawValue]
         case .trim,
              .camelCase, .snakeCase, .kebabCase,
              .base64Encode, .base64Decode,
              .urlPercentEncode, .urlPercentDecode,
              .slugify, .wordCount,
              .mdToPlain, .mdExtractHeadings, .mdExtractLinks,
-             .urlStripTracking:
+             .urlStripTracking,
+             .cyrillicToLatin:
             return [:]
         }
     }
@@ -193,7 +205,7 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
     var userPickable: Bool {
         switch self {
         case .regexReplace, .findReplace, .prepend, .append, .wrap, .lineFilter,
-             .caseChange, .sortLines, .uniqueLines, .jsonFormat:
+             .caseChange, .sortLines, .uniqueLines, .jsonFormat, .unicodeStyle:
             return true
         case .trim,
              .camelCase, .snakeCase, .kebabCase,
@@ -201,7 +213,8 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
              .urlPercentEncode, .urlPercentDecode,
              .slugify, .wordCount,
              .mdToPlain, .mdExtractHeadings, .mdExtractLinks,
-             .urlStripTracking:
+             .urlStripTracking,
+             .cyrillicToLatin:
             return false
         }
     }
@@ -291,7 +304,148 @@ enum TransformationRuntime {
         case .mdExtractHeadings: return try mdExtractHeadings(input)
         case .mdExtractLinks:    return try mdExtractLinks(input)
         case .urlStripTracking:  return urlStripTracking(input)
+        case .unicodeStyle:      return unicodeStyle(input, params: params)
+        case .cyrillicToLatin:   return cyrillicTransliterate(input)
         }
+    }
+
+    private static func unicodeStyle(_ input: String, params: [String: String]) -> String {
+        let raw = params["style"] ?? UnicodeFontStyle.bold.rawValue
+        let style = UnicodeFontStyle(rawValue: raw) ?? .bold
+        return UnicodeStylizer.apply(to: input, style: style)
+    }
+
+    // MARK: Cyrillic transliteration
+
+    /// Variant of Cyrillic for selecting the appropriate Latin scheme.
+    /// `.russian` covers Russian + Ukrainian + Belarusian (digraph style:
+    /// zh, ch, sh, kh). `.bulgarian` follows Streamlined 2009 (sht, a, y).
+    /// `.serbian` covers Serbian + Macedonian Gaj's Latin (ž, č, š, h, c).
+    private enum CyrillicVariant { case russian, bulgarian, serbian }
+
+    /// Detect which Cyrillic variant the text uses. Heuristic — looks at
+    /// marker letters that uniquely identify a script. Defaults to Russian
+    /// when no marker hits, which is the most common case.
+    private static func detectCyrillicVariant(_ s: String) -> CyrillicVariant {
+        let serbianMarkers: Set<Character> = ["ћ", "ђ", "ј", "љ", "њ", "џ", "ѓ", "ќ", "ѕ",
+                                              "Ћ", "Ђ", "Ј", "Љ", "Њ", "Џ", "Ѓ", "Ќ", "Ѕ"]
+        let russianOnlyMarkers: Set<Character> = ["ы", "э", "ё", "Ы", "Э", "Ё"]
+        if s.contains(where: { serbianMarkers.contains($0) }) {
+            return .serbian
+        }
+        let hasYer = s.contains("ъ") || s.contains("Ъ")
+        let hasRussianMarker = s.contains(where: { russianOnlyMarkers.contains($0) })
+        if hasYer && !hasRussianMarker {
+            return .bulgarian
+        }
+        return .russian
+    }
+
+    /// Lowercase Cyrillic → Latin base map. Covers Russian, Ukrainian,
+    /// Belarusian, and Old Church Slavonic letters. Bulgarian and Serbian
+    /// overrides are applied separately in `cyrillicMap(for:)`.
+    private static let cyrillicBaseMap: [Character: String] = [
+        // Common letters
+        "а": "a", "б": "b", "в": "v", "г": "g", "д": "d",
+        "е": "e", "ё": "yo", "ж": "zh", "з": "z", "и": "i",
+        "й": "y", "к": "k", "л": "l", "м": "m", "н": "n",
+        "о": "o", "п": "p", "р": "r", "с": "s", "т": "t",
+        "у": "u", "ф": "f", "х": "kh", "ц": "ts", "ч": "ch",
+        "ш": "sh", "щ": "shch", "ъ": "", "ы": "y", "ь": "",
+        "э": "e", "ю": "yu", "я": "ya",
+        // Ukrainian-specific
+        "є": "ye", "і": "i", "ї": "yi", "ґ": "g",
+        // Belarusian-specific
+        "ў": "w",
+        // Old Church Slavonic / extended (may appear in liturgical / historical text)
+        "ѣ": "ye", "ѵ": "i", "ѳ": "f", "ѕ": "dz"
+    ]
+
+    private static func cyrillicMap(for variant: CyrillicVariant) -> [Character: String] {
+        var m = cyrillicBaseMap
+        switch variant {
+        case .russian:
+            break
+        case .bulgarian:
+            // Streamlined Transliteration System (Bulgarian state standard, 2009).
+            m["щ"] = "sht"
+            m["ъ"] = "a"
+            m["ь"] = "y"
+        case .serbian:
+            // Gaj's Latin alphabet — one-to-one with Serbian Cyrillic.
+            m["ж"] = "ž"; m["ч"] = "č"; m["ш"] = "š"
+            m["х"] = "h"; m["ц"] = "c"
+            // Serbian-specific letters.
+            m["ћ"] = "ć"; m["ђ"] = "đ"; m["ј"] = "j"
+            m["љ"] = "lj"; m["њ"] = "nj"; m["џ"] = "dž"
+            // Macedonian-specific letters.
+            m["ѓ"] = "gj"; m["ќ"] = "kj"; m["ѕ"] = "dz"
+        }
+        return m
+    }
+
+    /// Transliterate Cyrillic to Latin with auto-detected variant and case
+    /// preservation. Letters are mapped via the variant-specific table; case
+    /// is determined per-letter against neighbours so "ПРИВЕТ" → "PRIVET"
+    /// (all-caps) but "Привет" → "Privet" (title-case), not "PRIvet".
+    private static func cyrillicTransliterate(_ input: String) -> String {
+        let variant = detectCyrillicVariant(input)
+        let map = cyrillicMap(for: variant)
+        let chars = Array(input)
+        var out = ""
+        out.reserveCapacity(chars.count * 2)
+        for i in chars.indices {
+            let ch = chars[i]
+            let lowerStr = String(ch).lowercased()
+            guard let lowerCh = lowerStr.first, let translit = map[lowerCh] else {
+                out.append(ch)
+                continue
+            }
+            if !ch.isUppercase || translit.isEmpty {
+                out.append(translit)
+                continue
+            }
+            // Uppercase input. Decide title-case vs all-caps by looking at
+            // the nearest Cyrillic neighbour's case.
+            let neighborUpper = nearestCyrillicNeighborIsUppercase(chars, at: i, map: map)
+            if neighborUpper {
+                out.append(translit.uppercased())
+            } else if let first = translit.first {
+                out.append(String(first).uppercased())
+                out.append(String(translit.dropFirst()))
+            }
+        }
+        return out
+    }
+
+    /// True if the closest Cyrillic letter to either side of `idx` is
+    /// uppercase. Used by `cyrillicTransliterate` to decide whether a
+    /// multi-letter translit like "shch" should render as "Shch" (title)
+    /// or "SHCH" (all-caps).
+    private static func nearestCyrillicNeighborIsUppercase(_ chars: [Character],
+                                                           at idx: Int,
+                                                           map: [Character: String]) -> Bool {
+        func isCyrillic(_ c: Character) -> Bool {
+            let lower = String(c).lowercased().first ?? c
+            return map[lower] != nil
+        }
+        // Backward scan.
+        var j = idx - 1
+        while j >= 0 {
+            let n = chars[j]
+            if isCyrillic(n) { return n.isUppercase }
+            if !n.isLetter { break }
+            j -= 1
+        }
+        // Forward scan.
+        j = idx + 1
+        while j < chars.count {
+            let n = chars[j]
+            if isCyrillic(n) { return n.isUppercase }
+            if !n.isLetter { break }
+            j += 1
+        }
+        return false
     }
 
     private static func caseChange(_ input: String, params: [String: String]) -> String {

@@ -16,6 +16,9 @@ import Foundation
 
 enum BuiltinActionIcons {
     static func iconName(for actionID: String) -> String {
+        // All 22 Unicode "fancy text" actions share a single engine icon
+        // — case-by-case mapping would just be 22 lines of "textformat".
+        if actionID.hasPrefix("builtin.font_") { return "textformat" }
         switch actionID {
         case "builtin.identity":             return "doc.on.clipboard.fill"
         case "builtin.paste_as_text":        return "text.alignleft"
@@ -27,6 +30,8 @@ enum BuiltinActionIcons {
         case "builtin.rich_to_md":           return "doc.richtext"
         case "builtin.rich_to_html":         return "chevron.left.forwardslash.chevron.right"
         case "builtin.rich_to_wiki":         return "book.closed"
+        case "builtin.rich_to_unicode_style": return "character.cursor.ibeam"
+        case "builtin.cyrillic_translit":    return "character.book.closed"
         case "builtin.json_pretty":          return "curlybraces"
         case "builtin.json_minify":          return "curlybraces.square"
         case "builtin.json_extract_keys":    return "list.bullet"
@@ -64,8 +69,10 @@ enum BuiltinActionIcons {
         case "builtin.image_resize_1920":    return "arrow.up.left.and.down.right.magnifyingglass"
         case "builtin.image_compress_jpeg":  return "rectangle.compress.vertical"
         case "builtin.image_grayscale":      return "circle.lefthalf.filled"
-        case "builtin.image_rotate_90":      return "rotate.right"
+        case "builtin.image_rotate":         return "rotate.right"
+        case "builtin.image_rotate_left":    return "rotate.left"
         case "builtin.image_invert":         return "circle.righthalf.filled"
+        case "builtin.image_ascii_art":      return "textformat.123"
         case "builtin.files_paths":          return "doc.on.doc"
         case "builtin.files_names":          return "doc.text"
         case "builtin.files_md_links":       return "link"

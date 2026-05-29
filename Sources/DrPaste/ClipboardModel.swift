@@ -162,6 +162,18 @@ final class ClipboardStore: ObservableObject {
         save()
     }
 
+    /// Inserts a synthetic clip at the given index without de-duplication.
+    /// Used by the ⌥⌘Space "promote preview to history" flow so the user can
+    /// chain further transformations on a freshly-computed preview without
+    /// it being silently dropped if its content happens to match the
+    /// top-of-history clip.
+    func insertSnapshot(_ item: ClipboardItem, at index: Int) {
+        let clamped = max(0, min(index, items.count))
+        items.insert(item, at: clamped)
+        trim()
+        save()
+    }
+
     func remove(_ id: UUID) {
         guard let idx = items.firstIndex(where: { $0.id == id }) else { return }
         let item = items.remove(at: idx)

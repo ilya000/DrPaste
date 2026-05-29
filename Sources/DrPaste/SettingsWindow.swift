@@ -917,20 +917,19 @@ struct ContentTypeTab: View {
                 }
             }
             Spacer()
-            // Inline hotkey recorder. Per the action-hierarchy principle,
-            // assigning a hotkey is a Tier 2 operation (a simple binary
-            // setting), so it lives in the row itself — the user doesn't
-            // need to open the editor (Tier 3) just to bind a shortcut.
-            // The editor still exposes the same recorder for users who
-            // want to tune a hotkey alongside title / parameters / scope.
-            HotkeyRecorderField(
-                hotkey: hotkeyBinding(for: action.id),
-                onStatus: { _ in },   // silent in row — auto-steal happens in the binding setter
-                conflictChecker: { hk in
-                    registry.conflictingActionInfo(for: hk, excludingID: action.id)
-                }
-            )
-            .frame(maxWidth: 150)
+            // Compact read-only badge when a hotkey is assigned — keeps the
+            // row legible. Inline recording was tried (and reverted) because a
+            // 130pt "Click to record" field crushed long titles. Assigning /
+            // changing hotkeys is done through the editor (pencil) for now.
+            // A future iteration may bring this back as a popover-on-tap so
+            // the row stays compact when nothing is bound.
+            if let hk = registry.hotkey(for: action.id) {
+                Text(hk.displayString)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Capsule().fill(Color.primary.opacity(0.08)))
+            }
             Button { openEditor(for: action) } label: {
                 Image(systemName: "pencil")
             }
@@ -1040,24 +1039,6 @@ struct ContentTypeTab: View {
         Binding(
             get: { registry.isEnabled(actionID) },
             set: { registry.setEnabled($0, for: actionID) }
-        )
-    }
-
-    /// Binding for the inline row HotkeyRecorderField. Reads the current
-    /// hotkey for this action; on set, transparently unbinds the new hotkey
-    /// from whichever action previously held it (auto-steal), then writes the
-    /// new value. Matches the editor's save-time conflict-resolution policy,
-    /// so the row behaves the same as the editor without the dialog round trip.
-    private func hotkeyBinding(for actionID: String) -> Binding<ActionHotkey?> {
-        Binding(
-            get: { registry.hotkey(for: actionID) },
-            set: { newValue in
-                if let new = newValue,
-                   let other = registry.conflictingAction(for: new, excludingID: actionID) {
-                    registry.setHotkey(nil, for: other)
-                }
-                registry.setHotkey(newValue, for: actionID)
-            }
         )
     }
 

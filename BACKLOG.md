@@ -176,6 +176,47 @@ always navigate the filtered set; `esc` clears the filter without closing.
 
 ---
 
+### #A9 — Stream AI responses token-by-token into HUD preview pane
+
+**Status:** planned. UX upgrade for slow AI actions.
+**Touches:** `AIProvider.swift` protocol (new streaming entry point),
+provider concrete classes (Anthropic / OpenAI-compatible / Gemini SSE),
+`HUD.swift` (preview pane that accumulates partial tokens), `main.swift`
+(refreshPreview path that consumes the AsyncSequence).
+**Context:** 0.12.0 added a transparent loading panel for AI actions —
+spinner + provider name + model + elapsed seconds. That tells the user
+the call is alive but not what is coming back. The next step is to
+stream the response: switch `AIProvider.run` to an async sequence
+(`AsyncThrowingStream<String, Error>` of partial tokens), have the HUD
+preview pane append tokens as they arrive, and surface the partial text
+exactly like the final result would look. Result: the user sees the
+translation / summary materialize live, no opaque wait.
+**Requirements:**
+- Add `func stream(prompt:input:) -> AsyncThrowingStream<String, Error>`
+  next to the existing `run(...)`. Default implementation: call `run`,
+  emit the whole string, complete.
+- Override for Anthropic (`messages` SSE), OpenAI-compatible
+  (`chat/completions` SSE with `stream:true`), Gemini
+  (`streamGenerateContent`). Local providers (Ollama / LM Studio /
+  llama.cpp) already expose SSE — wire them up too.
+- `AIAction.apply` accepts an optional progress callback; if set,
+  consume the stream and emit partial `.preview(updatedItem)` outcomes.
+- `refreshPreview` for AI actions consumes the stream and updates
+  `hudState.outcome` on every chunk. previewToken still guards against
+  stale chunks from a previously-focused action.
+- Rich-text-preserving path: re-render Markdown round-trip on every
+  chunk, but throttle to 5–10 Hz so reflow doesn't thrash NSTextView.
+- Cancel: when previewToken bumps or HUD closes, cancel the in-flight
+  URLSession data task. Provider implementations need to expose
+  cancellation handles.
+**Implementation notes:** URLSession's `bytes(for:)` API gives an async
+byte sequence; combined with a simple SSE line parser this is ~80 lines
+per provider. The Anthropic messages stream uses `event: content_block_delta`
++ `data: { delta: { text: "…" } }`. OpenAI uses `data: { choices:
+[{ delta: { content: "…" } }] }`. Termination event differs per provider.
+
+---
+
 ### #A8 — Skills / Marketplace registry for shareable action packs
 
 **Status:** planned. Larger initiative; revisit once core is stable.

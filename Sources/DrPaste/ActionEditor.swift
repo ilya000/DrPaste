@@ -480,6 +480,25 @@ struct ActionEditor: View {
                 .pickerStyle(.menu)
                 .labelsHidden()
             }
+        case .unicodeStyle:
+            // Style picker. Each item shows the style name plus a 6-char
+            // styled preview ("𝐀𝐚 𝟏𝟐") so the user sees what each option
+            // looks like before committing.
+            HStack(alignment: .top) {
+                Text("Style:").font(.caption).foregroundStyle(.secondary)
+                    .frame(width: 100, alignment: .leading)
+                Picker("", selection: paramBinding(
+                    key: "style",
+                    default: UnicodeFontStyle.bold.rawValue
+                )) {
+                    ForEach(UnicodeFontStyle.allCases) { style in
+                        Text("\(style.displayName)  ·  \(style.sample)")
+                            .tag(style.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+            }
         // Parameter-less engines seeded as built-ins via DefaultTransformationSeed.
         // They expose no editable parameters in the UI — they just show their
         // description (which the editor already prints above this view) and
@@ -490,7 +509,8 @@ struct ActionEditor: View {
              .urlPercentEncode, .urlPercentDecode,
              .slugify, .wordCount,
              .mdToPlain, .mdExtractHeadings, .mdExtractLinks,
-             .urlStripTracking:
+             .urlStripTracking,
+             .cyrillicToLatin:
             Text("This engine has no parameters.")
                 .font(.caption).foregroundStyle(.tertiary)
         }
