@@ -174,6 +174,49 @@ final class ClipboardStore: ObservableObject {
         save()
     }
 
+    /// #A11 — insert a captured PNG image at the top of history without
+    /// going through the pasteboard. Used by ScreenRegionCaptureController
+    /// after the user finishes a ⌥⌘+drag selection. Returns the new
+    /// ClipboardItem so the caller can open the BigHUD focused on it.
+    ///
+    /// `sourceApp` is the NSRunningApplication whose window was topmost
+    /// under the selection rectangle — populated when known (we cache
+    /// `savedFrontmostApp` at gesture start in AppDelegate) so the HUD's
+    /// "Captured from <app>" source label can render.
+    @discardableResult
+    func addCapturedImage(pngData: Data,
+                          width: Int,
+                          height: Int,
+                          sourceApp: NSRunningApplication?) -> ClipboardItem? {
+        guard let rel = writeImageData(pngData) else { return nil }
+        // Persist a copy of the raw PNG as a public.png representation
+        // too, so Paste-as-is can hand the bytes to the receiving app
+        // (otherwise we'd only have the thumbnail).
+        let blobRel = writeRawBlob(pngData, type: "public.png")
+        let item = ClipboardItem(
+            id: UUID(),
+            semantic: .image,
+            createdAt: Date(),
+            representations: ["public.png": blobRel],
+            typesOrdered: ["public.png"],
+            previewText: nil,
+            previewImageRel: rel,
+            originalImageWidth: width,
+            originalImageHeight: height,
+            originalImageFileSize: pngData.count,
+            imageFormat: "PNG",
+            sourceBundleID: sourceApp?.bundleIdentifier,
+            sourceAppName: sourceApp?.localizedName,
+            sourceWindowTitle: nil,
+            tags: []
+        )
+        // insertSnapshot bypasses the sameContent de-dup check — two
+        // back-to-back captures of the same region should both land in
+        // history rather than the second silently merging into the first.
+        insertSnapshot(item, at: 0)
+        return item
+    }
+
     func remove(_ id: UUID) {
         guard let idx = items.firstIndex(where: { $0.id == id }) else { return }
         let item = items.remove(at: idx)

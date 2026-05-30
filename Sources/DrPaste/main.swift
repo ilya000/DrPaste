@@ -21,8 +21,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     // AI provider is resolved through AIProviderRegistry.shared (multi-provider).
 
     var engine: HotkeyEngine!
-    var hudPanel: HudPanel?
-    var hudState: HudState!
+    var bigHUDPanel: BigHUDPanel?
+    var bigHUDState: BigHUDState!
     var statusItem: NSStatusItem!
     var settingsController: SettingsWindowController?
 
@@ -30,7 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     private var recentMenu: NSMenu!
     private var previewToken: Int = 0
     private var axTrustPollTimer: Timer?
-    /// Repeating timer that ticks `hudState.aiElapsed` while an AI request is
+    /// Repeating timer that ticks `bigHUDState.aiElapsed` while an AI request is
     /// in flight. Owned by AppDelegate so it can be invalidated when the HUD
     /// closes or the user navigates between actions before the response arrives.
     private var aiTickTimer: Timer?
@@ -40,6 +40,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     /// the provider's `continuation.onTermination` hook, closing the
     /// connection promptly and stopping token usage from running away.
     private var aiStreamingTask: Task<Void, Never>?
+
+    /// Deferred-paste target. Set by `commitBigHUD()` when the user releases
+    /// ⌥⌘ while an AI action is still loading: instead of pasting the
+    /// placeholder (the un-transformed original clipboard, which is what
+    /// `bigHUDState.outcome` holds until the stream completes), we keep the
+    /// streaming task alive, take down HUD chrome, promote ProgressHUD as
+    /// the in-flight indicator, and let the task's completion handler do
+    /// the paste. Result: a single consistent rule — "press hotkey, the
+    /// AI result pastes when ready, regardless of how long you held ⌥⌘".
+    private var pendingDeferredPasteApp: NSRunningApplication?
+
+    /// #A11 — screen-region capture controller. Owns the cursor (C2) and
+    /// selection (C1) overlay panels. Instantiated lazily on first arm
+    /// because most launches never trigger it.
+    private var regionCapture: ScreenRegionCaptureController?
+    /// Frontmost app snapshot taken at region-capture arm time, carried
+    /// through to the BigHUD as the savedFrontmostApp so the eventual
+    /// paste lands in the right window (the user may click elsewhere
+    /// during the drag-vs-capture interval).
+    private var regionCaptureSourceApp: NSRunningApplication?
     private var lastAXTrusted: Bool = false
     private var localKeyMonitor: Any?
     private var savedFrontmostApp: NSRunningApplication?
@@ -96,7 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         registry.pruneOrphanedActionHotkeys()
         NSLog("DrPaste: orphan hotkey GC complete")
 
-        // Per-action hotkeys
+        // Per-action hotkeys (Carbon side — system-wide hotkey registration).
         ActionHotkeyManager.shared.registry = registry
         ActionHotkeyManager.shared.delegate = self
         ActionHotkeyManager.shared.install()
@@ -104,11 +124,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         NSLog("DrPaste: hotkey manager ready")
 
         settingsController = SettingsWindowController(registry: registry, store: store)
-        hudState = HudState()
+        bigHUDState = BigHUDState()
         NSLog("DrPaste: state objects ready")
 
         startEngine()
         NSLog("DrPaste: engine started")
+
+        // Push the ⌥⌘<letter> hold-preview map to the EventTap engine.
+        // CRITICAL: must run AFTER startEngine() — `reloadHoldPreviewMap`
+        // guards on `engine as? EventTapEngine` and bails out silently
+        // when engine is nil. If we call it earlier, the EventTap's
+        // holdPreviewActionHotkeys map stays empty, and the armed-state
+        // keyDown handler then swallows every per-action hotkey letter
+        // because it can't recognise them. That bug made user hotkeys
+        // appear to "not work" whenever the arm grace fired before the
+        // letter (i.e. on any tap > 400 ms).
+        reloadHoldPreviewMap()
 
         installStatusItem()
         NSLog("DrPaste: status item installed")
@@ -131,8 +162,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         candidate.delegate = self
         if candidate.start() {
             self.engine = candidate
-            self.hudState.mode = candidate.hudMode
-            self.hudState.engineLabel = candidate.kind.rawValue
+            self.bigHUDState.mode = candidate.bigHUDMode
+            self.bigHUDState.engineLabel = candidate.kind.rawValue
             self.lastAXTrusted = AXIsProcessTrusted()
             return
         }
@@ -141,8 +172,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             fallback.delegate = self
             if fallback.start() {
                 self.engine = fallback
-                self.hudState.mode = .summon
-                self.hudState.engineLabel = fallback.kind.rawValue
+                self.bigHUDState.mode = .summon
+                self.bigHUDState.engineLabel = fallback.kind.rawValue
                 self.lastAXTrusted = false
                 requestAccessibilityNicely()
                 return
@@ -171,7 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         let now = AXIsProcessTrusted()
         guard now != lastAXTrusted else { return }
         lastAXTrusted = now
-        if now && hudState.mode == .summon {
+        if now && bigHUDState.mode == .summon {
             offerRestartForGestureMode()
         }
     }
@@ -183,6 +214,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         alert.addButton(withTitle: "Restart")
         alert.addButton(withTitle: "Later")
         alert.alertStyle = .informational
+        // Use the app icon instead of the default folder — this is a DrPaste
+        // feature announcement, not a filesystem operation.
+        alert.icon = AppBrand.nsIcon
         if alert.runModal() == .alertFirstButtonReturn { restartApp() }
     }
 
@@ -211,13 +245,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
 
     private func rebuildStatusMenu() {
         let menu = NSMenu()
-        let modeLabel = engine.hudMode == .gesture ? "Full Gesture Mode" : "Limited Mode"
+        let modeLabel = engine.bigHUDMode == .gesture ? "Full Gesture Mode" : "Limited Mode"
         let header = NSMenuItem(title: "DrPaste — \(modeLabel)", action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
         menu.addItem(.separator())
 
-        if engine.hudMode == .summon {
+        if engine.bigHUDMode == .summon {
             menu.addItem(withTitle: "Enable advanced gesture mode…",
                          action: #selector(menuOpenAccessibility), keyEquivalent: "")
             menu.addItem(.separator())
@@ -382,18 +416,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             }
             // Timeout — either no selection, or the app blocked the cut.
             SoundFeedback.play(.copyFailure)
-            // Force-reset hudIsActive in the engine since summon set it earlier.
+            // Force-reset bigHUDIsActive in the engine since summon set it earlier.
             if let tap = self.engine as? EventTapEngine { tap.resetHudActive() }
         }
     }
 
-    nonisolated func hotkeyEngineDidRelease() { Task { @MainActor in self.commitHUD() } }
-    nonisolated func hotkeyEngineDidCancel() { Task { @MainActor in self.closeHUD() } }
+    nonisolated func hotkeyEngineDidRelease() { Task { @MainActor in self.commitBigHUD() } }
+    nonisolated func hotkeyEngineDidCancel() { Task { @MainActor in self.closeBigHUD() } }
     nonisolated func hotkeyEngineDidNavigate(_ direction: NavDirection) {
         Task { @MainActor in self.navigate(direction) }
     }
     nonisolated func hotkeyEngineDidRequestFontChange(_ change: FontChange) {
-        Task { @MainActor in self.hudState.adjustFontScale(change) }
+        Task { @MainActor in self.bigHUDState.adjustFontScale(change) }
     }
 
     /// ⌥⌘S inside the HUD — drive the "walking" clip accumulator.
@@ -419,21 +453,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
 
     @MainActor
     private func extendAccumulator() {
-        guard !hudState.items.isEmpty else { return }
-        let focused = hudState.itemIndex
-        guard focused >= 0, focused < hudState.items.count else { return }
+        guard !bigHUDState.items.isEmpty else { return }
+        let focused = bigHUDState.itemIndex
+        guard focused >= 0, focused < bigHUDState.items.count else { return }
 
         // First press — start carrier on the focused item, no merge yet.
-        guard var acc = hudState.accumulator else {
-            let text = hudState.items[focused].previewText ?? ""
-            hudState.accumulator = HUDClipAccumulator(
+        guard var acc = bigHUDState.accumulator else {
+            let text = bigHUDState.items[focused].previewText ?? ""
+            bigHUDState.accumulator = BigHUDClipAccumulator(
                 consumed: [],
                 anchorIndex: focused,
                 text: text
             )
             // Preview = the (single-clip) accumulator content so it reflects
             // exactly what would be pasted on commit.
-            hudState.outcome = .preview(accumulatorItem(text: text))
+            bigHUDState.outcome = .preview(accumulatorItem(text: text))
             return
         }
 
@@ -442,7 +476,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // visible again, green highlight disappears, preview reverts to the
         // focused clip's standard content.
         if acc.anchorIndex == focused {
-            hudState.accumulator = nil
+            bigHUDState.accumulator = nil
             refreshPreview()
             updateContentMeta()
             return
@@ -453,12 +487,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
 
         // Fold the previous carrier into consumed, absorb its text into the
         // merge, and adopt the focused row as the new carrier.
-        let appended = hudState.items[focused].previewText ?? ""
+        let appended = bigHUDState.items[focused].previewText ?? ""
         acc.consumed.insert(acc.anchorIndex)
         acc.text = acc.text + "\n" + appended
         acc.anchorIndex = focused
-        hudState.accumulator = acc
-        hudState.outcome = .preview(accumulatorItem(text: acc.text))
+        bigHUDState.accumulator = acc
+        bigHUDState.outcome = .preview(accumulatorItem(text: acc.text))
     }
 
     /// ⌥⌘Space inside the HUD — promote the current action preview into a
@@ -471,12 +505,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
 
     @MainActor
     private func promotePreviewToHistory() {
-        guard !hudState.items.isEmpty else { return }
+        guard !bigHUDState.items.isEmpty else { return }
         // Async (AI) actions in flight: their outcome is a stale placeholder
         // — skip rather than promote the unfinished content. Single failure
         // beep so the user knows the press was registered but the AI is
         // still working.
-        if hudState.isPreviewLoading {
+        if bigHUDState.isPreviewLoading {
             SoundFeedback.play(.copyFailure)
             return
         }
@@ -484,7 +518,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // / .alternativeCommit / nil, silently no-op — these aren't usable
         // content to chain further actions on, and a failure beep would feel
         // noisy when the user is just exploring actions.
-        guard let outcome = hudState.outcome,
+        guard let outcome = bigHUDState.outcome,
               case .preview(let previewItem) = outcome else {
             return
         }
@@ -493,7 +527,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // every transformation, leaving only the no-op "Paste as is" path,
         // which itself was rejected). The promoted clip's freshness is
         // guaranteed by the UUID() below.
-        let insertionIdx = max(0, hudState.itemIndex)
+        let insertionIdx = max(0, bigHUDState.itemIndex)
         // Re-stamp with a fresh UUID and createdAt so duplicates in history
         // remain individually addressable and ordered.
         let promoted = ClipboardItem(
@@ -514,14 +548,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             tags: previewItem.tags
         )
         store.insertSnapshot(promoted, at: insertionIdx)
-        hudState.items = store.items
+        bigHUDState.items = store.items
         // Focus the newly inserted clip — the old focused row has shifted
         // down by one, so insertionIdx is the new clip's position.
-        hudState.itemIndex = insertionIdx
-        hudState.actionIndex = 0
+        bigHUDState.itemIndex = insertionIdx
+        bigHUDState.actionIndex = 0
         // Promote breaks the merge model — any in-flight accumulator must
         // be dropped because its indices are now off by one.
-        hudState.accumulator = nil
+        bigHUDState.accumulator = nil
         recomputeActions()
         refreshPreview()
         updateContentMeta()
@@ -560,33 +594,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     ///      rows so the cursor never lands on something invisible.
     nonisolated func hotkeyEngineDidDeleteFocused() {
         Task { @MainActor in
-            guard let item = self.hudState.currentItem else { return }
-            let position = self.hudState.itemIndex
+            guard let item = self.bigHUDState.currentItem else { return }
+            let position = self.bigHUDState.itemIndex
             self.store.remove(item.id)
             self.adjustAccumulatorForDeletion(at: position)
-            self.hudState.items = self.store.items
+            self.bigHUDState.items = self.store.items
             SoundFeedback.play(.delete)
-            if self.hudState.items.isEmpty {
-                self.closeHUD()
+            if self.bigHUDState.items.isEmpty {
+                self.closeBigHUD()
                 return
             }
             // Pick the next focus position. Prefer the row that visually
             // slides up to fill the deleted slot; fall back to the previous
             // row if forward is past end. Skip consumed rows in either
             // direction so the cursor never lands on something invisible.
-            let consumed = self.hudState.accumulator?.consumed ?? []
-            var target = min(position, self.hudState.items.count - 1)
-            while target < self.hudState.items.count && consumed.contains(target) {
+            let consumed = self.bigHUDState.accumulator?.consumed ?? []
+            var target = min(position, self.bigHUDState.items.count - 1)
+            while target < self.bigHUDState.items.count && consumed.contains(target) {
                 target += 1
             }
-            if target >= self.hudState.items.count {
-                target = min(position, self.hudState.items.count - 1)
+            if target >= self.bigHUDState.items.count {
+                target = min(position, self.bigHUDState.items.count - 1)
                 while target > 0 && consumed.contains(target) {
                     target -= 1
                 }
             }
-            self.hudState.itemIndex = max(0, target)
-            self.hudState.actionIndex = 0
+            self.bigHUDState.itemIndex = max(0, target)
+            self.bigHUDState.actionIndex = 0
             self.recomputeActions()
             self.refreshPreview()
             self.updateContentMeta()
@@ -601,9 +635,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     /// row, and there's no clean way to "re-anchor" it.
     @MainActor
     private func adjustAccumulatorForDeletion(at deletedIdx: Int) {
-        guard var acc = self.hudState.accumulator else { return }
+        guard var acc = self.bigHUDState.accumulator else { return }
         if acc.anchorIndex == deletedIdx {
-            self.hudState.accumulator = nil
+            self.bigHUDState.accumulator = nil
             return
         }
         var newConsumed = Set<Int>()
@@ -615,7 +649,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         if acc.anchorIndex > deletedIdx {
             acc.anchorIndex -= 1
         }
-        self.hudState.accumulator = acc
+        self.bigHUDState.accumulator = acc
     }
 
     /// Quick Copy via ⌥⌘C. Success/failure is detected by diffing pasteboard.changeCount.
@@ -637,38 +671,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // · elapsed seconds, matching the main HUD preview pane treatment.
         let actionTitle = registry.displayTitle(forActionID: action.id, defaultTitle: action.title)
         let aiInflight = makeAIInflight(for: action)
-        ProgressHUDController.shared.show(label: actionTitle, inflight: aiInflight)
-        // Snapshot the current pasteboard as a ClipboardItem.
+        MiniHUDController.shared.show(label: actionTitle, inflight: aiInflight)
+
+        // Selection-first semantics — the whole point of a per-action
+        // hotkey is "do X to what I'm looking at". Operating on stale
+        // clipboard content is rarely what the user means. Issue ⌘C
+        // against the frontmost app, wait for the pasteboard to
+        // refresh, run the action on whatever was selected. If nothing
+        // changes (no selection), fail loudly — better than silently
+        // applying the transformation to whatever old thing happened
+        // to be in pb.
         let pb = NSPasteboard.general
-        let textValue = pb.string(forType: .string) ?? ""
-        var item = ClipboardItem(
-            id: UUID(),
-            semantic: SemanticClassifier.classify(types: pb.types?.map(\.rawValue) ?? [],
-                                                  pasteboard: pb),
-            createdAt: Date(),
-            representations: [:],
-            typesOrdered: [],
-            previewText: textValue,
-            previewImageRel: nil,
-            sourceBundleID: frontmost.bundleIdentifier,
-            sourceAppName: frontmost.localizedName,
-            sourceWindowTitle: nil,
-            tags: []
-        )
-        // Rebuild representations from the pasteboard for lossless paste.
-        if let types = pb.types {
-            for t in types {
-                guard let data = pb.data(forType: t) else { continue }
-                let rel = store.writeRawBlob(data, type: t.rawValue)
-                item.representations[t.rawValue] = rel
-                item.typesOrdered.append(t.rawValue)
-            }
-        }
-        let ctx = ContextDetector.detect(item)
+        let changeCountBefore = pb.changeCount
+        PasteSimulator.simulateCopy()
 
         Task { @MainActor in
+            // Poll up to 250 ms for the selection to land. Most apps
+            // respond inside 30–80 ms; the longer cap covers slow
+            // hosts (Java apps, remote terminals, Electron with
+            // heavy DOM).
+            let start = Date()
+            while Date().timeIntervalSince(start) < 0.25 {
+                try? await Task.sleep(nanoseconds: 20_000_000)
+                if pb.changeCount > changeCountBefore { break }
+            }
+            guard pb.changeCount > changeCountBefore else {
+                MiniHUDController.shared.hide()
+                SoundFeedback.play(.pasteFailure)
+                return
+            }
+            // Selection captured — audible "got it" cue. Same sound as
+            // ⌥⌘C (Quick Copy) because conceptually this IS a copy step:
+            // the user's selection just landed in the pasteboard. The
+            // eventual paste of the transformed result will fire
+            // `.pasteSuccess` later through performStandardPaste, giving
+            // the user a clean two-stage capture-then-paste audio rhythm.
+            SoundFeedback.play(.copySuccess)
+            // Promote the captured selection into history right away
+            // (don't wait for the watcher's 0.5 s poll). Next BigHUD
+            // session will see it at index 0.
+            self.watcher.forceTick()
+            // Build a transient ClipboardItem we run the action against —
+            // distinct from the store entry forceTick produced (different
+            // UUID, not persisted on its own).
+            let item = self.snapshotPasteboardAsItem(pb: pb, sourceApp: frontmost)
+            let ctx = ContextDetector.detect(item)
             let outcome = await action.apply(item: item, context: ctx)
-            ProgressHUDController.shared.hide()
+            MiniHUDController.shared.hide()
             switch outcome {
             case .preview(let result), .alternativeCommit(let result, _):
                 self.performStandardPaste(result, savedApp: frontmost)
@@ -680,6 +729,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                 NSLog("DrPaste hotkey action failed: \(reason)")
             }
         }
+    }
+
+    /// Build a transient ClipboardItem from the current pasteboard
+    /// contents — used by selection-first hotkey paths so the action
+    /// runs against a snapshot of what the user just highlighted.
+    /// Writes raw blob copies of each representation through the store
+    /// so Paste-as-is can still restore them losslessly downstream.
+    @MainActor
+    private func snapshotPasteboardAsItem(pb: NSPasteboard,
+                                          sourceApp: NSRunningApplication) -> ClipboardItem {
+        let textValue = pb.string(forType: .string) ?? ""
+        var item = ClipboardItem(
+            id: UUID(),
+            semantic: SemanticClassifier.classify(types: pb.types?.map(\.rawValue) ?? [],
+                                                  pasteboard: pb),
+            createdAt: Date(),
+            representations: [:],
+            typesOrdered: [],
+            previewText: textValue,
+            previewImageRel: nil,
+            sourceBundleID: sourceApp.bundleIdentifier,
+            sourceAppName: sourceApp.localizedName,
+            sourceWindowTitle: nil,
+            tags: []
+        )
+        if let types = pb.types {
+            for t in types {
+                guard let data = pb.data(forType: t) else { continue }
+                let rel = store.writeRawBlob(data, type: t.rawValue)
+                item.representations[t.rawValue] = rel
+                item.typesOrdered.append(t.rawValue)
+            }
+        }
+        return item
     }
 
     /// ⌥⌘S — Sum/Append Copy with session-based reset (#2):
@@ -732,7 +815,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             if isNewSession {
                 self.watcher.ignoreNextChange = false
                 self.watcher.forceTick()
-                SoundFeedback.play(.copySuccess)
+                SoundFeedback.play(.appendCopy)
                 self.flashStatusItem()
                 return
             }
@@ -747,7 +830,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                 pb.setString(combined, forType: .string)
                 self.watcher.ignoreNextChange = false
                 self.watcher.forceTick()
-                SoundFeedback.play(.copySuccess)
+                SoundFeedback.play(.appendCopy)
                 self.flashStatusItem()
                 return
             }
@@ -757,11 +840,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                 pb.writeObjects(combined as [NSPasteboardWriting])
                 self.watcher.ignoreNextChange = false
                 self.watcher.forceTick()
-                SoundFeedback.play(.copySuccess)
+                SoundFeedback.play(.appendCopy)
                 self.flashStatusItem()
                 return
             }
-            SoundFeedback.play(.copySuccess)
+            SoundFeedback.play(.appendCopy)
             self.flashStatusItem()
         }
     }
@@ -772,6 +855,295 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     private func markOtherDrPasteAction() {
         lastDrPasteAction = .other
         lastAppendCopyTime = Date()
+    }
+
+    // MARK: - #A10 hold-preview wiring
+
+    /// Push the current ⌥⌘<letter> action-hotkey map into the EventTap engine
+    /// so it can intercept those chords and route them through the grace-
+    /// timer flow. Called from initial setup and whenever ActionConfig's
+    /// `actionHotkeys` map changes (Settings save / hotkey rebind).
+    ///
+    /// Only ⌥⌘<letter> hotkeys are forwarded — the hold-preview UX only
+    /// makes sense when the user could plausibly keep ⌥⌘ held after the
+    /// chord. Other modifier combos (⌃⇧X, etc.) stay on the Carbon
+    /// direct-trigger path with no hold-preview support.
+    @MainActor
+    func reloadHoldPreviewMap() {
+        guard let eventTap = engine as? EventTapEngine else { return }
+        var map: [UInt16: String] = [:]
+        let optCmd = UInt32(optionKey) | UInt32(cmdKey)
+        for (actionID, hk) in registry.config.actionHotkeys where hk.modifiers == optCmd {
+            guard registry.isEnabled(actionID) else { continue }
+            map[hk.keyCode] = actionID
+        }
+        eventTap.setHoldPreviewActionHotkeys(map)
+    }
+
+    /// Pause every hotkey interception path (EventTap session-level tap,
+    /// Carbon system hotkeys ⌥⌘V/C/X/S, Carbon per-action hotkeys) so the
+    /// Settings hotkey recorder can capture ⌥⌘<letter> chords without
+    /// them being consumed before the NSEvent local monitor sees them.
+    /// Must be called in pairs with `endHotkeyRecording()`.
+    @MainActor
+    func beginHotkeyRecording() {
+        engine?.setRecordingMode(true)
+        ActionHotkeyManager.shared.pauseForRecording()
+    }
+
+    /// Restore hotkey interception after `beginHotkeyRecording()`. Reloads
+    /// the per-action map from current config (so a hotkey the user just
+    /// recorded and saved is picked up), then re-pushes the ⌥⌘<letter>
+    /// hold-preview map to the EventTap.
+    @MainActor
+    func endHotkeyRecording() {
+        engine?.setRecordingMode(false)
+        ActionHotkeyManager.shared.resumeFromRecording()
+        reloadHoldPreviewMap()
+    }
+
+    /// Build the list of ⌥⌘<letter> user hotkeys that the region-capture
+    /// cheat sheet should display. Same filter as `reloadHoldPreviewMap`
+    /// — only ⌥⌘ combos qualify; everything else can't fire while ⌥⌘ is
+    /// held anyway. Sorted by display title so the legend reads
+    /// predictably. Letter is uppercased so the keyboard's
+    /// `highlightedLetters` set match works case-insensitively.
+    @MainActor
+    func collectRegionCaptureCheatSheetHotkeys() -> [RegionCaptureUserHotkey] {
+        let optCmd = UInt32(optionKey) | UInt32(cmdKey)
+        var out: [RegionCaptureUserHotkey] = []
+        for (actionID, hk) in registry.config.actionHotkeys where hk.modifiers == optCmd {
+            guard registry.isEnabled(actionID) else { continue }
+            guard let action = registry.actions.first(where: { $0.id == actionID }) else { continue }
+            let title = registry.displayTitle(forActionID: actionID, defaultTitle: action.title)
+            let letter = KeyName.from(keyCode: hk.keyCode).uppercased()
+            out.append(RegionCaptureUserHotkey(letter: letter, title: title))
+        }
+        out.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        return out
+    }
+
+    /// EventTap-routed per-action hotkey fire.
+    ///
+    /// • `holdPreview: false` — user did the standard tap-and-release of
+    ///   ⌥⌘<letter>. Run the action directly against the current
+    ///   clipboard and paste the result into the frontmost app. This is
+    ///   the same flow as the Carbon path (`actionHotkeyDidFire`) and
+    ///   delegates to it for code reuse.
+    /// • `holdPreview: true` — user held ⌥⌘ past the 250 ms grace
+    ///   period. Open the HUD focused on the action so the user can
+    ///   preview the result before committing. The standard release-⌥⌘
+    ///   commit gesture (existing Gesture Mode logic) pastes whatever
+    ///   the user navigated to.
+    nonisolated func hotkeyEngineDidFireActionHotkey(actionID: String,
+                                                      holdPreview: Bool) {
+        Task { @MainActor in
+            if holdPreview {
+                self.openBigHUDFocusedOnAction(actionID: actionID)
+            } else {
+                self.actionHotkeyDidFire(actionID: actionID)
+            }
+        }
+    }
+
+    // MARK: - #A11 region capture delegate
+
+    /// Grace expired with bare ⌥⌘ still held alone. Raise the C2 cursor
+    /// overlay so the user sees crosshair feedback that capture mode is
+    /// armed. Wire onCapture / onCancel here too because the controller
+    /// is short-lived (rebuilt every gesture).
+    nonisolated func hotkeyEngineDidArmRegionCapture() {
+        Task { @MainActor in self.armRegionCapture() }
+    }
+
+    /// User clicked while armed. C1 selection overlay takes over from
+    /// C2 cursor overlay; rectangle anchors at the mouse-down point.
+    nonisolated func hotkeyEngineDidBeginRegionDrag(at globalPoint: NSPoint) {
+        Task { @MainActor in self.regionCapture?.beginSelection(at: globalPoint) }
+    }
+
+    nonisolated func hotkeyEngineDidUpdateRegionDrag(to globalPoint: NSPoint) {
+        Task { @MainActor in self.regionCapture?.updateSelection(to: globalPoint) }
+    }
+
+    /// Mouse released with a valid selection. Controller captures the
+    /// region synchronously and fires `onCapture` (wired in
+    /// `armRegionCapture`). The engine has already set its internal
+    /// HUD-active flag so the next ⌥⌘ release will commit the standard
+    /// paste path against whatever the user navigates to in the HUD.
+    nonisolated func hotkeyEngineDidEndRegionDrag(at globalPoint: NSPoint) {
+        Task { @MainActor in self.regionCapture?.endSelection(at: globalPoint) }
+    }
+
+    /// ⌥⌘ released without committing the capture (no mouse-down, or
+    /// mid-drag bail). Tear down overlays without affecting clipboard.
+    nonisolated func hotkeyEngineDidCancelRegionCapture() {
+        Task { @MainActor in self.regionCapture?.cancel() }
+    }
+
+    /// Build and wire a fresh ScreenRegionCaptureController, then arm it.
+    /// Controller is instance-per-gesture — easier than keeping one alive
+    /// across all the state transitions since each gesture cleanly
+    /// terminates with onCapture or onCancel.
+    @MainActor
+    private func armRegionCapture() {
+        // Block region capture when ANY DrPaste UI is up. The EventTap
+        // engine already guards against its own bigHUDIsActive flag for
+        // Gesture-mode HUDs, but we layer a belt-and-braces check here
+        // to cover all cases — visible BigHUDPanel (any reason), MiniHUD
+        // showing an in-flight action, or a deferred-paste handoff
+        // waiting for an AI stream. In all of these the user has
+        // existing DrPaste state on screen that the region-capture
+        // gesture would conflict with, so we silently ignore the arm.
+        // The engine's region-capture state self-recovers on the next
+        // ⌥⌘ release (flagsChanged path fires cancel which finds no
+        // overlay to tear down — no-op).
+        if bigHUDPanel?.isVisible == true { return }
+        if pendingDeferredPasteApp != nil { return }
+        if aiStreamingTask != nil { return }
+
+        // Remember which app was frontmost at arm time so the eventual
+        // paste lands in the right window. NSWorkspace.frontmostApplication
+        // at gesture start is more reliable than at capture time because
+        // by then the user may have clicked into a different window.
+        regionCaptureSourceApp = NSWorkspace.shared.frontmostApplication
+
+        let controller = ScreenRegionCaptureController()
+        regionCapture = controller
+
+        // Hand the cheat sheet a closure that pulls fresh user
+        // hotkeys from the registry every time it shows. Filter to
+        // ⌥⌘<letter> only — other modifier combos can't fire while
+        // ⌥⌘ is held anyway (see the modifier-matching invariant
+        // recorded for the per-action hotkey path).
+        controller.cheatSheet.hotkeysProvider = { [weak self] in
+            guard let self = self else { return [] }
+            return self.collectRegionCaptureCheatSheetHotkeys()
+        }
+
+        controller.onCapture = { [weak self] data, rect in
+            guard let self = self else { return }
+            self.regionCapture = nil
+            guard let pngData = data else {
+                // Capture failed — most likely Screen Recording permission
+                // hasn't been granted yet. macOS will have shown its own
+                // prompt; play the failure sound so the user has audio
+                // confirmation something went wrong.
+                SoundFeedback.play(.pasteFailure)
+                self.regionCaptureSourceApp = nil
+                return
+            }
+            // Width/height in pixels = points × backing scale of the screen
+            // the rect was on. Fall back to main screen if we can't locate it.
+            let scale = NSScreen.screens.first(where: { $0.frame.intersects(rect) })?
+                .backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+            let pxW = Int(rect.width * scale)
+            let pxH = Int(rect.height * scale)
+            let sourceApp = self.regionCaptureSourceApp
+            self.regionCaptureSourceApp = nil
+            if let item = self.store.addCapturedImage(pngData: pngData,
+                                                     width: pxW,
+                                                     height: pxH,
+                                                     sourceApp: sourceApp) {
+                self.openBigHUDFocusedOnCapturedImage(item: item, sourceApp: sourceApp)
+            }
+        }
+
+        controller.onCancel = { [weak self] in
+            self?.regionCapture = nil
+            self?.regionCaptureSourceApp = nil
+        }
+
+        controller.arm()
+    }
+
+    /// Open the BigHUD with the freshly-captured image as the focused
+    /// row. Mirrors `openBigHUDFocusedOnAction` but for an item (Paste-as-
+    /// is by default — the user can arrow over to Extract text / ASCII
+    /// art / AI Describe etc. while still holding ⌥⌘).
+    @MainActor
+    private func openBigHUDFocusedOnCapturedImage(item: ClipboardItem,
+                                                  sourceApp: NSRunningApplication?) {
+        markOtherDrPasteAction()
+        currentSummonReason = .paste
+        savedFrontmostApp = sourceApp
+        bigHUDState.items = store.items
+        // The freshly-captured image was inserted at index 0 by
+        // ClipboardStore.addCapturedImage.
+        bigHUDState.itemIndex = 0
+        bigHUDState.actionIndex = 0
+        bigHUDState.contentMeta = nil
+        bigHUDState.mode = engine.bigHUDMode
+        recomputeActions()
+        refreshPreview()
+        updateContentMeta()
+        showBigHUD()
+    }
+
+    /// Open the HUD pre-focused on a specific action (current clipboard as
+    /// the focused item). Used by the #A10 hold-preview path so a user
+    /// holding ⌥⌘ after a per-action hotkey chord lands directly on the
+    /// action's preview without first browsing to it.
+    ///
+    /// The EventTap engine has already set its internal `bigHUDIsActive` flag
+    /// before invoking us, so the subsequent ⌥⌘ release flows through the
+    /// existing `flagsChanged → hotkeyEngineDidRelease` commit path — same
+    /// gesture-mode commit semantics as releasing after ⌥⌘V.
+    @MainActor
+    private func openBigHUDFocusedOnAction(actionID: String) {
+        markOtherDrPasteAction()
+        currentSummonReason = .paste
+
+        // Selection-first, same as the direct-trigger path. The BigHUD
+        // preview is only useful if it reflects the action applied to
+        // what the user actually highlighted — stale clipboard content
+        // would render a misleading preview and lead to a wrong paste.
+        // Issue ⌘C, wait for pb to refresh, then open the HUD with the
+        // freshly-captured item at the top.
+        let pb = NSPasteboard.general
+        let changeCountBefore = pb.changeCount
+        PasteSimulator.simulateCopy()
+
+        Task { @MainActor in
+            let start = Date()
+            while Date().timeIntervalSince(start) < 0.25 {
+                try? await Task.sleep(nanoseconds: 20_000_000)
+                if pb.changeCount > changeCountBefore { break }
+            }
+            guard pb.changeCount > changeCountBefore else {
+                // No selection. Failure feedback + reset EventTap's
+                // bigHUDIsActive flag (the engine had set it true in
+                // anticipation of this open) so the inevitable ⌥⌘
+                // release doesn't try to commit a HUD that never
+                // opened.
+                SoundFeedback.play(.pasteFailure)
+                (self.engine as? EventTapEngine)?.resetHudActive()
+                return
+            }
+            // Selection captured — same audible "got it" cue as the
+            // direct-trigger path. The eventual paste on ⌥⌘ release
+            // fires `.pasteSuccess` via the standard commit path, so
+            // the user still hears the two-stage capture-then-paste
+            // rhythm even when using the hold-preview flow.
+            SoundFeedback.play(.copySuccess)
+            // Promote selection into history so the BigHUD sees it at
+            // index 0.
+            self.watcher.forceTick()
+
+            self.bigHUDState.items = self.store.items
+            self.bigHUDState.itemIndex = 0
+            self.bigHUDState.contentMeta = nil
+            self.bigHUDState.mode = self.engine.bigHUDMode
+            self.recomputeActions()
+            if let idx = self.bigHUDState.actions.firstIndex(where: { $0.id == actionID }) {
+                self.bigHUDState.actionIndex = idx
+            } else {
+                self.bigHUDState.actionIndex = 0
+            }
+            self.refreshPreview()
+            self.updateContentMeta()
+            self.showBigHUD()
+        }
     }
 
     nonisolated func hotkeyEngineDidQuickCopy() {
@@ -805,30 +1177,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     // MARK: HUD lifecycle
 
     private func openHUD() {
-        hudState.items = store.items
+        bigHUDState.items = store.items
         // Cut & Replace UX: when cursorOnSecondOnCut is enabled and there are
         // more than one item, the cursor starts on the second (skipping the
         // just-cut item). Default off matches native cut+paste behavior.
         let skipCutItem = currentSummonReason == .cutAndReplace
             && UserDefaults.standard.bool(forKey: "drpaste.hud.cursorOnSecondOnCut")
-            && hudState.items.count > 1
-        hudState.itemIndex = skipCutItem ? 1 : 0
-        hudState.actionIndex = 0
-        hudState.contentMeta = nil
+            && bigHUDState.items.count > 1
+        bigHUDState.itemIndex = skipCutItem ? 1 : 0
+        bigHUDState.actionIndex = 0
+        bigHUDState.contentMeta = nil
         recomputeActions()
         refreshPreview()
         updateContentMeta()
-        showPanel()
-        if engine.hudMode == .summon { installLocalKeyMonitor() }
+        showBigHUD()
+        if engine.bigHUDMode == .summon { installLocalKeyMonitor() }
     }
 
     /// Compute content meta for the focused item — async, lazy, cached.
     private func updateContentMeta() {
-        guard let item = hudState.currentItem else {
-            hudState.contentMeta = nil
+        guard let item = bigHUDState.currentItem else {
+            bigHUDState.contentMeta = nil
             return
         }
-        hudState.contentMeta = nil   // placeholder "…"
+        bigHUDState.contentMeta = nil   // placeholder "…"
         let itemID = item.id
         Task { [weak self] in
             // Background compute via a detached child task, then await back on
@@ -838,20 +1210,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                 ContentMetaCache.shared.computeSync(for: item)
             }.value
             guard let self = self else { return }
-            if self.hudState.currentItem?.id == itemID {
-                self.hudState.contentMeta = meta
+            if self.bigHUDState.currentItem?.id == itemID {
+                self.bigHUDState.contentMeta = meta
             }
         }
     }
 
-    private func commitHUD() {
-        let outcome = hudState.outcome
+    private func commitBigHUD() {
         let savedApp = savedFrontmostApp
+
+        // Deferred-paste path: if an AI action is still streaming, the
+        // outcome currently held in bigHUDState is the placeholder (original
+        // un-transformed clipboard), NOT the eventual AI result. Don't
+        // paste the placeholder — keep the streaming task running, take
+        // down HUD chrome, promote ProgressHUD as the in-flight indicator,
+        // and paste the real outcome when the stream completes. Makes the
+        // hotkey timing model uniform: press hotkey → result pastes when
+        // ready, regardless of how long ⌥⌘ was held.
+        if bigHUDState.isPreviewLoading, bigHUDState.aiInflight != nil {
+            deferPasteAfterAILoad(savedApp: savedApp)
+            return
+        }
+
+        let outcome = bigHUDState.outcome
         savedFrontmostApp = nil
-        closeHUD()
+        closeBigHUD()
 
         guard let outcome = outcome else { return }
+        commitOutcome(outcome, savedApp: savedApp)
+    }
 
+    /// Single-place ApplyOutcome → side-effect mapping. Called by both the
+    /// synchronous HUD commit path and the deferred AI-completion path so
+    /// they produce identical user-visible behaviour for the same outcome.
+    @MainActor
+    private func commitOutcome(_ outcome: ApplyOutcome,
+                                savedApp: NSRunningApplication?) {
         switch outcome {
         case .preview(let item), .alternativeCommit(let item, .standardPaste):
             performStandardPaste(item, savedApp: savedApp)
@@ -866,6 +1260,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         case .sideEffect(_, let perform):
             perform()
             SoundFeedback.play(.pasteSuccess)
+        }
+    }
+
+    /// Convert a HUD commit that landed during AI streaming into a deferred
+    /// paste. HUD chrome goes away (the user signalled "I'm done watching")
+    /// but the streaming task and its eventual result stay alive. ProgressHUD
+    /// surfaces the wait so the user has SOME visible indicator that the
+    /// AI is still working — same chrome they'd have seen on a quick-tap
+    /// direct-trigger path. Paste fires from the streaming task's completion
+    /// block when the AI finishes (or the partial when it fails mid-stream).
+    @MainActor
+    private func deferPasteAfterAILoad(savedApp: NSRunningApplication?) {
+        let inflight = bigHUDState.aiInflight
+        // Record the target app for the streaming task's completion handler
+        // to fire against. Cleared in the completion handler itself.
+        pendingDeferredPasteApp = savedApp
+        savedFrontmostApp = nil
+
+        // Hide HUD chrome but DO NOT call closeBigHUD — closeBigHUD cancels
+        // aiStreamingTask, which would defeat the entire purpose. We do
+        // need to tear down the gesture monitor and tick timer manually.
+        removeLocalKeyMonitor()
+        stopAITickTimer()
+        bigHUDState.accumulator = nil
+        bigHUDPanel?.orderOut(nil)
+
+        // Surface the in-flight state in ProgressHUD so the user sees the
+        // wait. Identical chrome to what a quick-tap direct-trigger would
+        // have shown for the same action — keeps the visual language
+        // consistent across the two entry points.
+        //
+        // onCancel: the X button is the user's escape hatch out of a slow
+        // AI call. Clicking it must cancel the streaming task AND clear
+        // pendingDeferredPasteApp so the completion handler (if it fires
+        // after cancellation) doesn't paste something into the user's
+        // original app behind their back.
+        let cancelHandler: () -> Void = { [weak self] in
+            guard let self = self else { return }
+            self.aiStreamingTask?.cancel()
+            self.aiStreamingTask = nil
+            self.pendingDeferredPasteApp = nil
+            SoundFeedback.play(.pasteFailure)
+        }
+        if let inflight = inflight {
+            MiniHUDController.shared.show(label: inflight.actionTitle,
+                                              inflight: inflight,
+                                              onCancel: cancelHandler)
+        } else {
+            MiniHUDController.shared.show(label: "Working…",
+                                              onCancel: cancelHandler)
         }
     }
 
@@ -893,7 +1337,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         }
     }
 
-    private func closeHUD() {
+    private func closeBigHUD() {
         removeLocalKeyMonitor()
         stopAITickTimer()
         // Cancel any in-flight AI streaming. Cancellation cascades through
@@ -902,50 +1346,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // stopping further token billing.
         aiStreamingTask?.cancel()
         aiStreamingTask = nil
-        hudState.aiInflight = nil
-        hudState.accumulator = nil
-        hudPanel?.orderOut(nil)
+        bigHUDState.aiInflight = nil
+        bigHUDState.accumulator = nil
+        bigHUDPanel?.orderOut(nil)
     }
 
     private func navigate(_ direction: NavDirection) {
         // Navigation does NOT drop the accumulator — the user is scouting
         // candidate clips to fold in. Consumed indices are skipped so the
         // visible list and the cursor stay in sync.
-        let consumed = hudState.accumulator?.consumed ?? []
+        let consumed = bigHUDState.accumulator?.consumed ?? []
         switch direction {
         case .up:
-            var t = hudState.itemIndex - 1
+            var t = bigHUDState.itemIndex - 1
             while t >= 0 && consumed.contains(t) { t -= 1 }
             if t >= 0 {
-                hudState.itemIndex = t; hudState.actionIndex = 0
+                bigHUDState.itemIndex = t; bigHUDState.actionIndex = 0
                 recomputeActions(); refreshPreview(); updateContentMeta()
             }
         case .down:
-            var t = hudState.itemIndex + 1
-            while t < hudState.items.count && consumed.contains(t) { t += 1 }
-            if t < hudState.items.count {
-                hudState.itemIndex = t; hudState.actionIndex = 0
+            var t = bigHUDState.itemIndex + 1
+            while t < bigHUDState.items.count && consumed.contains(t) { t += 1 }
+            if t < bigHUDState.items.count {
+                bigHUDState.itemIndex = t; bigHUDState.actionIndex = 0
                 recomputeActions(); refreshPreview(); updateContentMeta()
             }
         case .left:
-            if hudState.actionIndex > 0 { hudState.actionIndex -= 1; refreshPreview() }
+            if bigHUDState.actionIndex > 0 { bigHUDState.actionIndex -= 1; refreshPreview() }
         case .right:
-            if hudState.actionIndex + 1 < hudState.actions.count {
-                hudState.actionIndex += 1; refreshPreview()
+            if bigHUDState.actionIndex + 1 < bigHUDState.actions.count {
+                bigHUDState.actionIndex += 1; refreshPreview()
             }
         }
     }
 
     private func recomputeActions() {
-        guard let item = hudState.currentItem else { hudState.actions = []; return }
+        guard let item = bigHUDState.currentItem else { bigHUDState.actions = []; return }
         let ctx = ContextDetector.detect(item)
-        hudState.actions = registry.applicable(for: item, context: ctx)
+        bigHUDState.actions = registry.applicable(for: item, context: ctx)
     }
 
     private func refreshPreview() {
-        guard let item = hudState.currentItem,
-              let action = hudState.currentAction else {
-            hudState.outcome = nil
+        guard let item = bigHUDState.currentItem,
+              let action = bigHUDState.currentAction else {
+            bigHUDState.outcome = nil
             return
         }
         previewToken &+= 1
@@ -956,15 +1400,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // (the timer would otherwise keep ticking against a now-irrelevant
         // start time). The AI branch below sets it again for actual AI calls.
         stopAITickTimer()
-        hudState.aiInflight = nil
-        hudState.aiElapsed = 0
+        bigHUDState.aiInflight = nil
+        bigHUDState.aiElapsed = 0
 
         // When a clip accumulator is active the preview always shows the
         // accumulated text — the focused action's transformation is bypassed
         // because the user is in "merge clips" mode, not "transform clip" mode.
-        if let acc = hudState.accumulator {
-            hudState.isPreviewLoading = false
-            hudState.outcome = .preview(accumulatorItem(text: acc.text))
+        if let acc = bigHUDState.accumulator {
+            bigHUDState.isPreviewLoading = false
+            bigHUDState.outcome = .preview(accumulatorItem(text: acc.text))
             return
         }
 
@@ -977,19 +1421,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             Task { @MainActor in
                 let outcome = await action.apply(item: item, context: ctx)
                 if myToken == self.previewToken {
-                    self.hudState.outcome = outcome
-                    self.hudState.isPreviewLoading = false
+                    self.bigHUDState.outcome = outcome
+                    self.bigHUDState.isPreviewLoading = false
                 }
             }
         } else {
-            hudState.isPreviewLoading = true
-            hudState.outcome = .preview(item)
+            bigHUDState.isPreviewLoading = true
+            bigHUDState.outcome = .preview(item)
             // Surface provider / model / action title so the HUD preview pane
             // can show "Anthropic claude-sonnet-4-6 · 4.2s" instead of an
             // opaque spinner. Tick timer drives `aiElapsed` until the call
             // returns.
-            hudState.aiInflight = makeAIInflight(for: action)
-            hudState.aiElapsed = 0
+            bigHUDState.aiInflight = makeAIInflight(for: action)
+            bigHUDState.aiElapsed = 0
             startAITickTimer()
             // Stream the response. The `onPartial` closure runs on the
             // main actor for each accumulated chunk; the first chunk
@@ -1004,17 +1448,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                     onPartial: { [weak self] partial in
                         guard let self = self else { return }
                         if myToken == self.previewToken {
-                            self.hudState.outcome = .preview(partial)
-                            self.hudState.isPreviewLoading = false
+                            self.bigHUDState.outcome = .preview(partial)
+                            self.bigHUDState.isPreviewLoading = false
                         }
                     }
                 )
                 await MainActor.run {
                     if myToken == self.previewToken {
-                        self.hudState.outcome = outcome
-                        self.hudState.isPreviewLoading = false
+                        self.bigHUDState.outcome = outcome
+                        self.bigHUDState.isPreviewLoading = false
                         self.stopAITickTimer()
-                        self.hudState.aiInflight = nil
+                        self.bigHUDState.aiInflight = nil
+                    }
+                    // Deferred-paste path. If the user released ⌥⌘ while
+                    // this stream was still loading, `commitBigHUD` left
+                    // `pendingDeferredPasteApp` set, took down HUD chrome,
+                    // and promoted ProgressHUD as the in-flight indicator.
+                    // Now that the AI is done, fire the paste against that
+                    // app. This runs INDEPENDENTLY of previewToken — the
+                    // user pressed a hotkey and the result owes them a
+                    // paste, even if they navigated away mid-stream.
+                    if let target = self.pendingDeferredPasteApp {
+                        self.pendingDeferredPasteApp = nil
+                        MiniHUDController.shared.hide()
+                        self.commitOutcome(outcome, savedApp: target)
                     }
                 }
             }
@@ -1047,17 +1504,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                           startedAt: Date())
     }
 
-    /// Starts a 10 Hz timer that refreshes `hudState.aiElapsed` while an AI
+    /// Starts a 10 Hz timer that refreshes `bigHUDState.aiElapsed` while an AI
     /// request is in flight. Stopped via `stopAITickTimer()` when the response
     /// arrives, the user navigates away, or the HUD closes.
     @MainActor
     private func startAITickTimer() {
         stopAITickTimer()
-        let started = hudState.aiInflight?.startedAt ?? Date()
+        let started = bigHUDState.aiInflight?.startedAt ?? Date()
         aiTickTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self = self else { return }
-                self.hudState.aiElapsed = Date().timeIntervalSince(started)
+                self.bigHUDState.aiElapsed = Date().timeIntervalSince(started)
             }
         }
     }
@@ -1068,37 +1525,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         aiTickTimer = nil
     }
 
-    private func showPanel() {
-        if hudPanel == nil {
+    private func showBigHUD() {
+        if bigHUDPanel == nil {
             // Provider closure for custom titles.
-            hudState.actionTitleProvider = { [weak self] (id, defaultTitle) in
+            bigHUDState.actionTitleProvider = { [weak self] (id, defaultTitle) in
                 self?.registry.displayTitle(forActionID: id, defaultTitle: defaultTitle) ?? defaultTitle
             }
-            let view = HudView(
-                state: hudState,
+            let view = BigHUDView(
+                state: bigHUDState,
                 onPick: { [weak self] itemIdx, actionIdx in
                     guard let self = self else { return }
-                    let itemChanged = itemIdx != self.hudState.itemIndex
-                    self.hudState.itemIndex = itemIdx
-                    self.hudState.actionIndex = actionIdx
+                    let itemChanged = itemIdx != self.bigHUDState.itemIndex
+                    self.bigHUDState.itemIndex = itemIdx
+                    self.bigHUDState.actionIndex = actionIdx
                     self.refreshPreview()
                     if itemChanged { self.updateContentMeta() }
                 },
-                onCommit: { [weak self] in self?.commitHUD() },
+                onCommit: { [weak self] in self?.commitBigHUD() },
                 onOpenAccessibility: { [weak self] in self?.openAccessibilitySettings() },
                 onRecoveryAction: { [weak self] rec in self?.performRecovery(rec) },
-                onClose: { [weak self] in self?.closeHUD() }   // HUD close button
+                onClose: { [weak self] in self?.closeBigHUD() }   // HUD close button
             )
-            let allowsKey = engine.hudMode == .summon
-            let host = HudHostingView(rootView: view)
+            let allowsKey = engine.bigHUDMode == .summon
+            let host = BigHUDHostingView(rootView: view)
             let frame = NSRect(x: 0, y: 0, width: 720, height: allowsKey ? 440 : 400)
-            let panel = HudPanel(contentRect: frame, allowsKey: allowsKey)
+            let panel = BigHUDPanel(contentRect: frame, allowsKey: allowsKey)
             panel.contentView = host
-            hudPanel = panel
+            bigHUDPanel = panel
         }
-        guard let panel = hudPanel else { return }
+        guard let panel = bigHUDPanel else { return }
         centerOnActiveScreen(panel)
-        if engine.hudMode == .summon {
+        if engine.bigHUDMode == .summon {
             panel.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         } else {
@@ -1106,9 +1563,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         }
         // Verify visibility after a short delay and retry the show if needed.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            if let p = self.hudPanel, !p.isVisible {
+            if let p = self.bigHUDPanel, !p.isVisible {
                 NSLog("DrPaste: HUD did not become visible, retry")
-                if self.engine.hudMode == .summon {
+                if self.engine.bigHUDMode == .summon {
                     p.makeKeyAndOrderFront(nil)
                 } else {
                     p.orderFrontRegardless()
@@ -1143,7 +1600,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         switch rec {
         case .openProvidersConfig:
             // Close the HUD and open Settings → AI tab.
-            closeHUD()
+            closeBigHUD()
             settingsController?.show()
         case .openAccessibilitySettings:
             openAccessibilitySettings()
@@ -1162,9 +1619,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             let cmd = event.modifierFlags.contains(.command)
             switch kc {
             case kVK_Return, kVK_ANSI_KeypadEnter:
-                self.commitHUD(); return nil
+                self.commitBigHUD(); return nil
             case kVK_Escape:
-                self.closeHUD(); return nil
+                self.closeBigHUD(); return nil
             case kVK_Delete:                       // Backspace deletes the focused item in Limited Mode
                 self.hotkeyEngineDidDeleteFocused(); return nil
             case kVK_UpArrow:    self.navigate(.up);    return nil
@@ -1176,11 +1633,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             if cmd {
                 switch kc {
                 case kVK_ANSI_Equal, kVK_ANSI_KeypadPlus:
-                    self.hudState.adjustFontScale(.bigger); return nil
+                    self.bigHUDState.adjustFontScale(.bigger); return nil
                 case kVK_ANSI_Minus, kVK_ANSI_KeypadMinus:
-                    self.hudState.adjustFontScale(.smaller); return nil
+                    self.bigHUDState.adjustFontScale(.smaller); return nil
                 case kVK_ANSI_0, kVK_ANSI_Keypad0:
-                    self.hudState.adjustFontScale(.reset); return nil
+                    self.bigHUDState.adjustFontScale(.reset); return nil
                 default: break
                 }
             }

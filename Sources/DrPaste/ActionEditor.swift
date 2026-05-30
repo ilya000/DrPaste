@@ -15,6 +15,128 @@
 //
 
 import SwiftUI
+import AppKit
+
+// MARK: - Window controller
+
+/// Hosts ActionEditor inside a standalone NSWindow rather than as a SwiftUI
+/// `.sheet`. Two reasons for the switch:
+///   1. Sheets are attached to their parent window and can't be moved
+///      independently — the user couldn't drag the editor by its title bar
+///      to get it out of the way of the Settings window underneath.
+///   2. Sheet content slides down from the parent's title bar and doesn't
+///      know about the Dock. With a 720 pt-tall editor and a Settings
+///      window positioned near the top of the screen, the OK/Cancel
+///      footer landed behind the Dock and became unclickable.
+///
+/// A standalone titled NSWindow is draggable by its title bar like any
+/// document window, and `clampToVisibleFrame` shifts the initial origin
+/// upward if `.center()` would put the bottom edge underneath the Dock.
+@MainActor
+final class ActionEditorWindowController {
+    private var window: NSWindow?
+
+    /// Open a new editor window for `context`. Any previously-opened
+    /// editor is closed first — the editor is intended to be modal-ish
+    /// (only one at a time). `onClose` is invoked once the user clicks
+    /// Cancel / Save / closes the window via the red traffic-light
+    /// button so the caller can reset its `editorContext` state.
+    func show(context: ActionEditorContext,
+              registry: ActionRegistry,
+              onClose: @escaping () -> Void) {
+        close()
+
+        // Title reflects whether we're creating or editing — small UX
+        // touch, the title bar is the first thing the user reads.
+        let title: String = {
+            switch context {
+            case .createNew:            return "Add Action"
+            case .editBuiltin:          return "Edit Built-in Action"
+            case .editTransformation:   return "Edit Transformation"
+            case .editAI:               return "Edit AI Action"
+            }
+        }()
+
+        // Wrap the SwiftUI editor so closing always tears down the
+        // window before invoking the caller's onClose — otherwise the
+        // SwiftUI state would race with our window teardown.
+        let view = ActionEditor(context: context, registry: registry) { [weak self] in
+            self?.close()
+            onClose()
+        }
+        let host = NSHostingController(rootView: view)
+
+        let w = NSWindow(contentViewController: host)
+        w.title = title
+        // .titled gives the draggable title bar; .closable lets the red
+        // traffic-light dismiss; .resizable means the user can stretch
+        // vertically if they want more breathing room around the test
+        // panel. No .miniaturizable — this is a dialog, not a document.
+        w.styleMask = [.titled, .closable, .resizable]
+        // The editor's content view computes its own ideal width (620 pt
+        // normally, 880 pt with regex help expanded). Initial content
+        // size matches the default; the user can resize either way.
+        w.setContentSize(NSSize(width: 620, height: 720))
+        w.isReleasedWhenClosed = false
+        w.center()
+        // Belt-and-braces against `.center()` placing the bottom edge
+        // behind the Dock / menu bar on small displays — clamp into
+        // `visibleFrame` (which excludes both).
+        clampToVisibleFrame(w)
+        // Wire the red traffic-light: dismissing the window with the
+        // close button should fire onClose so the caller resets state.
+        let delegate = ActionEditorWindowDelegate(onClose: { [weak self] in
+            self?.window = nil
+            onClose()
+        })
+        w.delegate = delegate
+        retainDelegate = delegate
+        window = w
+        w.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func close() {
+        window?.orderOut(nil)
+        window = nil
+        retainDelegate = nil
+    }
+
+    /// Retain the delegate alongside the window — NSWindow.delegate is
+    /// weak. Without this the delegate would deallocate as soon as the
+    /// outer scope returned.
+    private var retainDelegate: ActionEditorWindowDelegate?
+
+    /// Move the window so its frame fits inside the active screen's
+    /// `visibleFrame` (which excludes the menu bar and the Dock). Pure
+    /// origin adjustment — never shrinks the frame.
+    private func clampToVisibleFrame(_ w: NSWindow) {
+        guard let screen = w.screen ?? NSScreen.main else { return }
+        let visible = screen.visibleFrame
+        var f = w.frame
+        if f.height > visible.height {
+            // Window is taller than the screen can fit. Resize the
+            // content height down so OK/Cancel stay visible; the editor
+            // has internal ScrollViews so this only steals breathing
+            // room, not functionality.
+            f.size.height = visible.height
+        }
+        if f.maxY > visible.maxY { f.origin.y = visible.maxY - f.height }
+        if f.minY < visible.minY { f.origin.y = visible.minY }
+        if f.maxX > visible.maxX { f.origin.x = visible.maxX - f.width }
+        if f.minX < visible.minX { f.origin.x = visible.minX }
+        w.setFrame(f, display: true)
+    }
+}
+
+/// NSWindow delegate that routes the red traffic-light close button
+/// through the controller's onClose closure. Stored as a strong reference
+/// in the controller because NSWindow holds its delegate weakly.
+private final class ActionEditorWindowDelegate: NSObject, NSWindowDelegate {
+    let onClose: () -> Void
+    init(onClose: @escaping () -> Void) { self.onClose = onClose }
+    func windowWillClose(_ notification: Notification) { onClose() }
+}
 
 // MARK: - Mode
 
@@ -128,7 +250,16 @@ struct ActionEditor: View {
             Divider()
             footerButtons
         }
-        .frame(width: showRegexHelp && kind == .transformation ? 880 : 620, height: 720)
+        // Use minWidth/minHeight rather than a hard frame so the hosting
+        // NSWindow (ActionEditorWindowController) can resize freely.
+        // Width follows the regex-help expansion state — 880 when the
+        // sidebar is visible, 620 otherwise.
+        .frame(
+            minWidth: showRegexHelp && kind == .transformation ? 880 : 620,
+            idealWidth: showRegexHelp && kind == .transformation ? 880 : 620,
+            minHeight: 560,
+            idealHeight: 720
+        )
         .onAppear { loadInitialState() }
     }
 
@@ -201,7 +332,18 @@ struct ActionEditor: View {
 
     private var hotkeySection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Hotkey").font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Text("Hotkey").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                // Recommendation chip — always visible so the user notices
+                // before they pick a combo. Once they pick one, the
+                // hudSupportHint below switches between "supported" and
+                // "not supported" copy so they can correct it if they
+                // wanted hold-preview.
+                Text("Tip: ⌥⌘ + letter enables HUD hold-preview")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
             HotkeyRecorderField(
                 hotkey: $hotkey,
                 onStatus: { msg in conflictMessage = msg.isEmpty ? nil : msg },
@@ -211,17 +353,51 @@ struct ActionEditor: View {
             )
             if let msg = conflictMessage {
                 // Reserved-combo errors are red; steal notices are informational
-                // (orange). Both are non-blocking — the user can still press Save.
+                // (orange). Conflict messages take priority over the HUD-support
+                // hint because they require user action to resolve.
                 let isReserved = msg.hasPrefix("This combination is reserved")
                 Text(msg)
                     .font(.caption)
                     .foregroundStyle(isReserved ? Color.red : Color.orange)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("Direct trigger: pressing the hotkey applies the action to the current clipboard and pastes immediately (no HUD).")
-                    .font(.caption2).foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
+                hudSupportHint
             }
+        }
+    }
+
+    /// Three-state hint about whether the picked hotkey supports the
+    /// hold-to-preview BigHUD gesture from #A10:
+    ///   • No hotkey picked   → instructional caption.
+    ///   • ⌥⌘ + letter        → green success: HUD ready, explain the hold gesture.
+    ///   • Anything else      → orange warning: direct-paste only.
+    /// Two-line max; never wraps wider than the recorder field.
+    @ViewBuilder
+    private var hudSupportHint: some View {
+        if let hk = hotkey {
+            if hk.isOptCmdOnly {
+                Label {
+                    Text("HUD ready — tap to paste immediately, or keep ⌥⌘ held after pressing \(hk.keyDisplayName) to preview the result in BigHUD before committing.")
+                } icon: {
+                    Image(systemName: "checkmark.circle.fill")
+                }
+                .font(.caption)
+                .foregroundStyle(Color.green)
+                .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Label {
+                    Text("Direct trigger only — paste happens immediately; the BigHUD hold-preview gesture requires ⌥⌘ + letter to compose with the rest of DrPaste's gestures.")
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                }
+                .font(.caption)
+                .foregroundStyle(Color.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        } else {
+            Text("No hotkey set. Pick a combination above — ⌥⌘ + a letter unlocks the BigHUD hold-preview flow; other modifier combos run as pure direct-trigger.")
+                .font(.caption2).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

@@ -1,16 +1,22 @@
 //
-//  HUD.swift
+//  BigHUD.swift
 //  DrPaste
 //
 //  Copyright © 2026 iLya Os.
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  HUD overlay — single implementation for both gesture and summon modes
-//  (only the panel styleMask and the Limited Mode banner differ). Renders an
-//  inline notice for ApplyOutcome.failed, the source label under the header,
-//  AttributedString rich-text preview, system accent colors, font scaling,
-//  dynamic visibleRowCount with chevrons, and an auto-centering action row.
+//  Big HUD — the press-and-hold browser panel that opens on ⌥⌘V hold (or
+//  via the summon hotkey in Limited Mode). Single implementation for both
+//  gesture and summon modes (only the panel styleMask and the Limited
+//  Mode banner differ). Renders an inline notice for ApplyOutcome.failed,
+//  the source label under the header, AttributedString rich-text preview,
+//  system accent colors, font scaling, dynamic visibleRowCount with
+//  chevrons, and an auto-centering action row.
+//
+//  Counterpart: MiniHUD.swift — the small floating progress indicator
+//  shown for direct-trigger hotkeys and for the deferred-paste handoff
+//  when the user releases ⌥⌘ before an AI action finishes.
 //
 
 import AppKit
@@ -20,7 +26,7 @@ import Carbon.HIToolbox
 // MARK: - State
 
 @MainActor
-final class HudState: ObservableObject {
+final class BigHUDState: ObservableObject {
     @Published var items: [ClipboardItem] = []
     @Published var itemIndex: Int = 0
     @Published var actionIndex: Int = 0
@@ -48,21 +54,21 @@ final class HudState: ObservableObject {
     /// carrier showing the merged text — the accumulator "walks" through the
     /// list, eating clips as it goes. Commit pastes the merged text; close /
     /// cancel discards. Session-local and never persisted.
-    @Published var accumulator: HUDClipAccumulator? = nil
-    @Published var mode: HudMode = .gesture
+    @Published var accumulator: BigHUDClipAccumulator? = nil
+    @Published var mode: BigHUDMode = .gesture
     @Published var engineLabel: String = ""
 
     /// Content meta for the focused item — computed lazily via ContentMetaCache.
     @Published var contentMeta: String? = nil
 
     /// Optional provider that lets the HUD look up a user-customized title for
-    /// an action (built-ins can be renamed). Wired in by AppDelegate.showPanel
+    /// an action (built-ins can be renamed). Wired in by AppDelegate.showBigHUD
     /// when the view is created.
     var actionTitleProvider: ((String, String) -> String)? = nil
 
     private static let fontScaleKey = "drpaste.hud.fontScale"
     @Published var fontScale: CGFloat = {
-        let v = UserDefaults.standard.double(forKey: HudState.fontScaleKey)
+        let v = UserDefaults.standard.double(forKey: BigHUDState.fontScaleKey)
         return v == 0 ? 1.0 : CGFloat(v)
     }() {
         didSet { UserDefaults.standard.set(Double(fontScale), forKey: Self.fontScaleKey) }
@@ -99,7 +105,7 @@ final class HudState: ObservableObject {
 ///   • `text`       — concatenated text (joined with "\n"), in absorption
 ///     order: the original anchor, then each subsequent target in the order
 ///     the user pressed ⌥⌘S on them.
-struct HUDClipAccumulator: Equatable {
+struct BigHUDClipAccumulator: Equatable {
     var consumed: Set<Int>
     var anchorIndex: Int
     var text: String
@@ -121,7 +127,7 @@ struct AIInflight: Equatable {
 
 // MARK: - Panel
 
-final class HudPanel: NSPanel {
+final class BigHUDPanel: NSPanel {
     private let allowsKey: Bool
     private static let cornerRadius: CGFloat = 18
 
@@ -181,14 +187,14 @@ final class HudPanel: NSPanel {
 
 // MARK: - acceptsFirstMouse host
 
-final class HudHostingView<Content: View>: NSHostingView<Content> {
+final class BigHUDHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 // MARK: - HUD view
 
-struct HudView: View {
-    @ObservedObject var state: HudState
+struct BigHUDView: View {
+    @ObservedObject var state: BigHUDState
     let onPick: (Int, Int) -> Void               // (itemIdx, actionIdx) — refresh the preview
     let onCommit: () -> Void                      // release / Enter / dbl-click
     let onOpenAccessibility: () -> Void
@@ -790,15 +796,12 @@ struct HudView: View {
     }
 
     private func badgeColor(for kind: ProviderKind) -> Color {
-        switch kind {
-        case .anthropic: return .orange
-        case .openai:    return .green
-        case .gemini:    return .blue
-        case .grok:      return .primary
-        case .mistral:   return .purple
-        case .deepseek:  return .indigo
-        case .ollama, .lmstudio, .llamaCpp, .custom: return .gray
-        }
+        // Delegates to the canonical palette on `ProviderKind` so the HUD
+        // chips, Settings provider list, and Settings action list all stay
+        // in lockstep. Previously this returned a flat `.gray` for every
+        // local provider, which made local-AI chips visually
+        // indistinguishable from non-AI built-ins.
+        kind.brandColor
     }
 
     // MARK: footer

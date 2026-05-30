@@ -34,12 +34,27 @@ struct ActionHotkey: Codable, Equatable, Hashable {
 
     /// True if this combination collides with one of DrPaste's reserved main hotkeys (⌥⌘V/C/X).
     var conflictsWithMainHotkeys: Bool {
-        let isOptCmd = modifiers == (UInt32(optionKey) | UInt32(cmdKey))
-        guard isOptCmd else { return false }
+        guard isOptCmdOnly else { return false }
         switch Int(keyCode) {
         case kVK_ANSI_V, kVK_ANSI_C, kVK_ANSI_X: return true
         default: return false
         }
+    }
+
+    /// True if this combo uses EXACTLY ⌥⌘ with no other modifiers — the
+    /// only combo eligible for the BigHUD hold-preview synergy (#A10).
+    /// Hotkeys with any other modifier set (⌃⇧X, fn+letter, ⌘ alone, …)
+    /// run as pure direct-trigger because the gesture "keep ⌥⌘ held to
+    /// preview" only composes when ⌥⌘ is what's already pressed.
+    var isOptCmdOnly: Bool {
+        modifiers == (UInt32(optionKey) | UInt32(cmdKey))
+    }
+
+    /// Display name of the key portion only (no modifier glyphs). Used
+    /// in HUD-support hint messages that need to refer to just the
+    /// letter the user picked, e.g. "hold ⌥⌘ after pressing T".
+    var keyDisplayName: String {
+        KeyName.from(keyCode: keyCode)
     }
 }
 
@@ -192,6 +207,20 @@ final class ActionHotkeyManager: ObservableObject {
         }
         refs.removeAll()
         idMap.removeAll()
+    }
+
+    /// Unregister every per-action hotkey so the Settings hotkey
+    /// recorder can capture ⌥⌘<letter> chords without Carbon firing
+    /// the bound action first. Re-registered by `resumeFromRecording()`.
+    func pauseForRecording() {
+        unregisterAll()
+    }
+
+    /// Re-register every per-action hotkey from current config. Pairs
+    /// with `pauseForRecording()`. Safe to call multiple times — relies
+    /// on `unregisterAll()` inside `reload()` for idempotency.
+    func resumeFromRecording() {
+        reload()
     }
 }
 

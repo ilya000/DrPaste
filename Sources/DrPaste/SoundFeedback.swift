@@ -20,6 +20,14 @@ enum SoundCue: String {
     case pasteFailure = "paste-failure"
     case typeTick     = "type-tick"
     case delete       = "delete"
+    /// Distinct cue for ⌥⌘S (Append Copy). Its job is to fold a new
+    /// selection into a multi-step accumulator, which is conceptually
+    /// different from a one-shot Quick Copy — the user wants to hear
+    /// "another piece added" rather than just "captured". Submarine
+    /// sonar-style bloop reads well as a "ping into the stack" cue
+    /// and is recognisably different from the per-action hotkey's
+    /// copy-success (Purr).
+    case appendCopy   = "append-copy"
 
     var defaultsKey: String { "drpaste.sound.\(rawValue).enabled" }
     var defaultEnabled: Bool { true }
@@ -28,15 +36,20 @@ enum SoundCue: String {
     var systemFallback: NSSound.Name {
         switch self {
         // Different cues for copy vs paste so the user can hear which one
-        // just happened. "Tink" was previously used for both but its short
-        // metallic click reads as a UI dismiss / skip in macOS grammar,
-        // not a completion. "Pop" is a quick clean "captured" feel; "Glass"
-        // is the canonical macOS "successful action completed" ding.
-        case .copySuccess:                return NSSound.Name("Pop")
+        // just happened. History of this slot:
+        //   "Tink" — metallic click, rejected: reads as UI dismiss
+        //   "Pop"  — quick thud, rejected: too muffled / balloon-popping
+        //   "Ping" — clean bright ping, rejected: too sharp / attention-
+        //            grabbing for an action that fires constantly
+        //   "Purr" — current. Soft cat-like trill — unobtrusive,
+        //            unmistakably "captured", and distinct from
+        //            "Glass" (paste success) so the two never blur.
+        case .copySuccess:                return NSSound.Name("Purr")
         case .pasteSuccess:               return NSSound.Name("Glass")
         case .copyFailure, .pasteFailure: return NSSound.Name("Funk")
         case .typeTick:                   return NSSound.Name("Morse")
         case .delete:                     return NSSound.Name("Bottle")
+        case .appendCopy:                 return NSSound.Name("Submarine")
         }
     }
 }

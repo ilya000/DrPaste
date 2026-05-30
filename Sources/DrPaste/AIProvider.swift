@@ -16,6 +16,7 @@
 
 import Foundation
 import AppKit
+import SwiftUI
 
 // MARK: - Protocol
 
@@ -115,6 +116,9 @@ enum ProviderKind: String, Codable, CaseIterable {
 
     /// SF Symbol name used as the provider icon in the action list. Semantic
     /// symbols are preferred — Apple-native and free of trademark issues.
+    /// All AI providers (cloud OR local) get an "AI-flavoured" icon — never
+    /// a plain Mac silhouette — so AI actions read as distinct from
+    /// built-in / transformation actions at a glance in the Settings list.
     var iconName: String {
         switch self {
         case .anthropic: return "a.circle.fill"           // Anthropic "A"
@@ -123,10 +127,38 @@ enum ProviderKind: String, Codable, CaseIterable {
         case .grok:      return "x.circle.fill"            // X / Grok
         case .mistral:   return "wind"                     // Mistral = wind
         case .deepseek:  return "magnifyingglass.circle.fill"
-        case .ollama:    return "desktopcomputer"          // local
-        case .lmstudio:  return "laptopcomputer"           // local
-        case .llamaCpp:  return "terminal.fill"            // local cli-flavor
-        case .custom:    return "gearshape.fill"
+        // Local providers: each gets a distinct AI-coded glyph rather than
+        // a generic Mac chassis. Ollama's `cube.fill` echoes its containerised
+        // model packaging; LM Studio's `square.stack.3d.up.fill` shows stacked
+        // model layers; llama.cpp's `chevron.left.forwardslash.chevron.right`
+        // signals its CLI / code-runtime nature; custom's `link.circle.fill`
+        // says "user-pointed endpoint".
+        case .ollama:    return "cube.fill"
+        case .lmstudio:  return "square.stack.3d.up.fill"
+        case .llamaCpp:  return "chevron.left.forwardslash.chevron.right"
+        case .custom:    return "link.circle.fill"
+        }
+    }
+
+    /// Brand colour for the provider icon. Mirrors the badge palette used in
+    /// the HUD action list so the same brand is identifiable in both places.
+    /// Local providers used to share a flat gray that made local-model AI
+    /// actions look indistinguishable from built-in non-AI actions — they
+    /// now get their own bright hues, picked to avoid collisions with the
+    /// cloud-provider palette above (orange / green / blue / primary /
+    /// purple / indigo).
+    var brandColor: Color {
+        switch self {
+        case .anthropic: return .orange
+        case .openai:    return .green
+        case .gemini:    return .blue
+        case .grok:      return .primary
+        case .mistral:   return .purple
+        case .deepseek:  return .indigo
+        case .ollama:    return .cyan
+        case .lmstudio:  return .teal
+        case .llamaCpp:  return .brown
+        case .custom:    return .mint
         }
     }
 
@@ -259,8 +291,9 @@ struct ProvidersConfig: Codable {
                 ConfiguredProvider(id: "ollama", kind: .ollama,
                                    displayName: ProviderKind.ollama.displayName,
                                    model: ProviderKind.ollama.defaultModel,
-                                   baseURL: ProviderKind.ollama.defaultBaseURL,
-                                   enabled: false)
+                                   baseURL: ProviderKind.ollama.defaultBaseURL)
+                // `enabled` defaults to true — Settings no longer exposes a
+                // disable toggle, so all seeded entries start active.
             ]
         )
     }
@@ -300,7 +333,28 @@ final class AIProviderRegistry: ObservableObject {
 
     private init() {
         self.config = ProvidersConfig.load()
+        enableAllProviders()
         reconcileDefaultProvider()
+    }
+
+    /// Migration helper. The per-provider enable / disable Toggle was removed
+    /// from Settings → AI in 0.16.0 (it was an unlabeled tiny control next to
+    /// Edit / Trash that users were flipping off by accident, then seeing
+    /// "API key required" errors). Without UI to switch it back on, any
+    /// `enabled: false` value persisted in `providers.json` would lock the
+    /// provider out forever. Fix at load time: force every provider to
+    /// `enabled = true` so the field becomes invariant. Removing a provider
+    /// is now done exclusively through the trash button.
+    private func enableAllProviders() {
+        var newCfg = config
+        var didChange = false
+        for idx in newCfg.providers.indices where !newCfg.providers[idx].enabled {
+            newCfg.providers[idx].enabled = true
+            didChange = true
+        }
+        if didChange {
+            config = newCfg
+        }
     }
 
     /// If the currently-saved default isn't actually configured (no API key, no base URL),

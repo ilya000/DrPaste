@@ -191,7 +191,7 @@ struct WelcomeView: View {
                 featureGridRow("wrench.and.screwdriver.fill", Color.orange,
                                "Custom transformations — regex, find/replace, prepend/append, wrap")
                 featureGridRow("keyboard.fill", Color.gray,
-                               "Per-action hotkeys — direct trigger without HUD")
+                               "Per-action hotkeys — direct trigger, or hold ⌥⌘ to preview in HUD")
                 featureGridRow("photo.fill", Color.teal,
                                "Image actions — OCR, QR decode, resize, grayscale, rotate, ASCII art")
                 featureGridRow("textformat", Color.pink,
@@ -230,6 +230,13 @@ struct WelcomeView: View {
                 hotkeyGridRow("⌥⌘C", "Quick Copy — like ⌘C but with sound feedback")
                 hotkeyGridRow("⌥⌘X", "Cut & Replace — cut selection, choose what to paste in its place")
                 hotkeyGridRow("⌥⌘S", "Append Copy — accumulate copies into one combined clipboard entry")
+                // #A10: hint about hold-preview, shown only when the user has
+                // at least one per-action hotkey configured. Avoids cold-start
+                // noise for new users who haven't discovered action hotkeys
+                // yet (the hint would be meaningless without context).
+                if !registry.config.actionHotkeys.isEmpty {
+                    hotkeyGridRow("⌥⌘<key>", "Custom action hotkeys — tap for instant paste, or keep ⌥⌘ held after the key to preview in HUD")
+                }
             }
 
             if !registry.config.actionHotkeys.isEmpty {

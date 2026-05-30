@@ -401,6 +401,394 @@ toolkit") would give users an easy way to enrich their setup.
 
 ---
 
+### #A10 — Per-action hotkey: late-binding preview when ⌥⌘ stays held
+
+**Status:** planned. Bridges the gap between direct-trigger speed and HUD
+inspection. Builds on the existing per-action hotkey infrastructure and the
+Full Gesture Mode press-and-hold semantics already used by ⌥⌘V.
+**Touches:** `ActionHotkeyManager.swift` (release detection + grace-period
+timer), `HotkeyEngine.swift` (release-vs-still-holding-modifiers tracking),
+`main.swift` (`hudPanel` show / preselect path that points at the just-fired
+action instead of the default focused row).
+
+**Context:** Per-action hotkeys like ⌥⌘E for "Translate to English" paste
+the result instantly with zero confirmation — fast, fluid, but blind. Users
+occasionally want to peek before committing: "is this the right clip", "did
+the AI rewrite preserve the tone", "should I chain another action before
+pasting". Today they have to either swallow the result, undo in the target
+app, or learn to open HUD with ⌥⌘V first and then hunt for the action — at
+which point the speed advantage of per-action hotkeys is gone.
+
+Extend the existing press-and-hold gesture so per-action hotkeys gain the
+same opt-in preview behaviour as ⌥⌘V:
+
+- Tap-and-release ⌥⌘E quickly → instant paste (current behaviour, unchanged).
+- Tap E, release E, but keep ⌥⌘ held → HUD opens pre-focused on that exact
+  action with the preview rendered, just like if the user had opened HUD via
+  ⌥⌘V and arrowed onto the action manually.
+- Once HUD is open the user can:
+  - release ⌥⌘ → commit (paste the previewed result),
+  - press Esc → cancel,
+  - navigate to a different action with ←/→ to swap the transformation,
+  - run ⌥⌘S accumulator / ⌥⌘Space chain / Backspace delete just like in any
+    other HUD session.
+
+**Requirements:**
+
+- Detection of "hotkey letter released while modifiers still down" lives
+  in `ActionHotkeyManager` (Carbon `RegisterEventHotKey` based today). The
+  letter is bound as the hotkey trigger; modifier state is tracked through
+  the system flags. On key-up of the letter, check whether the modifier
+  flags are still asserted.
+- Grace period before HUD pops, to filter out "I just lifted my whole
+  hand off the keyboard" cases where the letter releases a few ms before
+  the modifiers. **250 ms is the recommended default.** Short enough to
+  feel responsive when the user genuinely intended to inspect; long
+  enough that an ordinary release sequence (letter then modifiers, all
+  within ~80–150 ms) doesn't trigger the HUD as a flash of UI.
+- The action that was about to be triggered must NOT actually run during
+  the grace period — schedule its execution behind the release-of-
+  modifier event, not the release-of-letter event. If the user lifts the
+  modifier before the 250 ms elapses, the originally-intended direct
+  paste fires (current behaviour). If the modifier is still down at
+  250 ms, the HUD opens with that action preselected.
+- HUD show path needs a new entry point analogous to the gesture-mode
+  open but with a `(focusedItem, focusedAction)` pair instead of "show
+  default focused row". Reuse the existing `HudState.itemIndex` and
+  `actionIndex` plumbing; only the "where to anchor on first paint"
+  initialization changes.
+- The preview rendering is the standard HUD preview pane — for AI
+  actions this naturally inherits the streaming preview from #A9, so the
+  user can watch tokens arrive while still holding ⌥⌘.
+- Cancellation paths inside the HUD work the same as gesture mode (Esc,
+  modifier release outside of the HUD's gesture, navigation does not
+  commit). Commit = release of modifier while focus is on the desired
+  action. No new sounds, no new visual chrome — reuses the existing HUD
+  surface verbatim.
+
+**Implementation notes:**
+
+- Carbon `RegisterEventHotKey` fires only on press of the chord; modifier
+  release isn't surfaced through that API. Track modifier release via the
+  existing `EventTap` flag-change handler used by Full Gesture Mode for
+  ⌥⌘V, or fall back to `NSEvent.addGlobalMonitorForEvents` watching
+  `.flagsChanged` for the modifier-down state.
+- Race to consider: while the 250 ms timer is running, the user might
+  release the letter and then press a DIFFERENT hotkey letter (e.g. ⌥⌘E
+  then quickly ⌥⌘R). Cleanest behaviour — cancel the pending grace timer
+  the moment any other key event arrives so we don't open HUD focused on
+  a stale action; let the new chord run through its own normal path.
+- Stickiness with the existing modifier-held gesture mode (⌥⌘V): both
+  detection paths watch the same modifier flags. The action-hotkey
+  late-binding logic must run before / not conflict with the ⌥⌘V
+  gesture-mode handler. Easiest gate: only arm the grace timer when an
+  action hotkey was actually pressed and released within the current
+  modifier-held window.
+- Discoverability: this is a Tier 3 power-user feature. No new UI
+  affordance — it has to feel like an extension of the existing gesture,
+  not a separate feature. Three documentation touchpoints to add **at the
+  same time as the implementation lands** (so the wording above is the
+  canonical reference and doesn't drift):
+
+  1. **Welcome window — Hotkeys section.** Add a hint row after the
+     existing `⌥⌘V / ⌥⌘C / ⌥⌘X / ⌥⌘S` rows, before the "Your custom
+     action hotkeys" subheader:
+
+     ```
+     ⌥⌘<key>  Custom action hotkeys — tap for instant paste, or keep
+              ⌥⌘ held after the key to preview in HUD before pasting
+     ```
+
+     Use a generic `⌥⌘<key>` badge (not bound to any specific letter)
+     and the same `hotkeyGridRow` styling as the other system hotkeys.
+     The row only makes sense once `registry.config.actionHotkeys` is
+     non-empty, so guard it the same way the "Your custom action
+     hotkeys" subheader is guarded — appears only when the user has at
+     least one per-action hotkey configured. Avoids cold-start noise
+     for users who haven't discovered per-action hotkeys yet.
+
+  2. **Settings → Actions, action row hotkey badge tooltip.** Add a
+     `.help(...)` modifier on the hotkey badge that, when the action
+     has a hotkey assigned, says: "Tap the hotkey for instant paste.
+     Keep ⌥⌘ held after releasing the letter to preview in HUD before
+     pasting." Verbatim — kept short so it fits the tooltip width.
+
+  3. **Welcome window — Key features grid (optional).** If the
+     "Per-action hotkeys" row already exists in Key features, extend
+     its caption from "Per-action hotkeys — direct trigger without
+     HUD" to "Per-action hotkeys — direct trigger, or hold ⌥⌘ to
+     preview in HUD". Single-line, no new row needed — surfaces the
+     idea on first launch without requiring the user to set a hotkey
+     first to see the hint in (1). Strictly an upsell teaser, the
+     real instruction lives in (1) and (2).
+
+---
+
+### #A11 — Screen-region capture into clipboard history via ⌥⌘ + mouse drag
+
+**Status:** planned. New input modality for the clipboard tool — currently
+all clips arrive via copy or drag-in (#A6), this adds "carve a region out
+of the visible screen". macOS native equivalent is ⌘⇧⌃4 (region → clipboard),
+but the native version is decoupled from DrPaste's history, source-metadata
+capture, action surface, and ⌥⌘Space chain — so dropping in a DrPaste-native
+trigger that lands the result directly in the HUD action pipeline is the
+real value-add, not the capture itself.
+**Touches:** new `ScreenRegionCapture.swift` (overlay window, drag-rectangle
+rendering, capture API call), `HotkeyEngine.swift` (mouse-down with ⌥⌘
+detection inside the EventTap session loop), `ClipboardStore`
+(new `addImage(_ data: Data, sourceApp: NSRunningApplication?) -> ClipboardItem`
+helper). Possibly a new entitlement / `Info.plist` key for Screen Recording
+permission (#A1 will sort that out together with codesigning).
+
+**Component breakdown:**
+
+- **C1** — mouse-down detection, selection rectangle, capture pipeline,
+  HUD handoff. The core gesture flow described below.
+- **C2** — visual cursor feedback via crosshair overlay. After a
+  250 ms grace period of bare ⌥⌘ hold (no other key, no mouse-down),
+  the cursor switches to a crosshair so the user knows region-capture
+  mode is armed. Described in its own subsection below.
+- **C3** — multi-display polish, ScreenCaptureKit path vs.
+  CGWindowListCreateImage fallback, source-app metadata extraction.
+
+**Trigger and gesture flow (C1):**
+
+The earlier "auto-change cursor on bare ⌥⌘ hold" idea was initially
+rejected because cursor-flipping during the normal letter-hotkey flow
+(where ⌥⌘ is held for ~80 ms before the letter arrives) would cause
+visible UI flicker on every ⌥⌘V / ⌥⌘C / ⌥⌘X / ⌥⌘S press. **C2 below
+resurrects the idea** by guarding it behind the same 250 ms grace
+timer that #A10's hold-preview uses — the cursor only changes if
+⌥⌘ was held alone past the grace window. Normal letter-hotkey
+sequences complete inside the window and never trigger the cursor
+swap. With that guard in place, the cursor feedback is purely additive
+to the C1 flow described here.
+
+- **Bare ⌥⌘ tap-and-release does nothing new** — short presses
+  (< 250 ms) remain the prelude for all existing system hotkeys
+  (⌥⌘V / ⌥⌘C / ⌥⌘X / ⌥⌘S and the per-action hotkeys in #A10's
+  hold-to-preview path). C2's cursor swap is gated past the same
+  grace window so these don't flicker.
+- **Explicit entry:** mouse-down anywhere on screen *while* ⌥⌘ is held
+  enters capture mode. The CGEventTap sees the `.leftMouseDown` event
+  with `[.command, .option]` flags, swallows it (so the underlying app
+  doesn't receive a stray click), and presents the capture overlay.
+- **Drag** with mouse button still down updates the selection rectangle.
+- **Release mouse** with a non-empty rectangle → capture the region,
+  write it to `ClipboardStore` as a `.image` item with source-app
+  metadata (no sound — the next step is what the user actually
+  notices). Then **immediately open the HUD in Gesture Mode** with
+  the captured image as the freshest clip and the focused row. The
+  user is still holding ⌥⌘, so this is bit-for-bit the same modal
+  state they'd be in had they pressed ⌥⌘V with the captured image
+  already at the top of history.
+- **Inside the HUD (⌥⌘ still held):** all standard Gesture Mode
+  behaviour applies. Navigate to a different image action with
+  ←/→ to swap the transformation, switch focused clip with ↑/↓
+  if the user wants to operate on something other than the
+  captured image, run ⌥⌘S accumulator / ⌥⌘Space chain / Backspace
+  delete just like any other HUD session.
+- **Release ⌥⌘ in HUD → paste.** The current preview (Paste-as-is
+  by default for the just-captured image, or whatever transformation
+  the user navigated to) commits into the frontmost app. No new
+  release semantics — the gesture is a perfect overlay onto the
+  existing Gesture Mode commit path.
+- **Release ⌥⌘ before mouse-up (during drag)** → cancel selection,
+  dismiss overlay, NO capture, NO HUD. Defensive — the user changed
+  their mind mid-drag.
+- **Esc during drag** → cancel as above.
+- **Esc inside HUD** → standard Gesture Mode cancel (HUD closes, no
+  paste). The captured image stays in history since it was already
+  written to `ClipboardStore` at mouse-up.
+
+**C2 — visual cursor feedback via crosshair overlay:**
+
+The grace-timer pattern from #A10 generalises naturally. EventTap's
+`flagsChanged` handler already detects bare ⌥⌘ press; on press start
+a 250 ms grace timer. Any of the following within the window cancels
+the timer and prevents the cursor swap: another keyDown, mouse-down,
+or modifier release. If the timer expires with ⌥⌘ still held alone,
+the cursor-overlay window is shown (described below) and the system
+cursor automatically becomes a crosshair over it.
+
+- **Cursor-only overlay** (separate from the selection overlay
+  described below). Full-screen, completely transparent `NSPanel`
+  at `level: .screenSaver`, `ignoresMouseEvents: false` so the
+  cursor rectangle takes effect. `addCursorRect(_:cursor: .crosshair)`
+  covers the entire frame. AppKit handles cursor management — no
+  manual `NSCursor.hide()`, no custom-drawn cursor needed. The
+  underlying screen content shows through unchanged because the
+  overlay is fully transparent and has no dim layer at this stage.
+- **Spawned once per display** in `NSScreen.screens`, so the cursor
+  stays a crosshair as the user moves between monitors.
+- **Dismissed** when (a) the user releases ⌥⌘ without mouse-down
+  (capture mode disarmed, cursor returns to system arrow, no
+  side effects), or (b) the user mouse-downs, at which point the
+  cursor-only overlay is replaced by the dim+selection overlay
+  described next.
+- **Why a window-based overlay vs. `NSCursor.crosshair.set()`:**
+  `NSCursor.set()` only takes effect over `NSWindow`s belonging
+  to the calling app — over Safari or Finder the cursor would
+  stay a system arrow. The overlay window approach is how macOS's
+  own ⌘⇧4 region-capture works.
+- **Optional badge** (cosmetic, defer to later iteration): a small
+  "DrPaste region capture" pill near the cursor signals what mode
+  the user is in. Same monospace styling as MiniHUD's elapsed
+  counter. Skip until C1+C2 ship without it.
+
+**Overlay rendering (selection — appears at mouse-down):**
+
+- Full-screen transparent `NSPanel` (`level: .screenSaver`,
+  `styleMask: .borderless`, ignores activate) covering each connected
+  display. Same panel kind we use for BigHUDPanel, just sized to the
+  display's full bounds. Replaces the C2 cursor-only overlay when
+  the user begins dragging (mouse-down).
+- Dim layer: 35 % black fill over the whole screen except the
+  selection rectangle, which stays at 0 % opacity (the actual screen
+  content shows through). The dim is the "you are now selecting"
+  signal — distinct from the cursor-only state where the screen is
+  unmodified.
+- Selection rectangle stroke: 1 pt accent colour, with a thin dashed
+  shadow for visibility against bright backgrounds.
+- Cursor stays a crosshair (inherited from C2's `addCursorRect`,
+  carried over by `addCursorRect(_:cursor: .crosshair)` on this
+  panel too — no need to hide/render manually).
+- Dimensions readout near the cursor: "1280×720" updating live as
+  the user drags. Aligns to the size convention shown in
+  macOS's native ⌘⇧4 overlay.
+
+**Capture API:**
+
+- ScreenCaptureKit (macOS 12.3+) preferred — Apple's modern path,
+  performant, future-proof. `SCContentFilter` for the display +
+  `SCStreamConfiguration` clipped to the selection rect.
+- Fallback for ≤ 12.2: `CGWindowListCreateImage(rect, .optionAll,
+  kCGNullWindowID, .bestResolution)` — covers everything pre-SCK.
+- Either path produces a `CGImage`. Convert to PNG `Data` via
+  `NSBitmapImageRep(cgImage:).representation(using: .png,
+  properties: [:])` and hand it to the new
+  `ClipboardStore.addImage(_:sourceApp:)`.
+
+**Permissions:**
+
+- macOS 10.15+ requires Screen Recording permission for any capture
+  of pixels outside the app's own windows.
+- First attempt triggers the system prompt. Subsequent attempts on
+  denial: show an inline failure HUD (same "Limited mode" pattern as
+  AX denial — a soft banner pointing at System Settings →
+  Privacy & Security → Screen Recording).
+- The Screen Recording permission entry needs to be requested by
+  calling a capture API once at startup or first use — there's no
+  "ask politely first" API like AX has. Match the AX onboarding flow
+  from the Welcome window.
+
+**Source-metadata capture:**
+
+- At capture time, record the `NSRunningApplication` whose window was
+  topmost under the selection rectangle. Best signal source is
+  `NSWorkspace.shared.frontmostApplication` at capture time — close
+  enough for most cases. For precision use `CGWindowListCopyWindowInfo`
+  to query which window's bounds contain the centre of the selection
+  rect; map back to the owning app via `kCGWindowOwnerPID`.
+- Store `sourceBundleID` / `sourceAppName` on the resulting
+  `ClipboardItem` so the HUD's source label shows "Captured from
+  Safari" / "Captured from Pages" etc., matching the pattern used
+  for normal clipboard observations.
+
+**Chains worth showcasing in docs:**
+
+All of these are single-gesture flows — the user holds ⌥⌘ continuously
+from the initial mouse-down until the final release-to-paste. Capture,
+transformation, and paste are one continuous press-and-hold session
+because mouse-up rolls directly into HUD Gesture Mode without ever
+giving up the modifier.
+
+- **Region → OCR → paste text.** Hold ⌥⌘, drag a rectangle over a
+  PDF / image / window with text, release mouse → HUD opens with the
+  capture focused, arrow to "Extract text (OCR)", release ⌥⌘ → the
+  recognised string lands in the target app. Two clicks + arrow keys
+  from pixels to text, never lifting ⌥⌘.
+- **Region → AI "Describe this image" → paste description.** Same
+  flow with "Describe this image" instead of OCR. Useful for
+  accessibility, alt-text generation, content reports.
+- **Region → ASCII art → code block → Discord.** Drag, navigate to
+  "ASCII art", ⌥⌘Space to promote the ASCII to a new clip, navigate
+  to "Wrap in code block", release ⌥⌘ → fenced ASCII paste lands
+  in the Discord text field.
+- **Region → ⌥⌘S accumulator on existing clip.** Capture, then ⌥⌘S
+  to anchor the captured image as the accumulator carrier, navigate
+  to a previous text clip and ⌥⌘S again to fold its text in, release
+  ⌥⌘ → captured image followed by the text drops into the target
+  app as a multi-clip merge.
+
+**Discoverability:**
+
+- Welcome window — Hotkeys section, new row appears unconditionally
+  (no guard needed; the feature is always available once permission
+  is granted):
+
+  ```
+  ⌥⌘ + drag   Capture screen region — drag a rectangle while
+              holding ⌥⌘; release the mouse to open the HUD focused
+              on the capture; release ⌥⌘ to paste
+  ```
+
+  This row teaches the full single-gesture loop in one sentence —
+  the user doesn't have to learn that capture is a "separate step"
+  from paste, because it isn't.
+
+- Welcome window — Key features grid, new row:
+
+  ```
+  Screen region capture — ⌥⌘-drag any rectangle, then transform and
+  paste in one continuous press-and-hold (OCR, AI describe, ASCII
+  art, …)
+  ```
+
+  Icon: `rectangle.dashed`, colour: blue. The "one continuous
+  press-and-hold" framing matches the existing Key features wording
+  for the standard paste gesture, signalling that capture is part
+  of the same modal family.
+
+**Implementation notes:**
+
+- The EventTap handler is the right place for `.leftMouseDown` /
+  `.leftMouseDragged` / `.leftMouseUp` interception. It already runs
+  in headInsertEventTap mode at session level, so capture begins
+  before the underlying app sees the click. Swallow these events
+  (return nil) while capture is active so e.g. Pages doesn't
+  interpret the drag as a text selection.
+- The overlay panel must NOT take key focus — `NSApp.activate` is
+  off-limits during capture, otherwise the previously-focused app
+  loses focus and the capture's "Captured from <app>" metadata
+  becomes stale ("Captured from DrPaste"). `NSPanel` with
+  `.nonactivatingPanel` in styleMask + `isFloatingPanel = true`
+  is the right configuration for both the C2 cursor-only overlay
+  and the C1 selection overlay.
+- Grace timer for C2 lives in the EventTap engine alongside #A10's
+  `holdPreviewGracePeriod` (currently 250 ms). Reuse the same
+  constant or share state if the two grace branches end up needing
+  different windows in future tuning. Cancellation triggers:
+  another `keyDown`, `.leftMouseDown`, or `.flagsChanged` with
+  ⌥⌘ no longer asserted. The timer fires on the main queue so
+  panel creation runs on the main thread.
+- Multi-display: spawn one overlay panel per `NSScreen.screens`
+  entry. Track the mouse across displays via the EventTap's global
+  coordinates; the active selection rectangle clamps to the screen
+  the mouse is currently on. Capture only the active screen's
+  region (cross-display drags become single-screen captures at
+  release time).
+- Performance: the overlay redraws on every `.mouseMoved` event.
+  Use a CAShapeLayer for the rectangle stroke and dim layer, not
+  full SwiftUI redraws, to keep the overlay buttery at 120 Hz on
+  ProMotion displays.
+- Cancellation correctness: if the user lifts ⌥⌘ mid-drag the
+  EventTap sees `.flagsChanged` with no ⌥ or ⌘ bit. Immediately
+  dismiss the overlay and DO NOT capture — even if mouse is still
+  down. Treat the mouse button as released for our state machine.
+
+---
+
 ## Changelog
 
 Shipped versions. Each bullet is one observable change. Implementation-level
@@ -410,6 +798,955 @@ recovered via `git log --follow BACKLOG.md` and inspected with
 `git show <commit>:BACKLOG.md`. The early revisions are bilingual and
 include verbose technical reasoning per "Правка"; this current revision is
 the curated, English-only working document.
+
+### 0.24.3 — Hotkey recorder can capture ⌥⌘<letter> chords
+
+Sibling bug to 0.24.2 — same root family, different symptom.
+Per-action hotkey RECORDING in the Settings → Add Action dialog
+failed for every ⌥⌘ combination ("Click to record", press ⌥⌘V,
+nothing happens; system BigHUD opens instead). Other modifier
+combos (⌃⇧X, fn+letter, ⇧⌘P, etc.) recorded fine.
+
+**Root cause**
+
+`HotkeyRecorderField` listens via `NSEvent.addLocalMonitorForEvents`
+which only fires for events delivered to OUR app's responder chain.
+Two interception layers run BEFORE our app sees the event:
+
+  1. EventTap (`.cgSessionEventTap`) — intercepts ⌥⌘V/C/X/S as
+     system hotkeys and any ⌥⌘<letter> registered in the
+     hold-preview map.
+  2. Carbon `RegisterEventHotKey` — system-wide registration of
+     ALL per-action hotkeys, irrespective of focus.
+
+Both consume the keyDown before it reaches our app. The recorder's
+local monitor never fires. From the user's perspective, ⌥⌘ chords
+"can't be recorded" — only combos that NEITHER layer intercepts
+(non-⌥⌘) get through.
+
+**Fix — silence both layers during recording**
+
+  - New `HotkeyEngine.setRecordingMode(_:)` protocol method (default
+    no-op). `EventTapEngine` stores a `recordingPassthrough` flag and
+    returns every event unmodified when set. `CarbonHotKeyEngine`
+    unregisters its system hotkeys (⌥⌘V/C/X/S) and re-registers them
+    on resume. `GlobalMonitorEngine` uses the default no-op.
+  - New `ActionHotkeyManager.pauseForRecording()` /
+    `resumeFromRecording()` — unregisters every per-action Carbon
+    hotkey and reloads from current config on resume (so a hotkey
+    the user just recorded and saved is picked up).
+  - New `AppDelegate.beginHotkeyRecording()` /
+    `endHotkeyRecording()` orchestrators — call both the engine's
+    `setRecordingMode(true)` and the manager's `pauseForRecording()`.
+    End also re-pushes the hold-preview map to the EventTap so the
+    newly-recorded hotkey is recognised immediately.
+  - `HotkeyRecorderField.startRecording()` / `stopRecording()` call
+    the AppDelegate methods (via `NSApp.delegate as? AppDelegate`).
+    `stopRecording` guards on `isRecording` so the `.onDisappear`
+    safety net doesn't fire a spurious resume.
+
+**Net effect**
+
+Open Add Action, click the recorder, press ⌥⌘V → recorder captures
+⌥⌘V (and immediately shows the reserved-combo warning because it
+still IS reserved for the system paste hotkey). Press ⌥⌘T (or any
+other letter) → recorder captures, shows the green "HUD ready"
+hint from 0.24.0, ready to Save. After Save, hotkeys re-register
+with the new binding included.
+
+### 0.24.2 — Real fix for user hotkeys not firing (load-order bug + defensive passthrough)
+
+0.24.1's grace-period bump turned out to be a partial fix at best.
+Re-reading user reports — per-action hotkeys were "mostly not
+working", not just flashing. Root cause was much more concrete than
+the timing-race hypothesis from 0.24.1.
+
+**Bug 1 — `reloadHoldPreviewMap()` called before `startEngine()`**
+
+In `applicationDidFinishLaunching` the call order was:
+
+```
+ActionHotkeyManager.shared.install()
+ActionHotkeyManager.shared.reload()
+reloadHoldPreviewMap()   // ← engine is still nil here
+...
+startEngine()            // ← engine created
+```
+
+`reloadHoldPreviewMap` guards on `guard let eventTap = engine as?
+EventTapEngine else { return }` and bails silently when `engine`
+is nil. Result: the EventTap's `holdPreviewActionHotkeys` map was
+NEVER populated. Stayed empty for the entire app lifetime (unless
+the user later opened Settings and changed something, which would
+fire `config.didSet` and re-call `reloadHoldPreviewMap` AFTER the
+engine existed).
+
+**Bug 2 — armed-state swallowed unknown ⌥⌘ chords**
+
+Compounding the first bug: my `.armed`-case keyDown handler had:
+
+```swift
+if isSystemHotkey || isActionHotkey {
+    // cancel arm + fall through
+} else {
+    return nil  // swallow
+}
+```
+
+With the map empty (bug 1), `isActionHotkey` was always false for
+user-defined hotkeys. So when a tap took long enough for the arm
+grace to fire (state = .armed) and the user pressed their ⌥⌘<letter>,
+the chord got swallowed — not by the EventTap's pass-through path,
+not by Carbon either. Net effect: hotkey appeared dead.
+
+Short taps (< 400 ms) escaped because state stayed `.armPending`
+and that case falls through to the normal modsPresent block (which
+either matches in the EventTap or passes through to Carbon).
+
+This is exactly what the user reported: "mostly not working" —
+because most natural taps occasionally cross 400 ms and hit the
+swallow path.
+
+**Fix 1 — call order**
+
+Moved `reloadHoldPreviewMap()` to AFTER `startEngine()` in
+`applicationDidFinishLaunching`. The map now populates correctly
+at launch, and the armed-state lookup recognises user hotkeys.
+
+**Fix 2 — defensive passthrough**
+
+Even with the map populated, edge cases remain — a brand-new
+hotkey added in Settings might not have been pushed yet, or a
+load-order shift could re-introduce a similar gap. So the armed-
+state handler now ALWAYS cancels arm + falls through on ⌥⌘
+chords, regardless of whether the map knows the letter. If the
+chord matches the per-action map, the natural `modsPresent` branch
+schedules pending fire. If not, the chord passes through to Carbon
+(authoritative source for per-action registrations). If even
+Carbon doesn't know it, the chord goes to the underlying app —
+which is the worst case but still better than silent eating.
+
+Non-⌥⌘ keys while armed are still swallowed (user is in capture
+mode; stray typing into background apps shouldn't leak).
+
+### 0.24.1 — Region-capture arm grace bumped to 400 ms (per-action hotkey reliability fix)
+
+Hot-fix for a regression user-reported after 0.20/0.21: per-action
+⌥⌘<letter> hotkeys became "unreliable" in some sense. System
+hotkeys (⌥⌘V/C/X/S) stayed fine — they fire instantly on keyDown
+and never touched the new region-capture state machine.
+
+**Root cause hypothesis**
+
+The #A11 region-capture arm grace timer was sharing the 250 ms
+constant with #A10's per-action hold-preview grace. 250 ms is
+plenty for the per-action case (where the grace counts from
+letter-press to letter-release, and the user has already
+committed to a hotkey by pressing the letter) but too tight for
+the arm case (where the grace counts from ⌥⌘-press to letter-
+press OR mouse-click, and "I'm about to type a letter" taps can
+easily take 280–350 ms in natural rhythm).
+
+When a tap landed in the 250–350 ms range, the arm grace fired
+just before the letter keyDown was processed:
+
+  1. T=0: ⌥⌘ pressed → state=armPending, arm timer at T+250.
+  2. T=250: arm timer fires on main → state=armed, dispatches
+     `hotkeyEngineDidArmRegionCapture`. Cursor overlay + cheat
+     sheet rendered.
+  3. T=260: letter keyDown arrives on EventTap thread → handles
+     `.armed` case → cancels arm → schedules pendingFire →
+     dispatches `hotkeyEngineDidCancelRegionCapture`.
+  4. Main queue runs the arm-dispatch first (queued at T=250),
+     then the cancel-dispatch (queued at T=260). User sees the
+     cursor flip + cheat sheet flash for ~50–100 ms before
+     disappearing.
+
+The hotkey would still FIRE correctly (pendingFire fires
+direct-paste on modifier release as expected), but the visual
+flash + the timing weirdness made the overall gesture feel
+"unreliable". Some users would also pull their finger off the
+modifier in surprise mid-flash and never trigger the pending
+fire at all.
+
+**Fix**
+
+Split the constant: `regionCaptureArmGracePeriod = 0.40`
+(separate from `holdPreviewGracePeriod = 0.25`). 400 ms is well
+above any natural tap rhythm — every per-action hotkey tap
+completes before the arm timer ever schedules state=armed.
+
+The two intent signals are genuinely different anyway:
+
+  - Per-action hold-preview is a continuation: the user pressed
+    the letter and decided to preview before committing. Short
+    grace makes the preview feel responsive when it's wanted.
+  - Region-capture arm is a fresh intent: the user is going to
+    deliberately hold modifiers ALONE to enter capture mode.
+    Users who actually want capture hold for 500+ ms anyway,
+    so a 400 ms threshold doesn't cost them anything but kills
+    the flash for everyone else.
+
+### 0.24.0 — Hotkey field tells the user whether HUD hold-preview will work
+
+The Action editor's Hotkey field gained a three-state hint that
+makes the modifier-matching invariant from 0.18.0 visible at
+config time instead of letting users discover it through
+"why didn't holding work?" frustration.
+
+  - **No hotkey picked** — tertiary instructional caption: pick
+    ⌥⌘ + letter to unlock hold-preview; other combos run as
+    pure direct-trigger.
+  - **⌥⌘ + letter picked** — green check + "HUD ready — tap to
+    paste immediately, or keep ⌥⌘ held after pressing X to
+    preview the result in BigHUD before committing." The letter
+    is dynamic — pulled from `hotkey.keyDisplayName` (new helper
+    on `ActionHotkey`).
+  - **Any other combo** — orange warning triangle + explanation
+    that the BigHUD hold-preview requires ⌥⌘ for gesture
+    composition. Non-blocking — user can still Save.
+
+A second always-visible chip in the section header
+("Tip: ⌥⌘ + letter enables HUD hold-preview") nudges the
+recommendation BEFORE the user picks anything, so the
+recommendation is discoverable from the moment they open the
+dialog.
+
+Backed by a new `ActionHotkey.isOptCmdOnly` computed property
+(same `modifiers == optionKey | cmdKey` check used by
+`reloadHoldPreviewMap` and `collectRegionCaptureCheatSheetHotkeys`,
+extracted into the model so callers don't reach for Carbon
+constants from view code). `conflictsWithMainHotkeys` now uses
+it too for symmetry.
+
+### 0.23.0 — Cursor-overlay fix + sound rebalancing
+
+Two-part tuning pass on the gesture audio + visual feedback.
+
+**Cursor overlay fix (#A11 C2)**
+
+The crosshair cursor wasn't appearing when ⌥⌘ was held — only the
+corner cheat sheet would materialise. Root cause: `addCursorRect`
+on a `.borderless` `.nonactivatingPanel` is unreliable. AppKit
+treats non-key panels as "inactive" and silently skips the cursor
+rect registration in `resetCursorRects`. Fix: replace the cursor
+rect with a proper `NSTrackingArea` using
+`[.activeAlways, .cursorUpdate, .inVisibleRect]` and override
+`cursorUpdate(with:)` to explicitly call `NSCursor.crosshair.set()`.
+`.activeAlways` bypasses the active-key-window check;
+`NSCursor.crosshair.set()` is the same call macOS's own ⌘⇧4
+region-capture uses. Also set `acceptsMouseMovedEvents = true` on
+the panel so the tracking area's events flow at all — without
+this AppKit drops mouse-moved events on non-key panels and the
+cursor update never fires. Safety belt: `mouseMoved` override
+also calls `.set()` for the case where the first `cursorUpdate`
+gets skipped on `orderFrontRegardless`.
+
+**⌥⌘S gets its own sound — Submarine**
+
+Append Copy was sharing `copySuccess` (now Purr) with Quick Copy
+and per-action capture. But ⌥⌘S is conceptually "fold another
+piece into the accumulator", which deserves a distinct cue from
+"plain capture". New `SoundCue.appendCopy` mapped to system
+"Submarine" — sonar-style bloop that reads as "ping into the
+stack". Used in all four success paths inside
+`hotkeyEngineDidAppendCopy` (new session capture + three merge
+variants for text / files / fallback).
+
+**Per-action hotkey now plays "captured" sound at the right time**
+
+Following from 0.22.0's selection-first semantics — the hotkey
+issues ⌘C, captures the selection, runs the action, pastes.
+Previously only the final paste played a sound (Glass). Now the
+capture step also plays `copySuccess` (Purr), giving the user a
+clean two-stage audio rhythm: *Purr* (your selection landed in the
+pasteboard) → *Glass* (the transformed result was pasted). Applies
+to both direct-trigger (`actionHotkeyDidFire`) and hold-preview
+(`openBigHUDFocusedOnAction`) paths.
+
+**Settings UI exhaustiveness**
+
+The sound-cue toggle row in Settings now lists `.appendCopy`
+between the paste cues and the typeTick. Same `cueLabel` switch
+pattern, label "Play sound on ⌥⌘S append copy" so users with the
+gesture flow in muscle memory recognise what it controls.
+
+### 0.22.0 — Per-action hotkey operates on current selection, not stale clipboard
+
+Behaviour change for every per-action hotkey (built-in and
+user-defined). Previously: hotkey → read whatever's in the clipboard
+right now → run action → paste. Result was confusing whenever the
+user's intent was "do X to what I just highlighted" but the
+clipboard still held something from 20 minutes ago. Now: hotkey →
+simulate ⌘C to capture what's currently selected → wait for the
+pasteboard to refresh → run action against the fresh selection →
+paste. If nothing was selected (the simulated ⌘C produced no
+pasteboard change within 250 ms), fail audibly via
+`SoundFeedback.pasteFailure` and dismiss the spinner — better than
+silently transforming whatever stale content was sitting there.
+
+**Why this matters**
+
+A per-action hotkey is "operate on what I'm looking at" by intuition.
+The old clipboard-based behaviour was the reverse of intuition:
+operating on clipboard contents (which the user rarely remembers)
+and only happening to match the selection when the user had just
+pressed ⌘C explicitly. Every user feedback loop confirmed the same
+mental model: "I press ⌥⌘T expecting it to translate THIS [the
+highlighted text], not whatever I had on the clipboard". The fix
+brings DrPaste's behaviour in line with that mental model.
+
+**Both code paths converge**
+
+The change applies symmetrically:
+
+  - **Direct-trigger (quick tap)** — `actionHotkeyDidFire` snaps a
+    ⌘C, polls the pasteboard up to 250 ms, builds a transient
+    ClipboardItem from the captured representations, runs the
+    action, pastes the result. The selection ALSO lands in history
+    via `watcher.forceTick()` immediately after capture, so the
+    user can find it again in BigHUD without waiting for the
+    watcher's 0.5 s poll.
+  - **Hold-preview (⌥⌘<letter> held past 250 ms)** —
+    `openBigHUDFocusedOnAction` does the same ⌘C + poll + forceTick
+    dance, then opens BigHUD with the freshly-captured clip at
+    index 0 (focused) and the action pre-selected. The preview pane
+    now renders the action's output against what the user actually
+    highlighted, which is the only useful preview to show. Release
+    ⌥⌘ → standard commit path pastes.
+
+**Failure handling**
+
+If `simulateCopy()` produces no pasteboard change within the 250 ms
+window — typically because nothing was selected, or the frontmost
+app ignored the ⌘C — both paths play the paste-failure sound and
+abort cleanly. The hold-preview path additionally calls
+`EventTapEngine.resetHudActive()` so the engine doesn't keep its
+`bigHUDIsActive` flag stuck true (it had been set to true by the
+grace-expiry callback in anticipation of the open). Otherwise the
+inevitable ⌥⌘ release would fire `hotkeyEngineDidRelease` which
+would try to commit a HUD that never opened.
+
+**Coexistence with other paths**
+
+  - **⌥⌘V (BigHUD open)** unaffected. BigHUD's whole point is
+    browsing history, so opening on whatever clipboard already
+    contains is correct.
+  - **⌥⌘C (Quick Copy)** already did ⌘C + poll natively. No
+    change.
+  - **⌥⌘S (Append Copy)** already did ⌘C + poll natively. No
+    change.
+  - **⌥⌘X (Cut & Replace)** does its own ⌘X simulation through the
+    Cut-and-Replace state machine — separate code path.
+  - **⌥⌘+drag (Region capture)** already produces a fresh image
+    from screen pixels, so the selection-first semantics are
+    inherent to that gesture.
+
+**New helper — `snapshotPasteboardAsItem(pb:sourceApp:)`**
+
+Extracted from the inline ClipboardItem construction in
+`actionHotkeyDidFire`. Builds a transient item with all
+representations copied to the store's blob directory so
+Paste-as-is can restore them losslessly downstream. Used only for
+the in-flight action target — not added to the store's main
+`items` array (that's what `watcher.forceTick` does separately).
+
+### 0.21.0 — Region-capture corner cheat sheet + armed-state hotkey passthrough
+
+Once the C2 crosshair cursor appears (⌥⌘ held alone past 250 ms), a
+compact keyboard + mouse + legend panel materialises in the
+bottom-right corner of the active screen. The keyboard mirrors the
+B&W contour style the user signed off on in chat (and which is now
+recorded in `preferences.md` as the canonical style for any technical
+schematic). The mouse pictogram above the arrow cluster carries a
+thicker outline on the left button — visual confirmation that the
+"drag to capture" gesture is the one currently armed. The legend
+below lists every ⌥⌘ hotkey the user can fire from this state:
+system hotkeys ⌥⌘V/C/X/S plus whatever per-action ⌥⌘<letter>
+shortcuts they've configured in Settings.
+
+**Modifier filter — only ⌥⌘ entries appear**
+
+User-defined hotkeys with different modifiers (⌃⇧X, fn+letter,
+⇧⌘P, etc.) don't appear in the cheat sheet. They couldn't fire
+from this state anyway — the EventTap engine only enters the
+region-capture machine when bare ⌥⌘ is held, and any keyDown with
+non-matching modifiers either falls through to Carbon's
+direct-trigger path (different modifiers) or is part of an action
+that wouldn't combine sensibly with "I'm about to drag a
+rectangle". Filtering them out keeps the panel focused on what's
+actually relevant in this moment.
+
+**Proximity fade — never blocks the capture**
+
+A 30 Hz polling timer compares `NSEvent.mouseLocation` against
+the cheat-sheet panel frame expanded by an 80 pt margin. Inside
+the margin → panel animates to 15 % opacity over ~120 ms; back
+outside → returns to full opacity. The user can always start a
+drag in the corner area without the panel obscuring what they're
+trying to capture. The panel's `ignoresMouseEvents` flag is true
+throughout so clicks pass through to the C1 selection overlay
+underneath.
+
+**Armed-state passthrough — cheat sheet hotkeys are actually callable**
+
+Previously the EventTap engine swallowed ALL keys (except Esc)
+while in `.armed` state — defensive against stray input. With the
+cheat sheet advertising callable hotkeys, that defensiveness
+became a lie. Updated: ⌥⌘ system hotkeys (V/C/X/S) and per-action
+⌥⌘<letter> hotkeys now cancel the arm and fall through to their
+normal handler. So if the user holds ⌥⌘ → sees the cheat sheet →
+realises they want Translate to Spanish (their ⌥⌘T hotkey) →
+presses T → the cheat sheet + cursor overlay vanish and the
+translate action fires exactly as if they had pressed ⌥⌘T from
+idle. Non-⌥⌘ keys are still swallowed (no leakage). In
+`.selecting` (mouse is down, drag in progress) all keys except
+Esc remain swallowed — too late to switch action mid-drag.
+
+**Implementation — new file RegionCaptureCheatSheet.swift**
+
+  - `RegionCaptureCheatSheetController` — owns the corner NSPanel,
+    pulls fresh hotkeys via injected `hotkeysProvider` closure on
+    every show, manages the 30 Hz proximity-fade timer.
+  - `RegionCaptureCheatSheetView` — SwiftUI body: `KeyboardCanvas`
+    on top, two-column legend below (built-ins on the left, user
+    hotkeys on the right, top 5 shown + "+N more" overflow line),
+    `VisualEffect` HUD-material background with rounded corners.
+  - `KeyboardCanvas` — coordinate-precise SwiftUI reproduction of
+    the chat-tested SVG, scaled 0.7×. Each key is a
+    `RoundedRectangle.strokeBorder` with conditional `lineWidth`
+    (1.5 for highlighted, 0.5 for inactive). Letters that match
+    `highlightedLetters` (system V/C/X/S plus user-defined ⌥⌘
+    letters) get the thick stroke. Mouse pictogram built from two
+    custom `Shape`s — `MouseShape` for the body and `MouseLeftButtonShape`
+    overlaid with thick stroke to indicate "pressed".
+
+**Wire-up**
+
+  - `ScreenRegionCaptureController.cheatSheet: RegionCaptureCheatSheetController`
+    — instance per gesture (matches the rest of the controller's
+    short-lived design). `show()` from `arm()`; `hide()` from
+    `beginSelection()` (user has committed to a drag — hint
+    becomes noise) and from `tearDown()` (cancel path).
+  - `AppDelegate.armRegionCapture()` injects the hotkeys provider
+    closure that returns the current ⌥⌘<letter> set from the
+    registry. Same filter as `reloadHoldPreviewMap` — exact
+    `modifiers == optCmd` equality, only enabled actions.
+  - `KeyName.from(keyCode:)` reused for the letter → display-name
+    mapping, so a hotkey on the European AZERTY layout's Q
+    position still renders as "Q" in the cheat sheet.
+
+### 0.20.0 — #A11 screen-region capture (C1 + C2)
+
+DrPaste gains a fourth way to fill the clipboard: hold ⌥⌘, drag a
+rectangle anywhere on screen, release the mouse, the captured PNG
+lands at the top of history and the BigHUD opens focused on it.
+Release ⌥⌘ to paste — Paste-as-is by default, or arrow over to OCR /
+ASCII art / AI Describe before releasing. One continuous press-and-
+hold from "I want to grab this pixel area" to "...and paste it
+(possibly transformed) into Discord". macOS-native ⌘⇧⌃4 is the
+closest analogue, but it's decoupled from history, sources,
+transformations, and the rest of DrPaste's surfaces — this lives
+inside the same modal family as ⌥⌘V.
+
+**Gesture flow**
+
+  1. Hold ⌥⌘ alone past 250 ms (no other key, no mouse-down inside
+     the window) → cursor changes to a crosshair across every
+     display. Visual confirmation that region capture is armed.
+  2. Click anywhere → selection overlay replaces the cursor overlay.
+     35 % black dim over the whole screen, punched out where the
+     rectangle is, 1 pt accent stroke around it, live "WxH" pixel
+     readout near the cursor.
+  3. Drag → rectangle resizes in real time.
+  4. Release mouse → capture fires synchronously, BigHUD opens
+     with the new image focused. ⌥⌘ is still held.
+  5. Inside BigHUD: navigate actions with ←/→, switch focused
+     clip with ↑/↓, accumulator + chain work as usual.
+  6. Release ⌥⌘ → standard commit path pastes whatever you
+     navigated to (or Paste-as-is if you didn't).
+  7. Release ⌥⌘ before clicking → cursor overlay disappears, no
+     capture, no clip. Same for Esc.
+
+**Why the cursor swap is safe**
+
+Earlier spec passes rejected cursor swapping because the normal
+⌥⌘V / ⌥⌘C / ⌥⌘X / ⌥⌘S / ⌥⌘<letter> flow would have made the
+cursor flicker on every press. The new design guards the swap
+behind the same 250 ms grace timer #A10's hold-preview uses — any
+keyDown or mouse-down inside the window cancels the arm, so
+normal hotkey sequences (where the letter arrives within ~80 ms
+of the modifiers) never trigger it. Only a deliberate "I'm
+holding ⌥⌘ and waiting" intent reaches the threshold.
+
+**Implementation — EventTap state machine**
+
+The EventTap engine grows three new mouse events in its tap mask
+(`.leftMouseDown`, `.leftMouseDragged`, `.leftMouseUp`), all
+passed through unmodified except while a region capture is in
+progress. State machine: `idle → armPending → armed → selecting`,
+each transition driven by events the tap already sees. A
+generation counter on `armPending → armed` invalidates cancelled
+arms, same pattern as `pendingFireGeneration` from #A10.
+
+  - `flagsChanged` with bare ⌥⌘ pressed, no other state →
+    `scheduleRegionCaptureArm()` schedules a 250 ms grace timer.
+  - Any `keyDown` while `armPending` → cancel arm. While `armed`
+    or `selecting`, `kVK_Escape` cancels and tears overlays down;
+    other keys are swallowed (don't leak into underlying apps).
+  - Grace expiry → state becomes `armed`,
+    `hotkeyEngineDidArmRegionCapture()` fires.
+  - `leftMouseDown` while `armed` → state becomes `selecting`,
+    `hotkeyEngineDidBeginRegionDrag(at:)` fires (CGEvent's location
+    is flipped to Cocoa bottom-left global coords). While
+    `armPending`, click cancels arm; the click itself passes
+    through to the underlying app unmodified.
+  - `leftMouseDragged` / `leftMouseUp` while `selecting` →
+    update / end delegate calls. `leftMouseUp` also sets
+    `bigHUDIsActive = true` so the subsequent ⌥⌘ release flows
+    through the existing commit path.
+  - `flagsChanged` with ⌥⌘ released while `armed` or `selecting`
+    → cancel delegate call, overlays come down, no capture.
+
+**Implementation — ScreenRegionCapture.swift**
+
+New file. `ScreenRegionCaptureController` owns the cursor (C2)
+and selection (C1) overlay panels. Instance-per-gesture — easier
+than long-lived state because each gesture cleanly terminates with
+`onCapture` or `onCancel`.
+
+  - `CursorOverlayPanel` — full-screen transparent `NSPanel`,
+    `level: .screenSaver`, `.nonactivatingPanel`. Hosts a
+    `CursorOverlayContentView` whose `resetCursorRects()`
+    installs a single `addCursorRect(bounds, cursor: .crosshair)`.
+    AppKit handles the cursor swap natively — no `NSCursor.hide()`,
+    no custom-drawn cursor. One per `NSScreen.screens` entry so
+    the crosshair stays as the user moves between displays.
+  - `SelectionOverlayPanel` — same panel kind, with a
+    `SelectionOverlayContentView` backed by three CALayers: a
+    `CAShapeLayer` for the dim mask (even-odd fill rule, outer
+    rect minus selection rect), a `CAShapeLayer` for the 1 pt
+    accent stroke around the rectangle (inset by 0.5 pt for pixel
+    alignment), and a `CATextLayer` for the "WxH" pixel readout.
+    `CATransaction.setDisableActions(true)` on each update so the
+    rectangle follows the cursor without animation lag — 120 Hz
+    smooth on ProMotion. One per screen; only the panel whose
+    screen contains the selection rect draws the rect, others
+    stay fully dimmed so the "selection mode" signal covers
+    every monitor uniformly.
+  - Capture: `CGWindowListCreateImage(rect, .optionOnScreenOnly,
+    kCGNullWindowID, [.bestResolution, .boundsIgnoreFraming])`.
+    Synchronous, lossless. ScreenCaptureKit would be the modern
+    path but adds async setup overhead that isn't worth it for a
+    one-shot rectangle grab. Result is a `CGImage` →
+    `NSBitmapImageRep(cgImage:).representation(using: .png, ...)`
+    → PNG `Data`.
+  - Coord-system glue: CGEvent location field is top-left origin
+    in points, NSScreen frames are bottom-left origin in points.
+    Flip Y around the union of all screen `maxY` values so the
+    point matches `NSEvent.mouseLocation`.
+
+**Implementation — AppDelegate wire-up**
+
+  - New properties: `regionCapture: ScreenRegionCaptureController?`
+    (built lazily on first arm), `regionCaptureSourceApp:
+    NSRunningApplication?` (frontmost-app snapshot taken at arm
+    time, carried through to BigHUD as `savedFrontmostApp` so the
+    eventual paste lands in the right window even if the user
+    clicked into a different app during the drag).
+  - Five new delegate methods on `HotkeyEngineDelegate`
+    (`hotkeyEngineDidArmRegionCapture` and friends) routed to
+    main-actor handlers.
+  - `armRegionCapture()` — defensive guards against `bigHUDPanel`
+    being visible, `pendingDeferredPasteApp != nil`, or
+    `aiStreamingTask != nil`. The engine already blocks against
+    its own `bigHUDIsActive` flag for Gesture-mode HUDs; these
+    additional checks cover MiniHUD scenarios and the deferred-
+    paste handoff window so no DrPaste UI ever overlaps with a
+    region-capture gesture.
+  - `onCapture` callback inserts the PNG into history via the new
+    `ClipboardStore.addCapturedImage`, then opens BigHUD focused
+    on the new clip via `openBigHUDFocusedOnCapturedImage`.
+
+**ClipboardStore.addCapturedImage**
+
+New helper that bypasses the pasteboard entirely. Writes the PNG
+to both `images/` (thumbnail / preview rendering) and `blobs/`
+(as `public.png` representation so Paste-as-is can hand the raw
+bytes to the receiving app). Inserts at index 0 via
+`insertSnapshot` rather than `add` so back-to-back captures of
+identical pixels don't dedup. Source metadata populated from the
+frontmost-app snapshot taken at arm time.
+
+**Permissions**
+
+macOS requires Screen Recording permission for capturing pixels
+outside the calling app's own windows. The first capture attempt
+triggers the system prompt; subsequent denials surface as nil
+result and a paste-failure sound. Full onboarding integration
+(Welcome window guide row) deferred to a follow-up tweak.
+
+**Limitations / follow-ups**
+
+  - Full Gesture Mode only. Limited Mode (Carbon engine, no AX)
+    has no CGEventTap so the modifier-release / mouse-down
+    detection can't run. Consistent with how every other gesture-
+    mode feature degrades in Limited Mode.
+  - Cross-display drags become single-screen captures at release
+    time — `CGWindowListCreateImage` accepts a rect but treats
+    cross-display rects unreliably. Single-screen for the
+    initial ship.
+  - Welcome-window discoverability rows ("⌥⌘ + drag — Capture
+    screen region…") not yet wired. Add in a follow-up after
+    user feedback on the gesture confirms the framing.
+
+### 0.19.0 — Deferred paste during AI loading (timing-model unification)
+
+Direct-trigger per-action hotkeys now behave predictably for slow AI
+actions. The previous behaviour was the worst kind of unpredictable:
+press ⌥⌘E for "Translate to English", release ⌥⌘ a fraction too
+early, get the un-transformed original pasted into the target app
+because the streaming task hadn't produced a result yet. The fix
+collapses three previously-distinct timing branches (HUD never
+opened / HUD opened but action incomplete / HUD opened and action
+complete) into one rule: **whatever the user asked the AI to do
+will be pasted when the AI finishes — full stop**. Releasing ⌥⌘
+mid-stream stops being a race condition and becomes a deliberate
+"I trust the AI, paste it when ready" signal.
+
+**Why this matters**
+
+A press-and-hold gesture only feels reliable when the timing model
+is invariant under user behaviour. Before this change, three things
+the user could not see — network latency, model speed, and the exact
+moment their fingers came off the modifiers — combined to produce
+three different outcomes:
+
+  1. Quick release (< 250 ms after chord): direct paste fires from
+     the EventTap modifier-release branch. AI was never even called.
+     Placeholder pasted. **Wrong content.**
+  2. Slow release (> 250 ms, AI still streaming when HUD opens but
+     ⌥⌘ released before completion): commitHUD ran with
+     `hudState.outcome == .preview(originalItem)`. Placeholder
+     pasted. **Wrong content.**
+  3. Slow release with completed stream: commitHUD ran with the
+     transformed outcome. **Right content.**
+
+Three branches, only one of which produced the result the user
+actually asked for. The fix unifies branch 2 with branch 3 (waiting
+for the stream rather than committing the placeholder) and leaves
+branch 1 untouched. After: branches 2 and 3 produce identical paste
+content. The user's release timing only controls **which surface
+shows the wait** — fast release shows ProgressHUD, slow release
+shows HUD preview pane — never **what gets pasted**.
+
+**Implementation — deferred-paste handoff in AppDelegate**
+
+- `pendingDeferredPasteApp: NSRunningApplication?` — new field on
+  AppDelegate. Set when commitHUD detects an in-flight AI call;
+  cleared when the streaming task's completion handler fires the
+  paste against it. The frontmost-app reference is captured at HUD
+  summon time (long before the AI returns), so the paste lands in
+  the right window even if the user clicked elsewhere during the
+  wait.
+- `commitHUD()` refactor — when `isPreviewLoading && aiInflight != nil`,
+  calls a new `deferPasteAfterAILoad(savedApp:)` instead of pasting
+  the current outcome. Otherwise the existing path runs unchanged
+  via a new `commitOutcome(_:savedApp:)` helper (factored from the
+  inline switch so the deferred-paste path can reuse it).
+- `deferPasteAfterAILoad(savedApp:)` — does NOT call `closeHUD()`,
+  which would cancel `aiStreamingTask` and defeat the purpose.
+  Instead manually tears down the gesture monitor, tick timer, and
+  accumulator state, then `orderOut`s the HUD panel. Promotes
+  `ProgressHUDController` as the in-flight indicator with the same
+  `AIInflight` descriptor the HUD preview pane was showing — same
+  provider · model · elapsed counter, identical visual language.
+- Streaming task completion handler — additionally checks
+  `pendingDeferredPasteApp`. If set, clears it, hides
+  ProgressHUD, and fires `commitOutcome(outcome, savedApp: target)`.
+  Runs independently of `previewToken` (the navigation guard for
+  the HUD preview pane) because the user pressed a hotkey and the
+  result owes them a paste regardless of whether they navigated
+  away mid-stream.
+
+**ProgressHUD — user-initiated cancel via X button**
+
+- `ProgressHUDController.show(label:inflight:onCancel:)` — new
+  trailing closure parameter. Stored in `onCancelHandler` and
+  invoked only when the user clicks the X button. Programmatic
+  `hide()` (the completion-path teardown) does NOT call it —
+  separates "action completed normally" from "user gave up".
+- The deferred-paste path passes a cancel handler that calls
+  `aiStreamingTask?.cancel()`, clears `pendingDeferredPasteApp`,
+  and plays the paste-failure sound. After cancel the streaming
+  task's completion block still runs (Task cancellation is
+  cooperative) but finds `pendingDeferredPasteApp == nil` and
+  becomes a no-op for the paste branch — no accidental paste into
+  the user's target app after they've explicitly dismissed the
+  HUD.
+
+**What the user sees now**
+
+- Press ⌥⌘E, release immediately → ProgressHUD appears showing
+  "Translate to English · Anthropic claude-sonnet-4-6 · 2.1s",
+  AI finishes, result pastes. X button dismisses + cancels.
+- Press ⌥⌘E, hold past 250 ms → HUD preview opens with loading
+  spinner in the preview pane. Release ⌥⌘ while loading →
+  HUD closes, ProgressHUD appears, same continuation as above.
+  Release after loading → instant paste of the AI result.
+- In every case: the content pasted is the content the AI
+  produced for the action the user requested. Never a placeholder.
+
+### 0.18.0 — #A10 hold-preview for per-action hotkeys (C1)
+
+First half of #A10 — Full Gesture Mode now extends the press-and-hold
+gesture to every ⌥⌘<letter> per-action hotkey. The classic
+tap-and-release path stays identical (zero perceptible change for
+anyone using direct paste). New: keep ⌥⌘ held past 250 ms after the
+chord, and the HUD opens pre-focused on the action's preview pane.
+Same release-⌥⌘-to-commit semantics as ⌥⌘V — no new gestures to learn,
+no new modal state to manage.
+
+**Why this matters**
+
+Per-action hotkeys are fast but blind. The user presses ⌥⌘E for
+"Translate to English" and the result appears in the target app
+instantly — no way to peek first, no second chance if the AI rewrote
+the tone unexpectedly. The fix is a no-cost opt-in: lift ⌥⌘ as
+usual → direct paste; keep ⌥⌘ held → HUD opens, user inspects, lifts
+⌥⌘ when satisfied → commit. The detection window is short enough
+(250 ms) that an ordinary release sequence (letter then modifier,
+all within ~80–150 ms) never triggers the HUD as a flash of UI.
+
+**Implementation — EventTap engine grace-period machine**
+
+- `EventTapEngine.holdPreviewActionHotkeys: [UInt16: String]` —
+  CGKeyCode → actionID map, pushed by AppDelegate whenever
+  `ActionConfig.actionHotkeys` or any enabled-state changes. Only
+  ⌥⌘<letter> hotkeys are forwarded; other modifier combos
+  (⌃⇧X, etc.) stay on the Carbon direct-trigger path with no
+  hold-preview support because the gesture only makes sense when
+  the user could plausibly keep ⌥⌘ held after the chord.
+- `EventTapEngine.schedulePendingActionFire(actionID:)` —
+  intercepts the chord in `handle()` (CGEventTap callback,
+  background thread). Sets a pending-action ID, generation
+  counter, and dispatches a 250 ms grace timer on the main queue
+  via `DispatchQueue.main.asyncAfter`. Subsequent chord presses
+  within the window cancel the prior pending fire (the user
+  switched intent) and start a new one.
+- Modifier-release detection in `handle()`'s `flagsChanged` branch
+  (existing code path used by ⌥⌘V): when `hudIsActive == false`
+  and a pending action fire is queued, checking `!modsPresent`
+  fires the action immediately via
+  `hotkeyEngineDidFireActionHotkey(actionID:, holdPreview: false)`.
+  Generation counter validates the pending fire is still current
+  before consuming it.
+- Grace expiry callback: same generation check, then sets
+  `hudIsActive = true` (so the next ⌥⌘ release flows through the
+  existing release-to-commit path) and fires
+  `hotkeyEngineDidFireActionHotkey(actionID:, holdPreview: true)`.
+- Thread safety: all mutation of `pendingActionID` and
+  `pendingFireGeneration` happens through a dedicated
+  `pendingFireQueue: DispatchQueue` so the CGEventTap thread and
+  the main-queue grace block can't race.
+
+**AppDelegate routing**
+
+- New `HotkeyEngineDelegate.hotkeyEngineDidFireActionHotkey(actionID:,
+  holdPreview:)` method. AppDelegate's implementation dispatches to
+  the existing direct-paste path (`actionHotkeyDidFire(actionID:)`)
+  when `holdPreview == false`, or to a new
+  `openHUDFocusedOnAction(actionID:)` when `true`.
+- `openHUDFocusedOnAction(actionID:)` — opens the HUD panel with
+  `itemIndex = 0` (freshest history clip) and `actionIndex` pointing
+  at the focused action (falls back to 0 if the action isn't in the
+  applicable list for that semantic kind). Reuses `showPanel()`,
+  `refreshPreview()`, `updateContentMeta()` from the existing
+  gesture-mode summon path. The EventTap engine has already set
+  `hudIsActive = true` by the time this runs, so the user's
+  subsequent ⌥⌘ release flows through the standard
+  `flagsChanged → hotkeyEngineDidRelease → commit` path exactly
+  like a normal ⌥⌘V session.
+- `reloadHoldPreviewMap()` — pushes the current ⌥⌘<letter> map to
+  the EventTap engine. Called from initial setup
+  (`applicationDidFinishLaunching`), `ActionRegistry.config.didSet`
+  (Settings save / hotkey rebind), and `Factory Reset`.
+
+**Carbon coexistence (no Limited Mode regression)**
+
+- `ActionHotkeyManager` keeps registering every per-action hotkey
+  via Carbon `RegisterEventHotKey` exactly as before.
+  CGEventTap's `.headInsertEventTap` placement runs strictly before
+  Carbon's hotkey distribution; when EventTap returns nil for a
+  ⌥⌘<letter> chord, Carbon never sees the event and the
+  Carbon-registered hotkey doesn't double-fire.
+- In Limited Mode (no AX permission → no EventTap → Carbon-only),
+  per-action hotkeys still work exactly as before — instant paste,
+  no hold-preview. Users without AX permission see the existing
+  behaviour, no degradation.
+
+**Welcome window — discoverability**
+
+- Key features grid caption updated: "Per-action hotkeys — direct
+  trigger, or hold ⌥⌘ to preview in HUD". Single-line teaser on
+  first launch, surfaces the feature to users who haven't set up a
+  per-action hotkey yet.
+- Hotkeys section — new conditional row appears below the four
+  system rows ONLY when `registry.config.actionHotkeys` is non-empty:
+  "⌥⌘<key>  Custom action hotkeys — tap for instant paste, or keep
+  ⌥⌘ held after the key to preview in HUD". Guarded so cold-start
+  users without any custom hotkeys configured don't see a hint they
+  can't act on yet; the row materialises the moment they bind their
+  first hotkey.
+
+**Limitations (acknowledged)**
+
+- The grace timer is from chord PRESS to modifier RELEASE rather
+  than letter RELEASE to modifier RELEASE (the spec's original
+  framing). The difference in practice is small (~80 ms of letter-
+  hold time gets folded into the 250 ms window), and the simpler
+  model halves the state-machine surface area.
+- Hold-preview is Full Gesture Mode only. Limited Mode (Carbon-only,
+  no AX) keeps Direct-trigger semantics — there's no flagsChanged
+  signal available without an EventTap, so the grace mechanism
+  can't run. This is consistent with how every other gesture-mode
+  feature in DrPaste (⌥⌘V hold to browse, ⌥⌘S in-HUD accumulator,
+  ⌥⌘Space chain) degrades to "single-press hotkey" in Limited Mode.
+
+### 0.17.0 — Destructive ops belong in editors, not lists
+
+Two surface-area trims that follow the same principle: destructive
+operations and ambient catalogues live behind editors, not as ambient
+controls in the main list. Both bring the AI providers tab and the
+Actions tab in line with the design philosophy recorded in 0.12.0.
+
+**Delete moved inside the provider editor**
+
+- The row-level trash button next to each provider in Settings → AI
+  was the third destructive action exposed on the row (after the
+  also-removed enable Toggle and the still-present Edit). One
+  accidental click and the user's saved API key, configured model,
+  and base URL were all gone — no confirmation, no undo. The row is
+  now bipolar: radio (set default) and Edit (or Setup). That's it.
+- Delete reappears inside `ProviderEditor`'s footer as a left-aligned
+  destructive button, mirroring the action editor pattern shipped in
+  0.12.0 ("destructive gravity inside the dialog"). A confirmation
+  dialog explains the consequence: the provider's API key and
+  configuration go away, AI actions following the default fall back
+  to the next configured provider, no undo.
+- New `ProviderEditorResult.delete: Bool` carries the editor's
+  decision back to the parent sheet handler, which routes through
+  `providerRegistry.remove(...)` and clears the row's live-status
+  entry. Mutually exclusive with a Save result — same struct, three
+  exit states (cancel / save / delete).
+
+**Browse button removed from the Actions tab**
+
+- The Browse button next to the Actions list opened a categorized
+  palette of every available action grouped by content kind. It was
+  useful before 0.12.0 because the main list hid disabled rows; an
+  "everything in one place" view was the only way to find and enable
+  a disabled action. 0.12.0 changed the unified list to show
+  disabled rows greyed-out alongside enabled ones, so the same one-
+  click enable now lives in the row's own checkbox — no extra
+  navigation.
+- After the unified-list ship, Browse was strictly a duplicate
+  navigation layer for the same outcome. Removed per UX cleanup.
+  `ActionPaletteSheet.swift` is left in place as a tombstone with a
+  comment pointing at this entry so future readers of the codebase
+  see the deliberate removal rather than a "where did it go?"
+  mystery. The file can be hard-deleted from disk once the SwiftPM
+  source enumeration moves to path-only.
+
+### 0.16.0 — Provider list overhaul: live health, brand icons, fewer footguns
+
+Targeted cleanup of Settings → AI after a real-world bug where an
+unlabeled per-row Toggle silently disabled a provider on accidental
+click and the user wasted time staring at "API key required" errors
+when the key was perfectly fine. Three changes lift this surface from
+"functional but easy to break" to "self-explanatory and self-healing".
+
+**Per-provider enable / disable Toggle removed**
+
+- The tiny unlabeled Toggle wedged between the Edit and Trash buttons
+  was a UX trap. Users had no obvious cue what it did, and a misclick
+  silently flipped a provider to `enabled: false`, which gated it out
+  of `provider(id:)` lookups and produced misleading "missing API key"
+  errors at test time. Provider lifecycle is now cleanly bipolar:
+  configured (visible in the list) or removed (via the trash button).
+  No third "exists but disabled" state to misunderstand.
+- The `enabled` field stays on `ConfiguredProvider` for backward
+  compatibility with existing `providers.json` files, but is now
+  invariantly `true`. A one-shot migration runs at registry init
+  (`enableAllProviders()`) and forces every provider's `enabled` to
+  `true` on first launch of 0.16.0, so users who got bitten by the
+  accidental flip recover automatically without manual JSON editing.
+- The previous self-healing `enabled = true` writes in
+  `saveWithTest` and `runTest` remain, defensively, so anything that
+  somehow re-introduces a `false` value gets cleaned up on the next
+  Edit interaction too.
+
+**Brand icons on every provider row**
+
+- Each provider row now shows its brand icon (existing
+  `ProviderKind.iconName` from the HUD action list) to the left of
+  the display name: `a.circle.fill` (Anthropic) /
+  `circle.hexagongrid.fill` (OpenAI) / `sparkle` (Gemini) /
+  `x.circle.fill` (Grok) / `wind` (Mistral) /
+  `magnifyingglass.circle.fill` (DeepSeek) / `desktopcomputer`
+  (Ollama) / `laptopcomputer` (LM Studio) / `terminal.fill`
+  (llama.cpp) / `gearshape.fill` (custom).
+- New `ProviderKind.brandColor` mirrors the badge palette used in
+  the HUD chip rows so the same brand visual identity holds across
+  Settings and HUD — orange Anthropic, green OpenAI, blue Gemini,
+  purple Mistral, indigo DeepSeek, gray local providers.
+- The user can now spot which AI is which at a glance without
+  reading the name — useful when several similarly-named providers
+  (custom endpoints, two OpenAI-compatible URLs, etc.) coexist.
+
+**Live connection-health dot**
+
+- The static green-when-ready dot was misleading — it only tracked
+  "has a saved key" and gave no signal about whether that key still
+  works. The dot is now driven by `testConnection` results:
+  - **gray** — never tested (fresh install, just added a provider,
+    cleared local state)
+  - **yellow spinner** — probe in flight
+  - **green** — last test passed
+  - **red** — last test failed (hover for the reason: "HTTP 401",
+    "Network unreachable", "HTTP 429", etc.)
+- Probes fire automatically when the AI tab opens (`.task`
+  modifier) and after every successful Save in the provider editor.
+  Configured cloud providers and local providers with a base URL
+  are tested; unconfigured providers stay gray (no point probing
+  them).
+- Each provider's probe runs in its own task inside a
+  `withTaskGroup` so slow providers (a flaky Mistral endpoint,
+  say) don't block the row updates for fast providers (Anthropic
+  in 200 ms).
+- Probes reuse the existing `testConnection` path which sends a
+  one-line "ping" prompt — cheap, doesn't burn meaningful tokens,
+  and exercises the same code path that real AI actions use, so a
+  green dot genuinely means "actions through this provider will
+  work right now".
+
+**Visible self-healing on the bug that triggered this release**
+
+- The user who hit the disabled-Toggle bug needed to either know to
+  manually toggle Anthropic back on, or edit `providers.json` by
+  hand. With 0.16.0:
+  1. The Toggle that caused the bug no longer exists.
+  2. The migration forces every persisted provider to `enabled =
+     true` on launch.
+  3. The live status dot would have shown a clear gray (never
+     tested → not configured) instead of a misleading red message
+     about API keys when the field was full.
+  4. The brand icon makes the row visually distinct from a "Setup"
+     placeholder, so the dialog's "Test connection" surfacing
+     "missing API key" against a row that visibly has an Anthropic
+     brand icon would have raised the right question
+     ("why is it disabled?") instead of the wrong one ("why is the
+     key empty?").
 
 ### 0.15.0 — Key storage hardening, provider onboarding polish
 

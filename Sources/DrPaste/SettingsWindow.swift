@@ -134,7 +134,7 @@ struct GeneralTab: View {
                         .font(.system(.body, design: .monospaced))
                         .frame(width: 50)
                 }
-                ForEach([SoundCue.copySuccess, .copyFailure, .pasteSuccess, .pasteFailure, .typeTick, .delete], id: \.rawValue) { cue in
+                ForEach([SoundCue.copySuccess, .copyFailure, .pasteSuccess, .pasteFailure, .appendCopy, .typeTick, .delete], id: \.rawValue) { cue in
                     Toggle(cueLabel(cue), isOn: cueBinding(cue))
                 }
             }
@@ -219,6 +219,7 @@ struct GeneralTab: View {
         case .copyFailure: return "Play sound on copy failure"
         case .pasteSuccess: return "Play sound on paste"
         case .pasteFailure: return "Play sound on action failure"
+        case .appendCopy: return "Play sound on ⌥⌘S append copy"
         case .typeTick: return "Play tick on Type Slowly characters"
         case .delete: return "Play sound on delete from history"
         }
@@ -298,6 +299,19 @@ struct AIProvidersTab: View {
     /// "Skip macOS Keychain" switch at the bottom of this tab; persisted via
     /// the static setter on `APIKeyStorage` (UserDefaults-backed).
     @State private var fallbackOnly: Bool = APIKeyStorage.fallbackOnly
+    /// Per-provider live connection status. Refreshed on tab appearance and
+    /// after each successful Save (Edit dialog). The coloured dot to the
+    /// left of each row reflects whatever's here: gray when never tested,
+    /// yellow while a probe is in flight, green for a passing test, red
+    /// when the last test failed (with the reason in the tooltip).
+    @State private var statusByProvider: [String: ConnectionStatus] = [:]
+
+    enum ConnectionStatus: Equatable {
+        case unknown
+        case checking
+        case ok
+        case failed(String)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -354,11 +368,20 @@ struct AIProvidersTab: View {
             keyStorageDisabledNotice
         }
         .padding()
+        .task { await refreshAllStatuses() }
         .sheet(item: $editingProvider) { p in
             ProviderEditor(provider: p) { result in
-                if let cp = result.config {
+                if result.delete {
+                    providerRegistry.remove(providerID: p.id)
+                    statusByProvider.removeValue(forKey: p.id)
+                } else if let cp = result.config {
                     providerRegistry.upsert(cp, apiKey: result.apiKey)
                     providerRegistry.invalidateCache()
+                    // The editor only commits when its in-dialog test passed,
+                    // so reflect that immediately in the row dot without
+                    // running another full probe. The next .task refresh
+                    // (next tab appearance) will reconfirm.
+                    statusByProvider[cp.id] = .ok
                 }
                 editingProvider = nil
             }
@@ -447,6 +470,7 @@ struct AIProvidersTab: View {
         let hasKey = APIKeyStorage.load(for: p.id) != nil
         let isReady = p.kind.isLocal || hasKey
         let isDefault = providerRegistry.config.defaultProviderID == p.id
+        let status = statusByProvider[p.id] ?? .unknown
         HStack(spacing: 10) {
             // Default radio — clickable if provider is ready.
             Button {
@@ -461,9 +485,21 @@ struct AIProvidersTab: View {
             .buttonStyle(.plain)
             .help(isReady ? "Set as default provider for AI actions" : "Configure the provider first")
 
-            Circle()
-                .fill(isReady ? Color.green : Color.gray.opacity(0.4))
-                .frame(width: 8, height: 8)
+            // Connection-health dot. Reflects the last `testConnection` result:
+            // gray = never probed, yellow (pulse) = probe in flight, green = OK,
+            // red = failed (hover for the reason). Probes fire on tab open and
+            // after each successful Save.
+            statusDot(for: status, isReady: isReady)
+                .help(statusTooltip(for: status, isReady: isReady))
+
+            // Provider brand icon — consistent across the HUD action list and
+            // the Settings provider list so the user can spot which AI is which
+            // at a glance without reading the name.
+            Image(systemName: p.kind.iconName)
+                .font(.system(size: 16))
+                .foregroundStyle(p.kind.brandColor)
+                .frame(width: 22)
+
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(p.displayName).font(.system(size: 13, weight: .medium))
@@ -481,19 +517,78 @@ struct AIProvidersTab: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            Toggle("", isOn: enabledBinding(p))
-                .labelsHidden()
+            // Delete moved into the editor footer (matches the Action editor's
+            // "destructive gravity inside the dialog" pattern from 0.12.0).
+            // Edit (or Setup, when unconfigured) is now the only row-level
+            // action besides the default radio.
             Button(isReady ? "Edit" : "Setup") { editingProvider = p }
                 .controlSize(.small)
-            Button(role: .destructive) {
-                providerRegistry.remove(providerID: p.id)
-            } label: {
-                Image(systemName: "trash")
-            }
-            .controlSize(.small)
         }
         .padding(.horizontal, 8).padding(.vertical, 6)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.04)))
+    }
+
+    @ViewBuilder
+    private func statusDot(for status: ConnectionStatus, isReady: Bool) -> some View {
+        switch status {
+        case .unknown:
+            Circle()
+                .fill(isReady ? Color.gray.opacity(0.45) : Color.gray.opacity(0.25))
+                .frame(width: 8, height: 8)
+        case .checking:
+            ProgressView()
+                .controlSize(.mini)
+                .scaleEffect(0.6)
+                .frame(width: 8, height: 8)
+        case .ok:
+            Circle().fill(Color.green).frame(width: 8, height: 8)
+        case .failed:
+            Circle().fill(Color.red).frame(width: 8, height: 8)
+        }
+    }
+
+    private func statusTooltip(for status: ConnectionStatus, isReady: Bool) -> String {
+        switch status {
+        case .unknown:
+            return isReady ? "Not tested yet — probe will run automatically." : "Provider not configured."
+        case .checking: return "Testing connection…"
+        case .ok: return "Last test passed."
+        case .failed(let reason): return "Last test failed: \(reason)"
+        }
+    }
+
+    /// Fires `testConnection` for every provider that's configured (has an API
+    /// key for cloud providers, or a base URL for local). Skips providers
+    /// that have nothing to test against to avoid a parade of red dots on
+    /// fresh installs. Runs in parallel — each provider's check is
+    /// independent so slow providers don't gate fast ones.
+    private func refreshAllStatuses() async {
+        let providers = providerRegistry.config.providers
+        await withTaskGroup(of: Void.self) { group in
+            for p in providers {
+                let hasKey = APIKeyStorage.load(for: p.id) != nil
+                let isReady = p.kind.isLocal || hasKey
+                guard isReady else { continue }
+                group.addTask { @MainActor in
+                    statusByProvider[p.id] = .checking
+                    let result = await AIProviderRegistry.shared.testConnection(providerID: p.id)
+                    switch result {
+                    case .success: statusByProvider[p.id] = .ok
+                    case .failure(let e): statusByProvider[p.id] = .failed(errorMessage(e))
+                    }
+                }
+            }
+        }
+    }
+
+    private func errorMessage(_ e: AIProviderError) -> String {
+        switch e {
+        case .missingAPIKey: return "API key required"
+        case .missingBaseURL: return "Base URL required"
+        case .http(let status, _): return "HTTP \(status)"
+        case .networkUnreachable: return "Network unreachable"
+        case .decode(let s): return s
+        }
     }
 
     /// Returns explicit Color for the radio icon to avoid HierarchicalShapeStyle vs Color
@@ -502,17 +597,6 @@ struct AIProvidersTab: View {
         if isDefault { return .accentColor }
         if isReady { return Color.primary.opacity(0.55) }
         return Color.primary.opacity(0.25)
-    }
-
-    private func enabledBinding(_ p: ConfiguredProvider) -> Binding<Bool> {
-        Binding(
-            get: { p.enabled },
-            set: { newValue in
-                var cp = p
-                cp.enabled = newValue
-                providerRegistry.upsert(cp)
-            }
-        )
     }
 
     private func newProviderID(for kind: ProviderKind) -> String {
@@ -530,6 +614,10 @@ struct AIProvidersTab: View {
 struct ProviderEditorResult {
     var config: ConfiguredProvider?
     var apiKey: String?
+    /// True when the editor's footer Delete was confirmed. The sheet handler
+    /// in `AIProvidersTab` routes through `providerRegistry.remove(...)` and
+    /// ignores `config` / `apiKey`. Mutually exclusive with a Save result.
+    var delete: Bool = false
 }
 
 struct ProviderEditor: View {
@@ -540,6 +628,7 @@ struct ProviderEditor: View {
     @State private var testing = false
     @State private var initialKey: String? = nil
     @State private var initialProvider: ConfiguredProvider? = nil
+    @State private var confirmDelete = false
     let onClose: (ProviderEditorResult) -> Void
 
     /// True if auth-relevant fields differ from initial state — save must re-test.
@@ -639,6 +728,17 @@ struct ProviderEditor: View {
             }
 
             HStack {
+                // Destructive action stays on the left, separated from the
+                // non-destructive Cancel / Save cluster on the right.
+                // Confirmation dialog protects against misclicks since
+                // removal also deletes the saved API key.
+                Button(role: .destructive) {
+                    confirmDelete = true
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .controlSize(.regular)
+                .disabled(testing)
                 Spacer()
                 Button("Cancel") { onClose(ProviderEditorResult(config: nil, apiKey: nil)) }
                 Button(testing ? "Testing…" : "Save") {
@@ -649,6 +749,18 @@ struct ProviderEditor: View {
             }
             Text("Save runs the connection test first. Save only succeeds if the test passes.")
                 .font(.caption2).foregroundStyle(.tertiary)
+        }
+        .confirmationDialog(
+            "Delete \(provider.displayName)?",
+            isPresented: $confirmDelete,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                onClose(ProviderEditorResult(config: nil, apiKey: nil, delete: true))
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removes the provider's configuration and its stored API key. Any AI actions that follow the default will fall back to the next configured provider. This cannot be undone.")
         }
         .padding(20)
         .frame(width: 520)
@@ -666,7 +778,11 @@ struct ProviderEditor: View {
             return
         }
         testing = true; testResult = nil
-        let providerCopy = provider
+        // Same intent guard as runTest: Save implies the user wants this
+        // provider live — force-enable in case the row toggle was flipped
+        // off by accident.
+        var providerCopy = provider
+        providerCopy.enabled = true
         let keyForTest = apiKey.isEmpty ? (initialKey ?? "") : apiKey
         Task { @MainActor in
             if !keyForTest.isEmpty {
@@ -721,7 +837,12 @@ struct ProviderEditor: View {
     /// Manual standalone test (no save) — keeps the editor open regardless of result.
     private func runTest() {
         testing = true; testResult = nil
-        let temp = provider
+        // If the user is testing a key, they obviously intend the provider
+        // to be active. Force-enable to recover from accidental clicks on
+        // the per-row enable Toggle (a tiny unlabeled control sandwiched
+        // between Edit and Trash buttons — easy to flip by mistake).
+        var temp = provider
+        temp.enabled = true
         let keyToSave = apiKey
         Task { @MainActor in
             if !keyToSave.isEmpty {
@@ -811,7 +932,15 @@ struct ContentTypeTab: View {
     @State private var result: ApplyOutcome? = nil
     @State private var runningID: String? = nil
     @State private var editorContext: ActionEditorContext? = nil
-    @State private var showingPalette: Bool = false
+
+    /// Standalone NSWindow that hosts ActionEditor. Replaces the previous
+    /// `.sheet(item:)` modifier because sheets can't be dragged
+    /// independently of their parent and don't clamp themselves against
+    /// the Dock — the editor's footer with OK/Cancel was landing behind
+    /// the Dock on small screens or when Settings was positioned near
+    /// the top of the display. Standalone NSWindow is movable by its
+    /// title bar and clamped to `visibleFrame`.
+    @State private var editorWindow = ActionEditorWindowController()
 
     var body: some View {
         // Two-column layout:
@@ -826,25 +955,36 @@ struct ContentTypeTab: View {
         }
         .padding()
         .onAppear { sampleText = SettingsSamples.sample(for: kind).previewText ?? "" }
-        .sheet(item: Binding<EditorPresentation?>(
-            get: { editorContext.map { EditorPresentation(context: $0) } },
-            set: { editorContext = $0?.context }
-        )) { presentation in
-            ActionEditor(context: presentation.context, registry: registry) {
-                editorContext = nil
+        .onChange(of: editorContextKey) { _ in
+            // Whenever editorContext flips from nil → non-nil, open a
+            // window for the new context. Going non-nil → nil closes it
+            // (handles cases where the user clicks Save/Cancel inside
+            // the editor, which sets editorContext = nil).
+            if let context = editorContext {
+                editorWindow.show(context: context, registry: registry) {
+                    // onClose may fire from the editor (Save / Cancel
+                    // button) or from the window's red traffic-light.
+                    // Either way, reset state so the next click on
+                    // Add / Edit reopens cleanly.
+                    if editorContext != nil { editorContext = nil }
+                }
+            } else {
+                editorWindow.close()
             }
         }
     }
 
-    private struct EditorPresentation: Identifiable {
-        let context: ActionEditorContext
-        var id: String {
-            switch context {
-            case .createNew: return "createNew"
-            case .editBuiltin(let id, _, _): return "builtin:\(id)"
-            case .editTransformation(let d): return "transform:\(d.id)"
-            case .editAI(let d): return "ai:\(d.id)"
-            }
+    /// String-id derived from editorContext for SwiftUI's `onChange`
+    /// (ActionEditorContext has associated values so it isn't Equatable
+    /// without an explicit conformance). Different keys ↔ different
+    /// dialogs; same key ↔ no-op.
+    private var editorContextKey: String {
+        guard let ctx = editorContext else { return "" }
+        switch ctx {
+        case .createNew: return "createNew"
+        case .editBuiltin(let id, _, _): return "builtin:\(id)"
+        case .editTransformation(let d): return "transform:\(d.id)"
+        case .editAI(let d): return "ai:\(d.id)"
         }
     }
 
@@ -878,10 +1018,6 @@ struct ContentTypeTab: View {
                     Label("New", systemImage: "plus.circle")
                 }
                 .controlSize(.small)
-                Button { showingPalette = true } label: {
-                    Label("Browse", systemImage: "list.bullet.rectangle")
-                }
-                .controlSize(.small)
             }
             // Single drag-to-reorder list. Identity is always first.
             // Built-in, custom AI, and custom transformations all live here together —
@@ -897,9 +1033,6 @@ struct ContentTypeTab: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
-        }
-        .sheet(isPresented: $showingPalette) {
-            ActionPaletteSheet(kind: kind, registry: registry) { showingPalette = false }
         }
     }
 
@@ -1061,17 +1194,11 @@ struct ContentTypeTab: View {
             return nil
         }()
         guard let kind = resolvedKind else { return ("AI", .gray, "sparkle") }
-        let color: Color
-        switch kind {
-        case .anthropic: color = .orange
-        case .openai:    color = .green
-        case .gemini:    color = .blue
-        case .grok:      color = .primary
-        case .mistral:   color = .purple
-        case .deepseek:  color = .indigo
-        case .ollama, .lmstudio, .llamaCpp, .custom: color = .gray
-        }
-        return (kind.badgeLabel, color, kind.iconName)
+        // Single source of truth for the brand palette — see
+        // `ProviderKind.brandColor`. Used here in the Settings actions
+        // list, in HUD chip badges, and in the Settings provider list,
+        // so the same brand always paints the same hue.
+        return (kind.badgeLabel, kind.brandColor, kind.iconName)
     }
 
     private func enabledBinding(_ actionID: String) -> Binding<Bool> {

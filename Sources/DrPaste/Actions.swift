@@ -13,6 +13,7 @@
 //
 
 import Foundation
+import AppKit
 
 // MARK: - Outcome model
 
@@ -162,7 +163,13 @@ final class ActionRegistry: ObservableObject {
                 // actionHotkeys itself did not change.
                 if oldValue.actionHotkeys != config.actionHotkeys
                     || Self.enabledFingerprint(oldValue) != Self.enabledFingerprint(config) {
-                    Task { @MainActor in ActionHotkeyManager.shared.reload() }
+                    Task { @MainActor in
+                        ActionHotkeyManager.shared.reload()
+                        // #A10: re-push the ⌥⌘<letter> map to the EventTap
+                        // engine so hold-preview routes the same hotkey set
+                        // that the Carbon side just re-registered.
+                        (NSApp.delegate as? AppDelegate)?.reloadHoldPreviewMap()
+                    }
                 }
             }
         }
@@ -642,7 +649,10 @@ final class ActionRegistry: ObservableObject {
         rebuildCustomTransformations()
         pruneOrphanedActionHotkeys()
         // Re-register hotkeys (all dropped above, this just clears the manager).
-        Task { @MainActor in ActionHotkeyManager.shared.reload() }
+        Task { @MainActor in
+            ActionHotkeyManager.shared.reload()
+            (NSApp.delegate as? AppDelegate)?.reloadHoldPreviewMap()
+        }
     }
 
     // MARK: - Export / Import

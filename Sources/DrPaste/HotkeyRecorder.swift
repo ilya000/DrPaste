@@ -82,6 +82,14 @@ struct HotkeyRecorderField: View {
     private func startRecording() {
         guard !isRecording else { return }
         isRecording = true
+        // Silence every other hotkey interception path so the local
+        // NSEvent monitor below can actually see ⌥⌘<letter> chords.
+        // Without this, EventTap (Full Gesture Mode) and Carbon's
+        // system + per-action hotkeys consume those chords before they
+        // reach our app's responder chain, and `addLocalMonitorForEvents`
+        // never fires — making it impossible to record ⌥⌘ combos.
+        // Paired with `endHotkeyRecording()` in stopRecording().
+        (NSApp.delegate as? AppDelegate)?.beginHotkeyRecording()
         recorderMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
             handleEvent(event)
             return nil  // swallow the event
@@ -90,6 +98,13 @@ struct HotkeyRecorderField: View {
 
     private func stopRecording() {
         if let m = recorderMonitor { NSEvent.removeMonitor(m); recorderMonitor = nil }
+        if isRecording {
+            // Restore hotkey interception. Idempotent — only fires when
+            // we actually started recording (avoids spurious re-register
+            // on the .onDisappear path where stopRecording can run
+            // without a prior startRecording).
+            (NSApp.delegate as? AppDelegate)?.endHotkeyRecording()
+        }
         isRecording = false
     }
 
