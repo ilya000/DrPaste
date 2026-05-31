@@ -139,6 +139,22 @@ enum RichTextImageExtractor {
     }
 }
 
+/// Run heavy NSImage / Vision / CIFilter work off the main thread so the
+/// HUD preview pane stays responsive while a transformation is in
+/// flight. Every image action below is CPU-bound (CIFilter render,
+/// VNImageRequestHandler.perform, NSBitmapImageRep encode); without
+/// this hop the `await action.apply(...)` in `refreshPreview` would
+/// run synchronously on the main actor and freeze the UI for the
+/// full 100–500 ms a transformation takes on a typical full-resolution
+/// image. Closure result must be Sendable — `ClipboardItem` and
+/// `String` are; `NSImage` stays inside the closure and never
+/// escapes the detached task.
+private func runOffMain<T: Sendable>(
+    _ work: @Sendable @escaping () -> T
+) async -> T {
+    await Task.detached(priority: .userInitiated, operation: work).value
+}
+
 private func saveImage(_ image: NSImage, originalItem: ClipboardItem) -> ClipboardItem? {
     guard let tiff = image.tiffRepresentation,
           let bitmap = NSBitmapImageRep(data: tiff),
@@ -164,25 +180,37 @@ struct ImageOCRAction: ClipboardAction {
         imageActionApplies(item: item, context: context)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        guard let img = loadImage(item),
-              let cgImg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            return .failed(original: item, reason: "Couldn't read image", recovery: nil)
+        // VNRecognizeTextRequest is heavy (50 ms–1 s on text-rich images).
+        // Run off-main so the HUD preview pane stays responsive while
+        // the user navigates between actions.
+        enum OCROutcome: Sendable { case ok(String); case failed(String) }
+        let outcome: OCROutcome = await runOffMain {
+            guard let img = loadImage(item),
+                  let cgImg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+                return .failed("Couldn't read image")
+            }
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = true
+            request.recognitionLanguages = ["en-US", "ru-RU"]
+            let handler = VNImageRequestHandler(cgImage: cgImg, options: [:])
+            do {
+                try handler.perform([request])
+            } catch {
+                return .failed("OCR failed: \(error.localizedDescription)")
+            }
+            let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+            guard !lines.isEmpty else {
+                return .failed("No text recognized in image")
+            }
+            return .ok(lines.joined(separator: "\n"))
         }
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = true
-        request.recognitionLanguages = ["en-US", "ru-RU"]
-        let handler = VNImageRequestHandler(cgImage: cgImg, options: [:])
-        do {
-            try handler.perform([request])
-        } catch {
-            return .failed(original: item, reason: "OCR failed: \(error.localizedDescription)", recovery: nil)
+        switch outcome {
+        case .ok(let text):
+            return .preview(makeTextItem(text, from: item))
+        case .failed(let reason):
+            return .failed(original: item, reason: reason, recovery: nil)
         }
-        let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
-        guard !lines.isEmpty else {
-            return .failed(original: item, reason: "No text recognized in image", recovery: nil)
-        }
-        return .preview(makeTextItem(lines.joined(separator: "\n"), from: item))
     }
 }
 
@@ -194,20 +222,29 @@ struct ImageDecodeQRAction: ClipboardAction {
         imageActionApplies(item: item, context: context)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        guard let img = loadImage(item),
-              let cgImg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            return .failed(original: item, reason: "Couldn't read image", recovery: nil)
+        enum QROutcome: Sendable { case ok(String); case failed(String) }
+        let outcome: QROutcome = await runOffMain {
+            guard let img = loadImage(item),
+                  let cgImg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+                return .failed("Couldn't read image")
+            }
+            let request = VNDetectBarcodesRequest()
+            let handler = VNImageRequestHandler(cgImage: cgImg, options: [:])
+            do { try handler.perform([request]) } catch {
+                return .failed("Barcode detection failed")
+            }
+            let payloads = (request.results ?? []).compactMap { $0.payloadStringValue }
+            guard !payloads.isEmpty else {
+                return .failed("No QR or barcode detected")
+            }
+            return .ok(payloads.joined(separator: "\n"))
         }
-        let request = VNDetectBarcodesRequest()
-        let handler = VNImageRequestHandler(cgImage: cgImg, options: [:])
-        do { try handler.perform([request]) } catch {
-            return .failed(original: item, reason: "Barcode detection failed", recovery: nil)
+        switch outcome {
+        case .ok(let text):
+            return .preview(makeTextItem(text, from: item))
+        case .failed(let reason):
+            return .failed(original: item, reason: reason, recovery: nil)
         }
-        let payloads = (request.results ?? []).compactMap { $0.payloadStringValue }
-        guard !payloads.isEmpty else {
-            return .failed(original: item, reason: "No QR or barcode detected", recovery: nil)
-        }
-        return .preview(makeTextItem(payloads.joined(separator: "\n"), from: item))
     }
 }
 
@@ -237,12 +274,13 @@ struct ImageGrayscaleAction: ClipboardAction {
         imageActionApplies(item: item, context: context)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        guard let img = loadImage(item) else {
-            return .failed(original: item, reason: "Couldn't read image", recovery: nil)
+        let saved: ClipboardItem? = await runOffMain {
+            guard let img = loadImage(item) else { return nil }
+            let filter = CIFilter.photoEffectMono()
+            guard let out = applyFilter(filter, on: img) else { return nil }
+            return saveImage(out, originalItem: item)
         }
-        let filter = CIFilter.photoEffectMono()
-        guard let out = applyFilter(filter, on: img),
-              let saved = saveImage(out, originalItem: item) else {
+        guard let saved = saved else {
             return .failed(original: item, reason: "Grayscale failed", recovery: nil)
         }
         return .preview(saved)
@@ -255,12 +293,13 @@ struct ImageInvertAction: ClipboardAction {
         imageActionApplies(item: item, context: context)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        guard let img = loadImage(item) else {
-            return .failed(original: item, reason: "Couldn't read image", recovery: nil)
+        let saved: ClipboardItem? = await runOffMain {
+            guard let img = loadImage(item) else { return nil }
+            let filter = CIFilter.colorInvert()
+            guard let out = applyFilter(filter, on: img) else { return nil }
+            return saveImage(out, originalItem: item)
         }
-        let filter = CIFilter.colorInvert()
-        guard let out = applyFilter(filter, on: img),
-              let saved = saveImage(out, originalItem: item) else {
+        guard let saved = saved else {
             return .failed(original: item, reason: "Invert failed", recovery: nil)
         }
         return .preview(saved)
@@ -306,7 +345,10 @@ struct ImageRotateRightAction: ClipboardAction {
         imageActionApplies(item: item, context: context)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        guard let saved = rotateImage(item, radians: -.pi / 2) else {
+        let saved: ClipboardItem? = await runOffMain {
+            rotateImage(item, radians: -.pi / 2)
+        }
+        guard let saved = saved else {
             return .failed(original: item, reason: "Rotation failed", recovery: nil)
         }
         return .preview(saved)
@@ -324,7 +366,10 @@ struct ImageRotateLeftAction: ClipboardAction {
         imageActionApplies(item: item, context: context)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        guard let saved = rotateImage(item, radians: .pi / 2) else {
+        let saved: ClipboardItem? = await runOffMain {
+            rotateImage(item, radians: .pi / 2)
+        }
+        guard let saved = saved else {
             return .failed(original: item, reason: "Rotation failed", recovery: nil)
         }
         return .preview(saved)
@@ -337,25 +382,27 @@ struct ImageResize1920Action: ClipboardAction {
         imageActionApplies(item: item, context: context)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        guard let img = loadImage(item) else {
-            return .failed(original: item, reason: "Couldn't read image", recovery: nil)
+        enum ResizeResult { case ok(ClipboardItem); case alreadySmall; case failed }
+        let result: ResizeResult = await runOffMain {
+            guard let img = loadImage(item) else { return .failed }
+            let size = img.size
+            let maxSide = max(size.width, size.height)
+            guard maxSide > 1920 else { return .alreadySmall }
+            let scale = 1920 / maxSide
+            let newSize = NSSize(width: size.width * scale, height: size.height * scale)
+            let out = NSImage(size: newSize)
+            out.lockFocus()
+            img.draw(in: NSRect(origin: .zero, size: newSize),
+                     from: .zero, operation: .copy, fraction: 1.0)
+            out.unlockFocus()
+            guard let saved = saveImage(out, originalItem: item) else { return .failed }
+            return .ok(saved)
         }
-        let size = img.size
-        let maxSide = max(size.width, size.height)
-        guard maxSide > 1920 else {
-            return .failed(original: item, reason: "Already ≤ 1920px", recovery: nil)
+        switch result {
+        case .ok(let saved):     return .preview(saved)
+        case .alreadySmall:      return .failed(original: item, reason: "Already ≤ 1920px", recovery: nil)
+        case .failed:            return .failed(original: item, reason: "Resize failed", recovery: nil)
         }
-        let scale = 1920 / maxSide
-        let newSize = NSSize(width: size.width * scale, height: size.height * scale)
-        let result = NSImage(size: newSize)
-        result.lockFocus()
-        img.draw(in: NSRect(origin: .zero, size: newSize),
-                 from: .zero, operation: .copy, fraction: 1.0)
-        result.unlockFocus()
-        guard let saved = saveImage(result, originalItem: item) else {
-            return .failed(original: item, reason: "Resize failed", recovery: nil)
-        }
-        return .preview(saved)
     }
 }
 
@@ -365,22 +412,28 @@ struct ImageCompressJPEGAction: ClipboardAction {
         imageActionApplies(item: item, context: context)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        guard let img = loadImage(item),
-              let tiff = img.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiff),
-              let jpeg = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
+        let copy: ClipboardItem? = await runOffMain {
+            guard let img = loadImage(item),
+                  let tiff = img.tiffRepresentation,
+                  let bitmap = NSBitmapImageRep(data: tiff),
+                  let jpeg = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
+                return nil
+            }
+            let name = "\(UUID().uuidString)-c.jpg"
+            let rawName = "\(UUID().uuidString)-c.jpg.bin"
+            try? jpeg.write(to: AppStorage.imagesDir.appendingPathComponent(name))
+            try? jpeg.write(to: AppStorage.blobsDir.appendingPathComponent(rawName))
+            var copy = item
+            copy.semantic = .image
+            copy.previewImageRel = name
+            copy.representations = ["public.jpeg": rawName]
+            copy.typesOrdered = ["public.jpeg"]
+            copy.previewText = "JPEG \(jpeg.count / 1024) KB"
+            return copy
+        }
+        guard let copy = copy else {
             return .failed(original: item, reason: "JPEG compression failed", recovery: nil)
         }
-        let name = "\(UUID().uuidString)-c.jpg"
-        let rawName = "\(UUID().uuidString)-c.jpg.bin"
-        try? jpeg.write(to: AppStorage.imagesDir.appendingPathComponent(name))
-        try? jpeg.write(to: AppStorage.blobsDir.appendingPathComponent(rawName))
-        var copy = item
-        copy.semantic = .image
-        copy.previewImageRel = name
-        copy.representations = ["public.jpeg": rawName]
-        copy.typesOrdered = ["public.jpeg"]
-        copy.previewText = "JPEG \(jpeg.count / 1024) KB"
         return .preview(copy)
     }
 }
@@ -391,23 +444,29 @@ struct ImageStripMetadataAction: ClipboardAction {
         imageActionApplies(item: item, context: context)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        guard let img = loadImage(item),
-              let tiff = img.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiff),
-              let png = bitmap.representation(using: .png, properties: [:]) else {
+        let copy: ClipboardItem? = await runOffMain {
+            guard let img = loadImage(item),
+                  let tiff = img.tiffRepresentation,
+                  let bitmap = NSBitmapImageRep(data: tiff),
+                  let png = bitmap.representation(using: .png, properties: [:]) else {
+                return nil
+            }
+            // PNG does not carry EXIF; the re-encode strips any metadata.
+            let name = "\(UUID().uuidString)-clean.png"
+            let rawName = "\(UUID().uuidString)-clean.png.bin"
+            try? png.write(to: AppStorage.imagesDir.appendingPathComponent(name))
+            try? png.write(to: AppStorage.blobsDir.appendingPathComponent(rawName))
+            var copy = item
+            copy.semantic = .image
+            copy.previewImageRel = name
+            copy.representations = ["public.png": rawName]
+            copy.typesOrdered = ["public.png"]
+            copy.previewText = "Image \(png.count / 1024) KB (no metadata)"
+            return copy
+        }
+        guard let copy = copy else {
             return .failed(original: item, reason: "Strip metadata failed", recovery: nil)
         }
-        // PNG does not carry EXIF; the re-encode strips any metadata.
-        let name = "\(UUID().uuidString)-clean.png"
-        let rawName = "\(UUID().uuidString)-clean.png.bin"
-        try? png.write(to: AppStorage.imagesDir.appendingPathComponent(name))
-        try? png.write(to: AppStorage.blobsDir.appendingPathComponent(rawName))
-        var copy = item
-        copy.semantic = .image
-        copy.previewImageRel = name
-        copy.representations = ["public.png": rawName]
-        copy.typesOrdered = ["public.png"]
-        copy.previewText = "Image \(png.count / 1024) KB (no metadata)"
         return .preview(copy)
     }
 }
@@ -440,12 +499,14 @@ struct ImageToASCIIArtAction: ClipboardAction {
     }
 
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        guard let img = loadImage(item) else {
-            return .failed(original: item, reason: "Couldn't read image", recovery: nil)
+        let result: String = await runOffMain {
+            guard let img = loadImage(item) else { return "" }
+            return Self.render(image: img)
         }
-        let result = Self.render(image: img)
         guard !result.isEmpty else {
-            return .failed(original: item, reason: "ASCII conversion produced empty output", recovery: nil)
+            return .failed(original: item,
+                           reason: "ASCII conversion produced empty output",
+                           recovery: nil)
         }
         return .preview(makeTextItem(result, from: item))
     }

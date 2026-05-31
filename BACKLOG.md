@@ -1165,6 +1165,246 @@ recovered via `git log --follow BACKLOG.md` and inspected with
 include verbose technical reasoning per "Правка"; this current revision is
 the curated, English-only working document.
 
+### 0.31.0 — HUD overlap + stranded BigHUD + in-flight action cancellation
+
+User report: in heavy AI flows ("⌥⌘ hold → hotkey → ⌥⌘ release"
+sequence), sometimes BOTH the MiniHUD and the BigHUD were visible
+at the same time, on top of each other.
+
+Three distinct bugs piled on top of each other.
+
+**Bug 1 — MiniHUD + BigHUD visible simultaneously**
+
+Direct-trigger AI flow: user fires ⌥⌘T (per-action hotkey). MiniHUD
+shows action title + provider · model · elapsed. AI takes ~5 s.
+User, impatient, hits ⌥⌘V meanwhile to browse history. BigHUD
+opens — but the MiniHUD is still showing because no one taught
+`openHUD` / `openBigHUDFocusedOnAction` to hide it.
+
+Fix — both BigHUD-opening paths now call
+`MiniHUDController.shared.hide()` at the start.
+
+**Bug 2 — in-flight direct-trigger action keeps running after user moved on**
+
+Same scenario as bug 1: AI is mid-stream when user opens BigHUD.
+We hide the MiniHUD (fix 1), but the underlying `Task` running
+`action.apply` keeps going. Eventually completes and fires
+`performStandardPaste(result, savedApp: frontmost)` against the
+app that was frontmost when the user originally pressed ⌥⌘T —
+which is probably no longer where the user is. Surprise paste,
+possibly into the wrong context.
+
+Fix — track the direct-trigger task as a new
+`actionHotkeyTask: Task<Void, Never>?` field on AppDelegate.
+Cancelled by every BigHUD-opening path (`openHUD`,
+`openBigHUDFocusedOnAction`), by `closeBigHUD`, and by re-entry
+into `actionHotkeyDidFire` itself. `Task.isCancelled` checked
+twice inside the task — after `simulateCopyAndAwaitChange`
+returns, and after `action.apply` returns — so we don't paste
+results from a cancelled run.
+
+**Bug 3 — stranded BigHUD when ⌥⌘ released mid-poll**
+
+`openBigHUDFocusedOnAction` does a selection-first ⌘C dance via
+`PasteSimulator.simulateCopyAndAwaitChange` (up to 250 ms). If the
+user releases ⌥⌘ during that window, the engine's
+`flagsChanged → hotkeyEngineDidRelease → commitBigHUD` chain ran
+on a still-empty `bigHUDState`, found nothing to commit, called
+`closeBigHUD` (no-op since the panel wasn't shown yet), and reset
+`bigHUDIsActive = false`. Meanwhile our `Task` continued
+unaware, eventually calling `showBigHUD()` — the panel appeared
+"after the train left", with no user gesture holding it. User
+had to dismiss with Esc.
+
+Fix — after the `await` in the open task, check
+`(engine as? EventTapEngine)?.isHudActive`. If the engine no
+longer thinks the HUD should be active (because the user
+released), bail out before showing.
+
+**Why these compound**
+
+Heavy actions (AI streaming, large image filters) widen every
+async window in the gesture pipeline. The faster the AI, the
+narrower the race; the slower the AI, the more reliably users
+hit these bugs. That's why the report came in as "глючит на
+тяжёлых вещах" — light actions complete before the race
+windows open.
+
+### 0.30.2 — Compile fix for 0.30.1 (`Result<String, String>` → local enum)
+
+0.30.1 didn't compile. The `OCR` and `Decode QR` actions used
+`Result<String, String>` as the off-main return type, but Swift's
+`Result<Success, Failure>` requires `Failure: Error` and `String`
+doesn't conform. Replaced both sites with a small local `Sendable`
+enum (`OCROutcome` / `QROutcome`) — same pattern already used by
+`ImageResize1920Action.ResizeResult` in 0.30.1. Other 8 image
+actions weren't affected (they returned `Optional<ClipboardItem>`
+or plain `String`).
+
+Pure compile fix — no functional change vs the intent of 0.30.1.
+
+### 0.30.1 — Image actions no longer freeze the HUD (main-actor unblock + spinner)
+
+User report: image actions (Grayscale, Rotate right, Rotate left, …)
+behaved unreliably in the HUD preview pane — sometimes the rotated
+image showed, more often it didn't, and the panel felt frozen
+("жутко глючит"). Two distinct bugs compounding each other.
+
+**Bug 1 — image actions blocked main thread**
+
+Every image action's `apply(item:context:)` is declared `async` but
+the body had no `await` calls inside. `CIFilter` render,
+`VNRecognizeTextRequest.perform`, `NSBitmapImageRep.representation`
+— all of those run synchronously. With Swift Concurrency, an
+`async` function with no internal `await` runs synchronously on
+the calling actor. The caller in `refreshPreview` is
+`Task { @MainActor in let outcome = await action.apply(...) }` —
+so `apply` runs on the main actor, freezing the UI for the
+100–500 ms a transformation needs on a typical full-resolution
+clip. Hence "frozen / glitchy".
+
+Fixed by routing every image action's heavy work through a new
+`runOffMain` helper in `ImageActions.swift`:
+
+```swift
+private func runOffMain<T: Sendable>(
+    _ work: @Sendable @escaping () -> T
+) async -> T {
+    await Task.detached(priority: .userInitiated, operation: work).value
+}
+```
+
+`NSImage` / `CIFilter` / `VNImageRequestHandler` references stay
+inside the closure (never escape the detached task), only
+`Sendable` results (`ClipboardItem`, `String`, custom enums) come
+back across the actor boundary. All 10 image actions refactored:
+OCR, Decode QR, Grayscale, Invert, Rotate Right, Rotate Left,
+Resize 1920px, Compress JPEG 80%, Strip metadata, ASCII art.
+
+**Bug 2 — no loading state for local actions in HUD preview**
+
+`refreshPreview` set `isPreviewLoading = true` for AI (remote)
+actions but skipped it for `action.isLocal == true` — local
+actions were assumed to be instant. When they're not (image
+filters), the user stared at the PREVIOUS action's preview
+output for the full 100–500 ms the new transformation took,
+then it snapped to the new result. Looked like "the rotation
+flickered briefly".
+
+Fixed: local actions now set `isPreviewLoading = true`
+immediately before kicking off the work task; the existing
+spinner panel ("processing…") shows while we compute, then
+clears the moment the result lands. Consistent visual model
+with the AI path.
+
+**Local task cancellation on navigation**
+
+While inspecting the code I also noticed local previews were
+fire-and-forget — `Task { @MainActor in … }` with no handle to
+cancel. Fast navigation between image actions queued multiple
+background renders (Grayscale, then Rotate before Grayscale
+finished, then Rotate-Left before Rotate finished — three
+concurrent CIFilter renders on a 4K image). Token guarding
+prevented stale results from overwriting the latest outcome,
+but the wasted CPU still slowed everything down. Now tracked
+via `localPreviewTask: Task<Void, Never>?` and cancelled on
+every `refreshPreview` call and inside `closeBigHUD`.
+
+**Files changed**
+
+  - `ImageActions.swift` — `runOffMain` helper + 10 action sites
+    refactored
+  - `main.swift` — `localPreviewTask` field, set
+    `isPreviewLoading = true` for local actions, cancel on
+    navigation / close
+  - `AppBrand.swift` — version bump 0.30.0 → 0.30.1
+  - `BACKLOG.md` — this entry
+
+### 0.30.0 — Audit pass + alpha milestone (DRY refactor + cleanups)
+
+Milestone alpha bump (jumping past 0.29 because the work doesn't
+need its own version). End-of-arc cleanup after the 0.24–0.28 sprint
+of features and bug-hunts, before resuming forward work on the
+hosted-AI backend and MAS submission prep.
+
+**DRY refactor — `PasteSimulator.simulateCopyAndAwaitChange`**
+
+The "simulate ⌘C + poll pasteboard for change" pattern was inlined
+in four places after the selection-first hotkey work landed in
+0.22.0:
+
+  - `actionHotkeyDidFire` (per-action direct trigger)
+  - `openBigHUDFocusedOnAction` (per-action hold-preview)
+  - `hotkeyEngineDidAppendCopy` (⌥⌘S Append Copy)
+  - `hotkeyEngineDidQuickCopy` (⌥⌘C Quick Copy — used the older
+    DispatchQueue.main.asyncAfter pattern, slightly different)
+
+Each site had its own `Task.sleep` loop, its own 250 ms / 150 ms
+constant, and its own change-detection guard. Four near-identical
+copies of timing-critical code = four places to update when the
+timing model changes, four chances for one to drift.
+
+Extracted into a single static helper on `PasteSimulator`:
+
+```swift
+@MainActor
+static func simulateCopyAndAwaitChange(timeout: TimeInterval = 0.25)
+    async -> Bool
+```
+
+Returns `true` if the pasteboard refreshed within the timeout,
+`false` on timeout. All four call sites refactored to use it.
+Quick Copy is now consistent with the others (was 150 ms, now
+250 ms uniformly — slightly more compatible with slow apps).
+
+**Cleanups**
+
+  - Removed `AppTheme.hudBackgroundTint` — deprecated stub left
+    over from the 0.27.0 gradient migration, returned `.clear` for
+    every theme and was never called from anywhere. Searched the
+    full source tree to confirm zero references before deleting.
+  - Tightened doc comments throughout the modified files to
+    reflect the final architecture (cursor overlay note no longer
+    says "three iterations of trying" — that history lives in the
+    changelog, not in the source).
+  - Inline `pb` variable hoisting consolidated to the smallest
+    scope it's used in each call site.
+
+**Forced-unwrap / `try!` / `as!` audit**
+
+Inventoried every `try!`, `as!`, and `fatalError` in the source
+tree:
+
+  - `main.swift:20` — `var registry: ActionRegistry!` — implicitly
+    unwrapped optional initialised in `applicationDidFinishLaunching`
+    before first use. Standard AppDelegate pattern, safe.
+  - `ClipboardModel.swift:119` — `try! fm.url(for: .applicationSupportDirectory)`
+    — could theoretically fail if the user has a corrupted home
+    directory, but if that's the case DrPaste can't function
+    anyway. Acceptable.
+  - `ClipboardModel.swift:349` — `as! AXUIElement` — required by
+    the AX C API which returns `CFTypeRef`. Standard pattern.
+  - `ScreenRegionCapture.swift:421, 704` /
+    `AboutWindow.swift:34` — `fatalError` inside `required init?(coder:)`
+    on programmatically-created views that never come from a NIB.
+    Standard SwiftUI / AppKit pattern.
+
+All five are documented, justified, and unchanged. No new ones
+introduced in this audit pass.
+
+**TODO / FIXME / HACK audit**
+
+`grep -E "TODO|FIXME|XXX|HACK"` across `Sources/DrPaste/` returns
+zero matches. We're clean.
+
+**Files changed in this version**
+
+  - `PasteSimulator.swift` — added `simulateCopyAndAwaitChange`
+  - `main.swift` — four call sites refactored to use the helper
+  - `AppTheme.swift` — removed deprecated `hudBackgroundTint` stub
+  - `AppBrand.swift` — version bump 0.28.1 → 0.30.0
+  - `BACKLOG.md` — this entry
+
 ### 0.28.1 — Per-provider icons in Add provider sheet
 
 Polish. The Add provider sheet was rendering every cloud kind with

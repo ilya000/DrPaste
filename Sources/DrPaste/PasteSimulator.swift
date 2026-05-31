@@ -70,6 +70,33 @@ enum PasteSimulator {
             optDown?.post(tap: loc)
         }
     }
+
+    /// Simulate ⌘C against the frontmost app and poll the system
+    /// pasteboard for a change. Returns `true` if a new selection
+    /// landed within `timeout`, `false` on timeout (nothing was
+    /// selected or the frontmost app ignored the ⌘C). 250 ms covers
+    /// every well-behaved app the team has tested; longer values
+    /// trade UI latency for compatibility with slow hosts (Java apps,
+    /// remote terminals, Electron with heavy DOM).
+    ///
+    /// Used by every selection-first hotkey path — Quick Copy
+    /// (⌥⌘C), Append Copy (⌥⌘S), per-action direct trigger, and
+    /// per-action hold-preview. Previously each of those sites
+    /// inlined the simulate-and-poll dance; the helper eliminates
+    /// the duplication and gives all four paths a single timing
+    /// model to maintain.
+    @MainActor
+    static func simulateCopyAndAwaitChange(timeout: TimeInterval = 0.25) async -> Bool {
+        let pb = NSPasteboard.general
+        let before = pb.changeCount
+        simulateCopy()
+        let start = Date()
+        while Date().timeIntervalSince(start) < timeout {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            if pb.changeCount > before { return true }
+        }
+        return false
+    }
 }
 
 // MARK: - PasteboardWriter (lossless restoration)

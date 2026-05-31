@@ -138,13 +138,6 @@ enum AppTheme: String, CaseIterable, Codable, Identifiable {
         }
     }
 
-    /// Deprecated single-color tint, kept temporarily for any caller
-    /// that still references it. New code should use
-    /// `ThemeBackgroundFill(theme:)` which renders the proper
-    /// gradient for Vivid / Soft. Returns clear for the
-    /// non-themed cases so it never interferes.
-    var hudBackgroundTint: Color { .clear }
-
     // MARK: Thumbnail palette (Settings picker preview)
 
     /// Three-color palette used by the Settings thumbnail to give

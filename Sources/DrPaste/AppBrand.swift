@@ -15,7 +15,7 @@ import SwiftUI
 
 enum AppBrand {
     static let name: String = "DrPaste"
-    static let version: String = "0.28.1"
+    static let version: String = "0.31.0"
     static let tagline: String = "Press, browse, paste — the Paste gesture, extended"
 
     static let githubURL = "https://github.com/ilya000/DrPaste"

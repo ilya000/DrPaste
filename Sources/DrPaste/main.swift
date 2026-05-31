@@ -40,6 +40,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     /// the provider's `continuation.onTermination` hook, closing the
     /// connection promptly and stopping token usage from running away.
     private var aiStreamingTask: Task<Void, Never>?
+    /// Outstanding LOCAL preview task (image filters, transformations,
+    /// OCR / QR — anything where `action.isLocal == true`). Tracked so
+    /// fast navigation between actions can cancel the previous task
+    /// instead of letting heavy CPU work pile up on the background
+    /// queue. Previously local previews were fire-and-forget; running
+    /// Grayscale on a 4K image then immediately arrowing to Rotate
+    /// queued two full CIFilter renders, doubling the latency to
+    /// the user-visible result.
+    private var localPreviewTask: Task<Void, Never>?
+    /// Outstanding direct-trigger action task (the Task spawned by
+    /// `actionHotkeyDidFire` to run a per-action hotkey's ⌘C →
+    /// transform → paste pipeline). Tracked so opening the BigHUD
+    /// while a previous direct-trigger AI action is still in flight
+    /// can cancel it — otherwise the AI eventually completes and
+    /// pastes into whatever the user was looking at when they fired
+    /// the hotkey, surprising them after they've already moved on.
+    /// Also lets us hide the MiniHUD when BigHUD takes over the
+    /// screen, eliminating the visual overlap user-reported as
+    /// "both MiniHUD and BigHUD showed at once".
+    private var actionHotkeyTask: Task<Void, Never>?
 
     /// Deferred-paste target. Set by `commitBigHUD()` when the user releases
     /// ⌥⌘ while an AI action is still loading: instead of pasting the
@@ -665,6 +685,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
               frontmost.bundleIdentifier != Bundle.main.bundleIdentifier else {
             return
         }
+        // If a previous direct-trigger action is still in flight (slow
+        // AI, big image transform), cancel it before kicking off a new
+        // one. Without this, two parallel actions both eventually call
+        // performStandardPaste, the second overwriting the first in
+        // the target app and possibly inside a context the user
+        // wasn't expecting any more.
+        actionHotkeyTask?.cancel()
+        actionHotkeyTask = nil
+
         // Show progress HUD immediately — actions like AI calls or image
         // transforms may take a noticeable time. For AI actions also pass the
         // AIInflight descriptor so the mini-window can surface provider · model
@@ -675,35 +704,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
 
         // Selection-first semantics — the whole point of a per-action
         // hotkey is "do X to what I'm looking at". Operating on stale
-        // clipboard content is rarely what the user means. Issue ⌘C
-        // against the frontmost app, wait for the pasteboard to
-        // refresh, run the action on whatever was selected. If nothing
-        // changes (no selection), fail loudly — better than silently
-        // applying the transformation to whatever old thing happened
-        // to be in pb.
-        let pb = NSPasteboard.general
-        let changeCountBefore = pb.changeCount
-        PasteSimulator.simulateCopy()
-
-        Task { @MainActor in
-            // Poll up to 250 ms for the selection to land. Most apps
-            // respond inside 30–80 ms; the longer cap covers slow
-            // hosts (Java apps, remote terminals, Electron with
-            // heavy DOM).
-            let start = Date()
-            while Date().timeIntervalSince(start) < 0.25 {
-                try? await Task.sleep(nanoseconds: 20_000_000)
-                if pb.changeCount > changeCountBefore { break }
-            }
-            guard pb.changeCount > changeCountBefore else {
+        // clipboard content is rarely what the user means. Issue ⌘C,
+        // wait for the pasteboard to refresh, run the action on
+        // whatever was selected. If nothing changes (no selection),
+        // fail loudly — better than silently applying the
+        // transformation to whatever old thing happened to be in pb.
+        actionHotkeyTask = Task { @MainActor in
+            guard await PasteSimulator.simulateCopyAndAwaitChange() else {
                 MiniHUDController.shared.hide()
                 SoundFeedback.play(.pasteFailure)
                 return
             }
+            if Task.isCancelled { return }
             // Selection captured — audible "got it" cue. Same sound as
             // ⌥⌘C (Quick Copy) because conceptually this IS a copy step:
             // the user's selection just landed in the pasteboard. The
-            // eventual paste of the transformed result will fire
+            // eventual paste of the transformed result fires
             // `.pasteSuccess` later through performStandardPaste, giving
             // the user a clean two-stage capture-then-paste audio rhythm.
             SoundFeedback.play(.copySuccess)
@@ -714,9 +730,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             // Build a transient ClipboardItem we run the action against —
             // distinct from the store entry forceTick produced (different
             // UUID, not persisted on its own).
+            let pb = NSPasteboard.general
             let item = self.snapshotPasteboardAsItem(pb: pb, sourceApp: frontmost)
             let ctx = ContextDetector.detect(item)
             let outcome = await action.apply(item: item, context: ctx)
+            if Task.isCancelled { return }
             MiniHUDController.shared.hide()
             switch outcome {
             case .preview(let result), .alternativeCommit(let result, _):
@@ -794,19 +812,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             let previousFiles = isNewSession ? nil :
                 pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL]
 
-            let countBefore = pb.changeCount
-            PasteSimulator.simulateCopy()
-
-            // Poll pasteboard change up to 250ms
-            let start = Date()
-            while Date().timeIntervalSince(start) < 0.25 {
-                try? await Task.sleep(nanoseconds: 20_000_000)
-                if pb.changeCount > countBefore { break }
-            }
+            let captured = await PasteSimulator.simulateCopyAndAwaitChange()
             self.lastAppendCopyTime = Date()
             self.lastDrPasteAction = .appendCopy
 
-            if pb.changeCount == countBefore {
+            if !captured {
                 SoundFeedback.play(.copyFailure)
                 return
             }
@@ -1094,23 +1104,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         markOtherDrPasteAction()
         currentSummonReason = .paste
 
+        // Cancel any in-flight direct-trigger action — the MiniHUD it
+        // spawned is about to be replaced by the BigHUD, and we don't
+        // want the old action's eventual paste landing in whatever the
+        // user is looking at when the BigHUD-driven paste also fires.
+        actionHotkeyTask?.cancel()
+        actionHotkeyTask = nil
+        // Visual de-overlap — if a prior direct-trigger left a MiniHUD
+        // on screen, take it down before the BigHUD comes up.
+        MiniHUDController.shared.hide()
+
         // Selection-first, same as the direct-trigger path. The BigHUD
         // preview is only useful if it reflects the action applied to
         // what the user actually highlighted — stale clipboard content
         // would render a misleading preview and lead to a wrong paste.
         // Issue ⌘C, wait for pb to refresh, then open the HUD with the
         // freshly-captured item at the top.
-        let pb = NSPasteboard.general
-        let changeCountBefore = pb.changeCount
-        PasteSimulator.simulateCopy()
-
         Task { @MainActor in
-            let start = Date()
-            while Date().timeIntervalSince(start) < 0.25 {
-                try? await Task.sleep(nanoseconds: 20_000_000)
-                if pb.changeCount > changeCountBefore { break }
-            }
-            guard pb.changeCount > changeCountBefore else {
+            guard await PasteSimulator.simulateCopyAndAwaitChange() else {
                 // No selection. Failure feedback + reset EventTap's
                 // bigHUDIsActive flag (the engine had set it true in
                 // anticipation of this open) so the inevitable ⌥⌘
@@ -1118,6 +1129,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                 // opened.
                 SoundFeedback.play(.pasteFailure)
                 (self.engine as? EventTapEngine)?.resetHudActive()
+                return
+            }
+            // Stranded-BigHUD guard. The ⌘C poll can take up to 250 ms;
+            // if the user released ⌥⌘ in that window, hotkeyEngineDidRelease
+            // already ran, found nothing to commit (state still empty),
+            // and reset bigHUDIsActive. Continuing past this point would
+            // open BigHUD "after the train left" — visible on screen with
+            // no user gesture holding it. Bail out instead.
+            guard let tap = self.engine as? EventTapEngine, tap.isHudActive else {
                 return
             }
             // Selection captured — same audible "got it" cue as the
@@ -1149,16 +1169,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     nonisolated func hotkeyEngineDidQuickCopy() {
         Task { @MainActor in
             self.markOtherDrPasteAction()
-            let countBefore = NSPasteboard.general.changeCount
-            PasteSimulator.simulateCopy()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                let countAfter = NSPasteboard.general.changeCount
-                if countAfter > countBefore {
-                    SoundFeedback.play(.copySuccess)
-                    self.flashStatusItem()
-                } else {
-                    SoundFeedback.play(.copyFailure)
-                }
+            if await PasteSimulator.simulateCopyAndAwaitChange() {
+                SoundFeedback.play(.copySuccess)
+                self.flashStatusItem()
+            } else {
+                SoundFeedback.play(.copyFailure)
             }
         }
     }
@@ -1177,6 +1192,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     // MARK: HUD lifecycle
 
     private func openHUD() {
+        // De-overlap any prior direct-trigger MiniHUD before we put the
+        // BigHUD up. The action behind that MiniHUD might still be
+        // running an AI stream; cancel it so its eventual paste doesn't
+        // land in the user's app after they've already moved on to
+        // browsing history.
+        actionHotkeyTask?.cancel()
+        actionHotkeyTask = nil
+        MiniHUDController.shared.hide()
+
         bigHUDState.items = store.items
         // Cut & Replace UX: when cursorOnSecondOnCut is enabled and there are
         // more than one item, the cursor starts on the second (skipping the
@@ -1346,6 +1370,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // stopping further token billing.
         aiStreamingTask?.cancel()
         aiStreamingTask = nil
+        // Same for any in-flight local preview (CIFilter / VN work).
+        localPreviewTask?.cancel()
+        localPreviewTask = nil
+        // And any direct-trigger action still running from before the
+        // BigHUD opened.
+        actionHotkeyTask?.cancel()
+        actionHotkeyTask = nil
         bigHUDState.aiInflight = nil
         bigHUDState.accumulator = nil
         bigHUDPanel?.orderOut(nil)
@@ -1416,9 +1447,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // the user moved on, no reason to keep burning provider tokens.
         aiStreamingTask?.cancel()
         aiStreamingTask = nil
+        // Same for any prior local preview task — image actions doing
+        // CIFilter / VN work otherwise pile up on the background queue
+        // when the user navigates quickly.
+        localPreviewTask?.cancel()
+        localPreviewTask = nil
 
         if action.isLocal {
-            Task { @MainActor in
+            // Show the spinner immediately so the user gets visual
+            // feedback that "this action is computing", instead of
+            // staring at the previous action's stale preview for the
+            // 100–500 ms an image transformation takes on a typical
+            // full-resolution clip. Spinner clears the moment the
+            // result lands.
+            bigHUDState.isPreviewLoading = true
+            localPreviewTask = Task { @MainActor in
                 let outcome = await action.apply(item: item, context: ctx)
                 if myToken == self.previewToken {
                     self.bigHUDState.outcome = outcome
