@@ -114,6 +114,9 @@ final class RegionCaptureCheatSheetController {
         // the cheat sheet's rectangle. The panel is informational,
         // never interactive.
         p.ignoresMouseEvents = true
+        // Pick up the user's Settings → Appearance choice so the
+        // cheat sheet matches the rest of the chrome.
+        p.subscribeToAppTheme()
         panel = p
     }
 

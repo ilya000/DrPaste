@@ -137,6 +137,9 @@ final class BigHUDPanel: NSPanel {
             ? [.borderless, .titled, .fullSizeContentView]
             : [.borderless, .nonactivatingPanel]
         super.init(contentRect: contentRect, styleMask: style, backing: .buffered, defer: false)
+        // Subscribe to the app theme so picking Light/Dark/Vivid/Soft
+        // in Settings re-skins the BigHUD without an app restart.
+        self.subscribeToAppTheme()
         self.isFloatingPanel = true
         self.level = .statusBar
         self.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
@@ -195,6 +198,10 @@ final class BigHUDHostingView<Content: View>: NSHostingView<Content> {
 
 struct BigHUDView: View {
     @ObservedObject var state: BigHUDState
+    /// Observes Settings → Appearance so picking Vivid/Soft re-tints
+    /// the HUD background and re-pulls the accent color used by
+    /// chips and selection rings.
+    @ObservedObject private var theme = ThemeManager.shared
     let onPick: (Int, Int) -> Void               // (itemIdx, actionIdx) — refresh the preview
     let onCommit: () -> Void                      // release / Enter / dbl-click
     let onOpenAccessibility: () -> Void
@@ -204,16 +211,34 @@ struct BigHUDView: View {
     @State private var hoveredItemID: UUID? = nil
     @State private var hoveredActionID: String? = nil
 
-    private var accent: Color { Color(nsColor: .controlAccentColor) }
+    /// Effective accent — theme override (Vivid orange / Soft lavender)
+    /// or the system accent for Auto/Light/Dark.
+    private var accent: Color {
+        theme.current.accentColor ?? Color(nsColor: .controlAccentColor)
+    }
     private func sz(_ base: CGFloat) -> CGFloat { base * state.fontScale }
 
     var body: some View {
         ZStack {
+            // System VisualEffect blur (untouched for Auto/Light/Dark;
+            // mostly hidden for Vivid/Soft by the gradient overlay).
             VisualEffect(material: .hudWindow, blending: .behindWindow)
                 .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .overlay(
+                    // Theme-specific gradient on top of the system blur.
+                    // Vivid: deep indigo→plum at ~85 % opacity (system
+                    // blur barely visible underneath); Soft: warm
+                    // cream→lavender at ~78 %. Auto/Light/Dark = clear.
+                    ThemeBackgroundFill(theme: theme.current)
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                )
+                .overlay(
+                    // Border: hairline + neutral for Auto/Light/Dark;
+                    // 1.5 pt accent-coloured frame for Vivid/Soft so
+                    // the theme reads loud-and-clear at the edge.
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+                        .stroke(theme.current.hudBorderColor,
+                                lineWidth: theme.current.hudBorderWidth)
                 )
 
             VStack(spacing: 8) {

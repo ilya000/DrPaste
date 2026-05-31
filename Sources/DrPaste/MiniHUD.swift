@@ -130,6 +130,9 @@ final class MiniHUDController {
         p.titleVisibility = .hidden
         p.titlebarAppearsTransparent = true
         p.hidesOnDeactivate = false
+        // Subscribe to Settings → Appearance so the MiniHUD re-skins
+        // when the user switches themes, same as BigHUDPanel.
+        p.subscribeToAppTheme()
         panel = p
     }
 
@@ -164,6 +167,10 @@ final class MiniHUDController {
 
 struct MiniHUDView: View {
     @ObservedObject var state: MiniHUDState
+    /// Observes Settings → Appearance so picking Vivid/Soft re-tints
+    /// the mini panel background. Same accent reads it for the close
+    /// button's hover state.
+    @ObservedObject private var theme = ThemeManager.shared
     /// Closure invoked when the user dismisses the mini-window via the close
     /// button. Used as a safety net — even if the underlying action hangs
     /// (network stall, deadlocked URLSession, etc.) the user always has a
@@ -211,8 +218,14 @@ struct MiniHUDView: View {
         .background(
             ZStack {
                 VisualEffect(material: .hudWindow, blending: .behindWindow)
+                // Theme gradient overlay — see `ThemeBackgroundFill`.
+                // Vivid drops a deep indigo gradient on top, Soft a
+                // warm cream gradient. Auto/Light/Dark are clear so
+                // the system blur shows through unchanged.
+                ThemeBackgroundFill(theme: theme.current)
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+                    .strokeBorder(theme.current.hudBorderColor,
+                                  lineWidth: theme.current.hudBorderWidth)
             }
         )
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))

@@ -77,6 +77,21 @@ final class ScreenRegionCaptureController {
     /// hint and the panel would just take up screen real estate.
     let cheatSheet = RegionCaptureCheatSheetController()
 
+    /// Event monitors that drive the custom-drawn crosshair —
+    /// `globalMouseMonitor` fires when the mouse moves over OTHER
+    /// apps' windows, `localMouseMonitor` fires when the mouse moves
+    /// over our own (the overlay panels). Together they cover every
+    /// pixel of the screen. Both call `updateCrosshairPositions()`
+    /// which pushes the global mouse coordinate down to each
+    /// `CursorOverlayPanel`.
+    private var globalMouseMonitor: Any?
+    private var localMouseMonitor: Any?
+    /// Defensive: we also push the system cursor to crosshair via
+    /// the regular API in case it happens to work on the user's
+    /// macOS version. Harmless if it doesn't — the custom-drawn
+    /// crosshair carries the actual visual signal.
+    private var cursorPushed: Bool = false
+
     private var anchorPoint: NSPoint?         // mouse-down location (global Cocoa coords)
 
     enum State { case idle, armed, selecting }
@@ -99,6 +114,75 @@ final class ScreenRegionCaptureController {
             return p
         }
         cheatSheet.show()
+        startCursorEnforcement()
+    }
+
+    /// Start drawing our own crosshair on top of every cursor-overlay
+    /// panel, tracking the mouse via global + local NSEvent monitors.
+    /// We don't rely on `NSCursor.set()` anymore — three iterations
+    /// of trying that approach all failed to reliably override the
+    /// cursor over other apps' windows. The custom-drawn crosshair
+    /// is fully under our control and always visible.
+    ///
+    /// We still call `NSCursor.crosshair.push()` as belt-and-braces:
+    /// on macOS versions where it happens to work the user gets a
+    /// real crosshair-shaped cursor in addition to ours; where it
+    /// doesn't, no harm done.
+    ///
+    /// Global monitor catches events that don't reach our app —
+    /// mouse moves over Safari, Finder, etc. Local monitor catches
+    /// events that DO reach our app — mouse moves over our overlay
+    /// panels themselves. Without both, the crosshair would freeze
+    /// when the cursor crossed certain window boundaries.
+    @MainActor
+    private func startCursorEnforcement() {
+        stopCursorEnforcement()
+        NSCursor.crosshair.push()
+        cursorPushed = true
+
+        // Position the crosshair at the current mouse location
+        // BEFORE attaching monitors so it appears immediately,
+        // not on the next mouse move.
+        updateCrosshairPositions()
+
+        // Trigger the entrance animation on every overlay — crosshair
+        // pulses to attract attention, hint pill explains the gesture.
+        for overlay in cursorOverlays {
+            (overlay.contentView as? CursorOverlayContentView)?
+                .playEntranceAnimation()
+        }
+
+        let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged]
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] _ in
+            Task { @MainActor in self?.updateCrosshairPositions() }
+        }
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            Task { @MainActor in self?.updateCrosshairPositions() }
+            return event   // pass through; selection overlay needs drag events
+        }
+    }
+
+    @MainActor
+    private func stopCursorEnforcement() {
+        if let m = globalMouseMonitor { NSEvent.removeMonitor(m); globalMouseMonitor = nil }
+        if let m = localMouseMonitor { NSEvent.removeMonitor(m); localMouseMonitor = nil }
+        if cursorPushed {
+            NSCursor.pop()
+            cursorPushed = false
+        }
+    }
+
+    /// Push the current global mouse position down to every cursor
+    /// overlay panel. Each panel decides whether it owns this point
+    /// (its screen contains the cursor) and shows / hides its
+    /// crosshair accordingly — so on multi-display setups only the
+    /// active screen shows the crosshair.
+    @MainActor
+    private func updateCrosshairPositions() {
+        let mouse = NSEvent.mouseLocation
+        for overlay in cursorOverlays {
+            overlay.setCrosshair(globalPoint: mouse)
+        }
     }
 
     // MARK: - C1 — selection overlay
@@ -110,21 +194,29 @@ final class ScreenRegionCaptureController {
         guard state == .armed else { return }
         state = .selecting
         anchorPoint = point
-        // Take down the cursor-only overlays — the selection overlays own
-        // the cursor rect from here on (also crosshair) and have their own
-        // dim + rect rendering.
-        cursorOverlays.forEach { $0.orderOut(nil) }
-        cursorOverlays.removeAll()
-        // Take down the cheat sheet too — once the user has committed to a
-        // drag, the hint is just visual noise covering screen real estate
-        // they probably want to capture.
+        // Take down the cheat sheet — once the user has committed to a
+        // drag, the hint is just visual noise covering screen real
+        // estate they probably want to capture.
         cheatSheet.hide()
+        // Same logic for the per-cursor hint pill — user clearly
+        // understood the gesture, the hint would now just clutter
+        // what they're trying to capture.
+        for overlay in cursorOverlays {
+            (overlay.contentView as? CursorOverlayContentView)?.dismissHint()
+        }
 
+        // Build the selection overlays BELOW the cursor overlays so
+        // the crosshair stays on top during the drag.
         selectionOverlays = NSScreen.screens.map { screen in
             let p = SelectionOverlayPanel(screen: screen)
             p.orderFrontRegardless()
             return p
         }
+        // Re-front the cursor overlays so their crosshair sits on top
+        // of the freshly-created selection overlays (both are at
+        // `.screenSaver` level — z-order within a level is creation
+        // order, so we have to bump the cursor overlays back up).
+        cursorOverlays.forEach { $0.orderFrontRegardless() }
         updateSelection(to: point)
     }
 
@@ -174,6 +266,7 @@ final class ScreenRegionCaptureController {
     }
 
     private func tearDown() {
+        stopCursorEnforcement()
         cursorOverlays.forEach { $0.orderOut(nil) }
         cursorOverlays.removeAll()
         selectionOverlays.forEach { $0.orderOut(nil) }
@@ -230,7 +323,13 @@ final class ScreenRegionCaptureController {
 /// cursor swap is the only signal that the panel is up.
 @MainActor
 final class CursorOverlayPanel: NSPanel {
+    /// Cached origin of the screen this overlay covers, in global
+    /// Cocoa coordinates. Used to convert global mouse position →
+    /// local position when the controller forwards mouse moves.
+    let screenOriginGlobal: NSPoint
+
     init(screen: NSScreen) {
+        self.screenOriginGlobal = screen.frame.origin
         super.init(
             contentRect: screen.frame,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -244,12 +343,12 @@ final class CursorOverlayPanel: NSPanel {
         self.isOpaque = false
         self.hasShadow = false
         self.hidesOnDeactivate = false
-        // The panel must accept mouse-moved events for the content view's
-        // NSTrackingArea to fire `cursorUpdate`. Without this AppKit
-        // silently drops cursor-update events on non-key / non-activating
-        // panels and the crosshair never appears.
-        self.ignoresMouseEvents = false
-        self.acceptsMouseMovedEvents = true
+        // Pass clicks through to the layer below (the selection overlay
+        // catches drag-starts; we just draw the crosshair). The cursor
+        // overlay doesn't need to receive any mouse events — the
+        // controller pushes mouse position to us via `setCrosshair(...)`
+        // from a global+local NSEvent monitor pair.
+        self.ignoresMouseEvents = true
         let view = CursorOverlayContentView(frame: NSRect(origin: .zero, size: screen.frame.size))
         self.contentView = view
         self.setFrame(screen.frame, display: true)
@@ -257,50 +356,249 @@ final class CursorOverlayPanel: NSPanel {
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+
+    /// Update the crosshair position from a global mouse coordinate.
+    /// Hides the crosshair when the mouse is on a different display.
+    func setCrosshair(globalPoint: NSPoint) {
+        guard let view = contentView as? CursorOverlayContentView else { return }
+        let local = NSPoint(
+            x: globalPoint.x - screenOriginGlobal.x,
+            y: globalPoint.y - screenOriginGlobal.y
+        )
+        let onThisScreen = NSRect(origin: .zero, size: frame.size).contains(local)
+        view.setCrosshairVisible(onThisScreen)
+        if onThisScreen {
+            view.updateCrosshairPosition(local)
+        }
+    }
 }
 
-/// Hosting view for the cursor-only overlay. Uses an NSTrackingArea
-/// with `.cursorUpdate + .activeAlways` instead of the simpler
-/// `addCursorRect` because the latter doesn't reliably fire on
-/// non-key / non-activating panels — AppKit treats them as "inactive"
-/// and silently drops the cursor rect registration. The tracking-area
-/// path with `.activeAlways` bypasses that check, and the explicit
-/// `NSCursor.crosshair.set()` inside `cursorUpdate` is the same call
-/// macOS's own ⌘⇧4 region-capture uses.
+/// Hosting view for the cursor-only overlay. Draws our OWN crosshair
+/// as a CALayer that we position manually at the mouse coordinates.
+///
+/// Why we don't rely on system cursor APIs anymore: three iterations
+/// of trying (`addCursorRect`, `NSTrackingArea + cursorUpdate`,
+/// `NSCursor.crosshair.push()` + 30 Hz `.set()` hammering) all failed
+/// to deliver a reliable crosshair over our screen-spanning non-key
+/// non-activating overlay. The fundamental issue is that
+/// `NSCursor.set()` is APP-SCOPED — when the cursor is over another
+/// app's window, that app's cursor rect wins, and our background-app
+/// `.set()` calls don't override it.
+///
+/// The actually-working approach is what macOS's own ⌘⇧4 region-
+/// capture uses internally: hide your dependence on the system cursor
+/// and draw your own. We don't even bother hiding the system arrow
+/// (that requires `CGDisplayHideCursor` which is risky if the process
+/// crashes mid-capture — cursor stays hidden until reboot). Instead
+/// our crosshair sits ON TOP of the system cursor; the small visual
+/// duplication is fine because the crosshair is the unmistakable
+/// signal "you are in capture mode".
 final class CursorOverlayContentView: NSView {
-    private var trackingArea: NSTrackingArea?
+    let crosshair: CALayer
+    /// Onboarding hint that appears next to the crosshair the moment
+    /// capture is armed: "Click and drag to capture a region". Fades
+    /// out after ~1.8 s so the user has time to read it on first use
+    /// but it doesn't linger and obscure their target on subsequent
+    /// captures. Also dismissed immediately when the user begins a
+    /// selection drag (they clearly understood the instructions).
+    let hint: CALayer
 
-    /// AppKit invokes `updateTrackingAreas` on view-frame changes and
-    /// window-visibility changes. Rebuild from scratch every time so
-    /// we never end up with a stale rect on resize.
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let area = trackingArea { removeTrackingArea(area) }
-        let area = NSTrackingArea(
-            rect: bounds,
-            options: [.activeAlways, .cursorUpdate, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(area)
-        trackingArea = area
+    /// Hint label content. Kept in code rather than localised so it
+    /// matches the rest of DrPaste's UI (English) until / unless we
+    /// add localisation.
+    private static let hintText = "Click and drag to capture a region"
+
+    override init(frame: NSRect) {
+        crosshair = Self.makeCrosshairLayer()
+        hint = Self.makeHintLayer(text: Self.hintText)
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.masksToBounds = false
+        layer?.addSublayer(hint)        // hint draws behind crosshair
+        layer?.addSublayer(crosshair)   // crosshair on top
     }
 
-    override func cursorUpdate(with event: NSEvent) {
-        NSCursor.crosshair.set()
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// Move the crosshair AND the hint pill to follow `localPoint`.
+    /// The hint sits 14 pt to the right and 16 pt below the crosshair
+    /// centre — close enough to read as "this hint belongs to that
+    /// cursor", far enough not to obscure what's directly under the
+    /// crosshair (the pixel the user is aiming for).
+    func updateCrosshairPosition(_ localPoint: NSPoint) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        crosshair.position = localPoint
+        let hintOffsetX: CGFloat = 14 + hint.bounds.width / 2
+        let hintOffsetY: CGFloat = -16 - hint.bounds.height / 2
+        hint.position = CGPoint(x: localPoint.x + hintOffsetX,
+                                y: localPoint.y + hintOffsetY)
+        CATransaction.commit()
     }
 
-    /// Belt-and-braces — some macOS releases skip the first
-    /// `cursorUpdate` call after `orderFrontRegardless` on a
-    /// non-activating panel. Setting the cursor again on every
-    /// mouseMoved event guarantees the crosshair appears immediately
-    /// without waiting for the user to wiggle the mouse across a
-    /// tracking-area boundary.
-    override func mouseMoved(with event: NSEvent) {
-        NSCursor.crosshair.set()
+    /// Show / hide the crosshair — used to hide it on screens that
+    /// don't currently contain the mouse (multi-display setups).
+    func setCrosshairVisible(_ visible: Bool) {
+        crosshair.isHidden = !visible
+        // Hide the hint too on inactive screens — it's tied to the
+        // crosshair as a single conceptual unit.
+        hint.isHidden = !visible || hint.isHidden
     }
 
-    /// Empty draw — the overlay is fully transparent.
+    /// Trigger the "you're in capture mode" entrance animation:
+    /// crosshair pulses 3 times (~1.2 s total), hint is opaque
+    /// throughout the pulse then fades out at the 1.8 s mark.
+    /// Idempotent — re-arming after a cancel restarts the animation.
+    func playEntranceAnimation() {
+        crosshair.removeAnimation(forKey: "pulse")
+        hint.removeAnimation(forKey: "fade")
+        hint.opacity = 1.0
+        hint.isHidden = false
+
+        let pulse = CABasicAnimation(keyPath: "opacity")
+        pulse.fromValue = 1.0
+        pulse.toValue = 0.35
+        pulse.duration = 0.40
+        pulse.autoreverses = true
+        pulse.repeatCount = 3
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        crosshair.add(pulse, forKey: "pulse")
+
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 1.0
+        fade.toValue = 0.0
+        fade.duration = 0.55
+        fade.beginTime = CACurrentMediaTime() + 1.8
+        fade.fillMode = .forwards
+        fade.isRemovedOnCompletion = false
+        hint.add(fade, forKey: "fade")
+    }
+
+    /// Force the hint to disappear immediately. Called when the user
+    /// starts a selection drag — they clearly understood, the hint
+    /// would now just clutter what they're trying to capture.
+    func dismissHint() {
+        hint.removeAnimation(forKey: "fade")
+        hint.opacity = 0
+        hint.isHidden = true
+    }
+
+    /// Build the crosshair as a CALayer: two crossing lines + a small
+    /// center dot. White stroke with a black shadow so the crosshair
+    /// stays visible against both light and dark screen content
+    /// without needing theme-awareness logic.
+    private static func makeCrosshairLayer() -> CALayer {
+        let container = CALayer()
+        container.bounds = CGRect(x: 0, y: 0, width: 24, height: 24)
+        container.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+
+        // Horizontal line.
+        let h = CAShapeLayer()
+        let hPath = CGMutablePath()
+        hPath.move(to: CGPoint(x: 0, y: 12))
+        hPath.addLine(to: CGPoint(x: 24, y: 12))
+        h.path = hPath
+        h.strokeColor = NSColor.white.cgColor
+        h.lineWidth = 1.5
+        h.shadowColor = NSColor.black.cgColor
+        h.shadowOpacity = 0.9
+        h.shadowOffset = .zero
+        h.shadowRadius = 1.5
+        h.frame = container.bounds
+        container.addSublayer(h)
+
+        // Vertical line.
+        let v = CAShapeLayer()
+        let vPath = CGMutablePath()
+        vPath.move(to: CGPoint(x: 12, y: 0))
+        vPath.addLine(to: CGPoint(x: 12, y: 24))
+        v.path = vPath
+        v.strokeColor = NSColor.white.cgColor
+        v.lineWidth = 1.5
+        v.shadowColor = NSColor.black.cgColor
+        v.shadowOpacity = 0.9
+        v.shadowOffset = .zero
+        v.shadowRadius = 1.5
+        v.frame = container.bounds
+        container.addSublayer(v)
+
+        // Center dot — clear gap in the middle (~3 pt) makes the
+        // exact pixel-precise center visible, then a tiny white dot
+        // marks it. Same convention as the system crosshair.
+        let gap = CAShapeLayer()
+        gap.path = CGPath(rect: CGRect(x: 9, y: 9, width: 6, height: 6), transform: nil)
+        gap.fillColor = NSColor.clear.cgColor
+        gap.strokeColor = NSColor.clear.cgColor
+        // Use a mask to punch the gap out of the crossing lines.
+        let mask = CAShapeLayer()
+        let maskPath = CGMutablePath()
+        maskPath.addRect(container.bounds)
+        maskPath.addRect(CGRect(x: 10, y: 10, width: 4, height: 4))
+        mask.path = maskPath
+        mask.fillRule = .evenOdd
+        mask.frame = container.bounds
+        h.mask = mask
+        let vMask = CAShapeLayer()
+        let vMaskPath = CGMutablePath()
+        vMaskPath.addRect(container.bounds)
+        vMaskPath.addRect(CGRect(x: 10, y: 10, width: 4, height: 4))
+        vMask.path = vMaskPath
+        vMask.fillRule = .evenOdd
+        vMask.frame = container.bounds
+        v.mask = vMask
+
+        // Tiny center dot inside the gap for pixel-precise feedback.
+        let dot = CAShapeLayer()
+        dot.path = CGPath(ellipseIn: CGRect(x: 11, y: 11, width: 2, height: 2), transform: nil)
+        dot.fillColor = NSColor.white.cgColor
+        dot.shadowColor = NSColor.black.cgColor
+        dot.shadowOpacity = 0.9
+        dot.shadowOffset = .zero
+        dot.shadowRadius = 1.0
+        dot.frame = container.bounds
+        container.addSublayer(dot)
+
+        return container
+    }
+
+    /// Build the hint pill — rounded black background with white
+    /// text inside, fixed size. Anchor at centre so positioning
+    /// math in `updateCrosshairPosition` doesn't have to compensate.
+    private static func makeHintLayer(text: String) -> CALayer {
+        let pillWidth: CGFloat = 230
+        let pillHeight: CGFloat = 24
+        let container = CALayer()
+        container.bounds = CGRect(x: 0, y: 0, width: pillWidth, height: pillHeight)
+        container.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+
+        // Background — semi-opaque black pill with a thin white edge
+        // for separation against bright wallpapers.
+        let pill = CAShapeLayer()
+        pill.path = CGPath(roundedRect: container.bounds,
+                           cornerWidth: 6, cornerHeight: 6, transform: nil)
+        pill.fillColor = NSColor.black.withAlphaComponent(0.78).cgColor
+        pill.strokeColor = NSColor.white.withAlphaComponent(0.15).cgColor
+        pill.lineWidth = 0.5
+        pill.frame = container.bounds
+        container.addSublayer(pill)
+
+        // Text — CATextLayer renders top-down by default; on a
+        // Cocoa-coordinate (y-up) parent we need to position the
+        // text frame accounting for descender. 4 pt up from bottom
+        // looks centred in a 24 pt pill with 11 pt font.
+        let label = CATextLayer()
+        label.string = text
+        label.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        label.fontSize = 11
+        label.foregroundColor = NSColor.white.cgColor
+        label.alignmentMode = .center
+        label.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        label.frame = CGRect(x: 8, y: 5, width: pillWidth - 16, height: 14)
+        container.addSublayer(label)
+        return container
+    }
+
+    /// Empty draw — the overlay is otherwise fully transparent.
     override func draw(_ dirtyRect: NSRect) {}
 
     /// Eat mouse-down/dragged/up — CGEventTap at session level has

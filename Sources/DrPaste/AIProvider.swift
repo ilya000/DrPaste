@@ -78,6 +78,11 @@ enum ProviderKind: String, Codable, CaseIterable {
     case grok               // xAI
     case mistral
     case deepseek
+    case openrouter         // gateway — one key, many vendors
+    case together           // gateway — open-source focused
+    case cloudflareWorkers  // gateway — Cloudflare's own inference
+    case groq               // fast inference (LPU hardware)
+    case cerebras           // fast inference (wafer-scale hardware)
     case ollama             // local
     case lmstudio           // local
     case llamaCpp           // local
@@ -85,32 +90,42 @@ enum ProviderKind: String, Codable, CaseIterable {
 
     var displayName: String {
         switch self {
-        case .anthropic: return "Anthropic Claude"
-        case .openai:    return "OpenAI GPT"
-        case .gemini:    return "Google Gemini"
-        case .grok:      return "xAI Grok"
-        case .mistral:   return "Mistral"
-        case .deepseek:  return "DeepSeek"
-        case .ollama:    return "Ollama"
-        case .lmstudio:  return "LM Studio"
-        case .llamaCpp:  return "llama.cpp"
-        case .custom:    return "Custom"
+        case .anthropic:         return "Anthropic Claude"
+        case .openai:            return "OpenAI GPT"
+        case .gemini:            return "Google Gemini"
+        case .grok:              return "xAI Grok"
+        case .mistral:           return "Mistral"
+        case .deepseek:          return "DeepSeek"
+        case .openrouter:        return "OpenRouter"
+        case .together:          return "Together AI"
+        case .cloudflareWorkers: return "Cloudflare Workers AI"
+        case .groq:              return "Groq"
+        case .cerebras:          return "Cerebras"
+        case .ollama:            return "Ollama"
+        case .lmstudio:          return "LM Studio"
+        case .llamaCpp:          return "llama.cpp"
+        case .custom:            return "Custom"
         }
     }
 
     /// Short label for the provider badge in the UI (HUD action list).
     var badgeLabel: String {
         switch self {
-        case .anthropic: return "Claude"
-        case .openai:    return "GPT"
-        case .gemini:    return "Gemini"
-        case .grok:      return "Grok"
-        case .mistral:   return "Mistral"
-        case .deepseek:  return "DeepSeek"
-        case .ollama:    return "Ollama"
-        case .lmstudio:  return "LM Studio"
-        case .llamaCpp:  return "llama.cpp"
-        case .custom:    return "Custom"
+        case .anthropic:         return "Claude"
+        case .openai:            return "GPT"
+        case .gemini:            return "Gemini"
+        case .grok:              return "Grok"
+        case .mistral:           return "Mistral"
+        case .deepseek:          return "DeepSeek"
+        case .openrouter:        return "OpenRouter"
+        case .together:          return "Together"
+        case .cloudflareWorkers: return "CF Workers"
+        case .groq:              return "Groq"
+        case .cerebras:          return "Cerebras"
+        case .ollama:            return "Ollama"
+        case .lmstudio:          return "LM Studio"
+        case .llamaCpp:          return "llama.cpp"
+        case .custom:            return "Custom"
         }
     }
 
@@ -121,22 +136,42 @@ enum ProviderKind: String, Codable, CaseIterable {
     /// built-in / transformation actions at a glance in the Settings list.
     var iconName: String {
         switch self {
-        case .anthropic: return "a.circle.fill"           // Anthropic "A"
-        case .openai:    return "circle.hexagongrid.fill"  // OpenAI hexagon pattern
-        case .gemini:    return "sparkle"                  // Gemini sparkle
-        case .grok:      return "x.circle.fill"            // X / Grok
-        case .mistral:   return "wind"                     // Mistral = wind
-        case .deepseek:  return "magnifyingglass.circle.fill"
+        case .anthropic:         return "a.circle.fill"           // Anthropic "A"
+        case .openai:            return "circle.hexagongrid.fill"  // OpenAI hexagon pattern
+        case .gemini:            return "sparkle"                  // Gemini sparkle
+        case .grok:              return "x.circle.fill"            // X / Grok
+        case .mistral:           return "wind"                     // Mistral = wind
+        case .deepseek:          return "magnifyingglass.circle.fill"
+        // OpenRouter: many lines merging into one — visual metaphor for
+        // "many models, one key". `arrow.triangle.merge` reads as a
+        // router / multiplexer at a glance.
+        case .openrouter:        return "arrow.triangle.merge"
+        // Together AI — another gateway, but different visual metaphor
+        // so it doesn't collide with OpenRouter in the picker list.
+        // `network` reads as "many networked sources, one access point".
+        case .together:          return "network"
+        // Cloudflare Workers AI — Cloudflare's brand cloud + their
+        // famous orange. `cloud.bolt.fill` blends "cloud platform" with
+        // "fast inference" without colliding with either Ollama
+        // (cube.fill) or Groq (bolt.fill).
+        case .cloudflareWorkers: return "cloud.bolt.fill"
+        // Groq — LPU custom hardware, ultra-fast inference. Pure
+        // `bolt.fill` for speed.
+        case .groq:              return "bolt.fill"
+        // Cerebras — wafer-scale chips, also speed-focused but
+        // differentiated from Groq via `gauge.with.dots.needle.67percent`
+        // (high speedometer).
+        case .cerebras:          return "gauge.with.dots.needle.67percent"
         // Local providers: each gets a distinct AI-coded glyph rather than
         // a generic Mac chassis. Ollama's `cube.fill` echoes its containerised
         // model packaging; LM Studio's `square.stack.3d.up.fill` shows stacked
         // model layers; llama.cpp's `chevron.left.forwardslash.chevron.right`
         // signals its CLI / code-runtime nature; custom's `link.circle.fill`
         // says "user-pointed endpoint".
-        case .ollama:    return "cube.fill"
-        case .lmstudio:  return "square.stack.3d.up.fill"
-        case .llamaCpp:  return "chevron.left.forwardslash.chevron.right"
-        case .custom:    return "link.circle.fill"
+        case .ollama:            return "cube.fill"
+        case .lmstudio:          return "square.stack.3d.up.fill"
+        case .llamaCpp:          return "chevron.left.forwardslash.chevron.right"
+        case .custom:            return "link.circle.fill"
         }
     }
 
@@ -149,16 +184,32 @@ enum ProviderKind: String, Codable, CaseIterable {
     /// purple / indigo).
     var brandColor: Color {
         switch self {
-        case .anthropic: return .orange
-        case .openai:    return .green
-        case .gemini:    return .blue
-        case .grok:      return .primary
-        case .mistral:   return .purple
-        case .deepseek:  return .indigo
-        case .ollama:    return .cyan
-        case .lmstudio:  return .teal
-        case .llamaCpp:  return .brown
-        case .custom:    return .mint
+        case .anthropic:         return .orange
+        case .openai:            return .green
+        case .gemini:            return .blue
+        case .grok:              return .primary
+        case .mistral:           return .purple
+        case .deepseek:          return .indigo
+        // OpenRouter — pink stands out from the cloud-vendor palette
+        // so a gateway-routed action reads as "not a direct vendor
+        // call" at a glance.
+        case .openrouter:        return .pink
+        // Together AI — deep navy distinct from gemini's .blue;
+        // matches their actual brand mark.
+        case .together:          return Color(red: 0.12, green: 0.25, blue: 0.78)
+        // Cloudflare Workers AI — Cloudflare brand orange, distinct
+        // from Anthropic's system .orange by being slightly redder.
+        case .cloudflareWorkers: return Color(red: 0.96, green: 0.50, blue: 0.10)
+        // Groq — red matches their actual brand colour and reads as
+        // "fast / urgent" alongside the bolt icon.
+        case .groq:              return .red
+        // Cerebras — magenta-purple, distinct from Mistral's .purple
+        // by leaning more towards red.
+        case .cerebras:          return Color(red: 0.70, green: 0.20, blue: 0.55)
+        case .ollama:            return .cyan
+        case .lmstudio:          return .teal
+        case .llamaCpp:          return .brown
+        case .custom:            return .mint
         }
     }
 
@@ -171,41 +222,107 @@ enum ProviderKind: String, Codable, CaseIterable {
     }
 
     var requiresAPIKey: Bool { !isLocal && self != .custom ? true : false }
-    var requiresBaseURL: Bool { isLocal || self == .custom }
+    /// Most cloud providers have a hardcoded base URL in `makeConcrete`;
+    /// only providers where the user MUST supply something (local apps,
+    /// custom OpenAI-compatible endpoints, and Cloudflare Workers AI
+    /// which bakes the account ID into the URL) need to expose the
+    /// base-URL field in the editor.
+    var requiresBaseURL: Bool {
+        isLocal || self == .custom || self == .cloudflareWorkers
+    }
 
     var defaultBaseURL: String? {
         switch self {
-        case .ollama:   return "http://localhost:11434"
-        case .lmstudio: return "http://localhost:1234"
-        case .llamaCpp: return "http://localhost:8080"
+        case .ollama:            return "http://localhost:11434"
+        case .lmstudio:          return "http://localhost:1234"
+        case .llamaCpp:          return "http://localhost:8080"
+        // Cloudflare Workers AI bakes the account ID into the URL; we
+        // can only seed a placeholder. The user replaces YOUR_ACCOUNT_ID
+        // with their actual account ID from the Cloudflare dashboard.
+        case .cloudflareWorkers:
+            return "https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/ai/v1"
         default: return nil
         }
     }
 
     var defaultModel: String {
         switch self {
-        case .anthropic: return "claude-sonnet-4-6"
-        case .openai:    return "gpt-4o-mini"
-        case .gemini:    return "gemini-2.5-flash"
-        case .grok:      return "grok-4"
-        case .mistral:   return "mistral-large-latest"
-        case .deepseek:  return "deepseek-chat"
-        case .ollama:    return "llama3.2:latest"
-        case .lmstudio:  return "local-model"
-        case .llamaCpp:  return "local-model"
-        case .custom:    return "model"
+        case .anthropic:         return "claude-sonnet-4-6"
+        case .openai:            return "gpt-4o-mini"
+        case .gemini:            return "gemini-2.5-flash"
+        case .grok:              return "grok-4"
+        case .mistral:           return "mistral-large-latest"
+        case .deepseek:          return "deepseek-chat"
+        case .openrouter:        return "anthropic/claude-sonnet-4.5"
+        // Together AI slugs follow `vendor/Model-Name-Turbo`
+        // convention. Flagship default is their fastest 70B Llama.
+        case .together:          return "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+        // Cloudflare Workers AI slugs are `@cf/<vendor>/<model>`;
+        // 8B Llama is the cheapest balanced default.
+        case .cloudflareWorkers: return "@cf/meta/llama-3.1-8b-instruct"
+        // Groq's flagship — Llama 3.3 70B on their LPU hardware.
+        case .groq:              return "llama-3.3-70b-versatile"
+        // Cerebras's flagship — Llama 3.3 70B on wafer-scale.
+        case .cerebras:          return "llama3.3-70b"
+        case .ollama:            return "llama3.2:latest"
+        case .lmstudio:          return "local-model"
+        case .llamaCpp:          return "local-model"
+        case .custom:            return "model"
         }
     }
 
     var suggestedModels: [String] {
         switch self {
-        case .anthropic: return ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"]
-        case .openai:    return ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-5", "gpt-5-mini"]
-        case .gemini:    return ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"]
-        case .grok:      return ["grok-4", "grok-3"]
-        case .mistral:   return ["mistral-large-latest", "codestral-latest", "mistral-small-latest"]
-        case .deepseek:  return ["deepseek-chat", "deepseek-reasoner"]
-        case .ollama:    return ["llama3.2:latest", "llama3.1:latest", "qwen2.5:latest", "deepseek-r1:latest"]
+        case .anthropic:  return ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"]
+        case .openai:     return ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-5", "gpt-5-mini"]
+        case .gemini:     return ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"]
+        case .grok:       return ["grok-4", "grok-3"]
+        case .mistral:    return ["mistral-large-latest", "codestral-latest", "mistral-small-latest"]
+        case .deepseek:   return ["deepseek-chat", "deepseek-reasoner"]
+        // Curated cross-vendor sampling to showcase the gateway's
+        // value — Claude / GPT / Gemini / Llama / Mistral / DeepSeek
+        // / Qwen / Grok all reachable from one API key. Users can
+        // type any slug from openrouter.ai/models — this list is
+        // just a starting point.
+        case .openrouter: return [
+            "anthropic/claude-sonnet-4.5",
+            "anthropic/claude-3.5-haiku",
+            "openai/gpt-5",
+            "openai/gpt-4o-mini",
+            "google/gemini-2.5-pro",
+            "meta-llama/llama-3.1-70b-instruct",
+            "mistralai/mistral-large",
+            "deepseek/deepseek-chat",
+            "qwen/qwen-2.5-72b-instruct",
+            "x-ai/grok-4"
+        ]
+        case .together: return [
+            "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+            "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+            "Qwen/Qwen2.5-72B-Instruct-Turbo",
+            "mistralai/Mixtral-8x7B-Instruct-v0.1",
+            "deepseek-ai/DeepSeek-V3"
+        ]
+        case .cloudflareWorkers: return [
+            "@cf/meta/llama-3.1-8b-instruct",
+            "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+            "@cf/mistral/mistral-7b-instruct-v0.1",
+            "@cf/google/gemma-7b-it",
+            "@cf/qwen/qwen1.5-14b-chat-awq"
+        ]
+        case .groq: return [
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+            "mixtral-8x7b-32768",
+            "gemma2-9b-it",
+            "deepseek-r1-distill-llama-70b"
+        ]
+        case .cerebras: return [
+            "llama3.3-70b",
+            "llama3.1-8b",
+            "llama3.1-70b"
+        ]
+        case .ollama:     return ["llama3.2:latest", "llama3.1:latest", "qwen2.5:latest", "deepseek-r1:latest"]
         default: return []
         }
     }
@@ -218,12 +335,17 @@ enum ProviderKind: String, Codable, CaseIterable {
     /// endpoint-agnostic.
     var apiKeyDocsURL: URL? {
         switch self {
-        case .anthropic: return URL(string: "https://console.anthropic.com/settings/keys")
-        case .openai:    return URL(string: "https://platform.openai.com/api-keys")
-        case .gemini:    return URL(string: "https://aistudio.google.com/app/apikey")
-        case .grok:      return URL(string: "https://console.x.ai/team/default/api-keys")
-        case .mistral:   return URL(string: "https://console.mistral.ai/api-keys")
-        case .deepseek:  return URL(string: "https://platform.deepseek.com/api_keys")
+        case .anthropic:         return URL(string: "https://console.anthropic.com/settings/keys")
+        case .openai:            return URL(string: "https://platform.openai.com/api-keys")
+        case .gemini:            return URL(string: "https://aistudio.google.com/app/apikey")
+        case .grok:              return URL(string: "https://console.x.ai/team/default/api-keys")
+        case .mistral:           return URL(string: "https://console.mistral.ai/api-keys")
+        case .deepseek:          return URL(string: "https://platform.deepseek.com/api_keys")
+        case .openrouter:        return URL(string: "https://openrouter.ai/settings/keys")
+        case .together:          return URL(string: "https://api.together.xyz/settings/api-keys")
+        case .cloudflareWorkers: return URL(string: "https://dash.cloudflare.com/profile/api-tokens")
+        case .groq:              return URL(string: "https://console.groq.com/keys")
+        case .cerebras:          return URL(string: "https://cloud.cerebras.ai/")
         case .ollama, .lmstudio, .llamaCpp, .custom: return nil
         }
     }
@@ -505,6 +627,31 @@ final class AIProviderRegistry: ObservableObject {
         case .deepseek:
             return OpenAICompatibleProvider(id: cp.id, kind: cp.kind, model: cp.model,
                                             baseURL: cp.baseURL ?? "https://api.deepseek.com",
+                                            apiKey: apiKey)
+        case .openrouter:
+            return OpenAICompatibleProvider(id: cp.id, kind: cp.kind, model: cp.model,
+                                            baseURL: cp.baseURL ?? "https://openrouter.ai/api/v1",
+                                            apiKey: apiKey)
+        case .together:
+            return OpenAICompatibleProvider(id: cp.id, kind: cp.kind, model: cp.model,
+                                            baseURL: cp.baseURL ?? "https://api.together.xyz/v1",
+                                            apiKey: apiKey)
+        case .cloudflareWorkers:
+            // No default — user MUST supply the URL with their
+            // account ID. The placeholder string from
+            // `defaultBaseURL` will fail with a clear 404 if left
+            // unchanged, which is the diagnostic we want.
+            guard let baseURL = cp.baseURL, !baseURL.isEmpty,
+                  !baseURL.contains("YOUR_ACCOUNT_ID") else { return nil }
+            return OpenAICompatibleProvider(id: cp.id, kind: cp.kind, model: cp.model,
+                                            baseURL: baseURL, apiKey: apiKey)
+        case .groq:
+            return OpenAICompatibleProvider(id: cp.id, kind: cp.kind, model: cp.model,
+                                            baseURL: cp.baseURL ?? "https://api.groq.com/openai/v1",
+                                            apiKey: apiKey)
+        case .cerebras:
+            return OpenAICompatibleProvider(id: cp.id, kind: cp.kind, model: cp.model,
+                                            baseURL: cp.baseURL ?? "https://api.cerebras.ai/v1",
                                             apiKey: apiKey)
         case .ollama:
             return OpenAICompatibleProvider(id: cp.id, kind: cp.kind, model: cp.model,

@@ -26,6 +26,372 @@ them.
 
 ---
 
+## Product strategy & monetization (planning — not yet implemented)
+
+Strategic framing for how DrPaste will monetize without compromising the
+free-and-local-first product philosophy. Captured here as the canonical
+reference for future feature work that touches AI providers, plans,
+billing, onboarding copy, or upgrade prompts. NOT a feature spec — no
+code changes from this section.
+
+### Decisions locked-in (revision 2)
+
+  - **Hosted Starter pricing**: $2/month or $20/year (~17% annual
+    discount, also helps cash flow). $2 was chosen over the earlier
+    $1 to keep economics workable after Apple IAP's 15–30% cut and
+    OpenRouter token costs.
+  - **Hosted Plus pricing**: $5/month (annual variant TBD, suggested
+    $50/year for consistency with Starter's discount ratio).
+  - **Hosted backend = OpenRouter pass-through, not self-hosted
+    inference.** DrPaste does NOT run model inference, does NOT
+    maintain a multi-vendor billing matrix, does NOT host GPUs. A
+    thin auth proxy (Cloudflare Worker / Vercel Edge Function-sized)
+    validates the user's Apple IAP receipt, checks remaining quota,
+    and forwards the request to OpenRouter using DrPaste's own
+    OpenRouter API key. OpenRouter then routes to whichever
+    underlying model the user's tier permits (Anthropic / OpenAI /
+    Gemini / Llama / etc.). This eliminates almost all of the
+    "build your own inference infra" problem; we become a thin
+    billing + quota wrapper around an existing aggregator.
+  - **Privacy story** flows from this architecture:
+      • **Hosted users** — content goes through OpenRouter, which has
+        explicit no-training / no-logging policies for its routed
+        traffic. We surface OpenRouter as the named upstream so users
+        can read those policies themselves; we don't make claims we
+        can't back.
+      • **BYO users** — content goes directly from the user's machine
+        to the user's chosen provider via the user's own API key.
+        DrPaste has zero visibility into the request. This is the
+        cleanest possible privacy story and the one we lead with.
+  - **Billing = Apple IAP.** Adapt to its rules (auto-renewable
+    subscriptions, subscription groups, receipt validation).
+    Implies Mac App Store distribution OR an MAS-companion build —
+    needs to be confirmed whether macOS direct-download apps can
+    use StoreKit outside the store (see "open questions" below).
+  - **No Lifetime License.** Earlier suggestion withdrawn. Hosted
+    inference has ongoing token-cost overhead; a one-time payment
+    creates a permanent liability we can't price for new model
+    expense curves. BYO remains free forever, which already covers
+    the "I'll pay once and be done" audience by being free.
+  - **Tagline stays as-is**: *"Press, hold, paste — the Paste gesture,
+    extended"*. The "clipboard layer for the AI era" framing is a
+    secondary marketing line, not a replacement.
+  - **Ship BYO + Hosted together in v1.0.** Not phased (BYO first,
+    hosted later). With OpenRouter-as-backend, hosted infra is
+    small enough that it doesn't push v1.0 out by months — the
+    risk of phasing was based on the old "self-hosted proxy"
+    assumption, which is now rejected.
+
+### Rejected ideas (recorded so they don't get re-proposed)
+
+  - **Tier-split AI model quality (Starter = cheap open-source,
+    Plus = frontier closed model).** Tempting because it would
+    improve Starter margins and create a "tangible" upgrade
+    incentive. Rejected: users have no context for "this would
+    be better on the higher tier" — if the bottom tier gives
+    mediocre output, they conclude *the product* is mediocre
+    and churn entirely. ChatGPT-style "Free=3.5, Plus=4" works
+    because GPT-4 is a famous brand the user is comparing to; a
+    new product like DrPaste has zero such brand context.
+
+    **Both tiers ship the SAME model quality**. Differentiation
+    is two axes — both quota-shaped, neither quality-shaped:
+
+      1. **Action count per day.** Starter ~200 actions/day,
+         Plus ~1,000/day (exact numbers TBD after real cost
+         analysis). Resets midnight. Easy to communicate.
+
+      2. **Maximum request size in bytes.** Starter caps the
+         combined prompt + input payload at ~4 KB (≈ 1,000 tokens,
+         enough for normal paragraphs, emails, short snippets).
+         Plus raises the cap to ~64 KB (≈ 16,000 tokens, enough
+         for whole documents, code files, long articles). When
+         a user on Starter pastes content larger than their cap
+         and triggers an AI action, the request is REJECTED
+         before being sent upstream, with a clear inline
+         message: *"Request size 12,400 B exceeds Starter limit
+         of 4,096 B. Upgrade to Plus for up to 65,536 B per
+         request."* — actual numbers in the message, upgrade
+         path obvious, no model substitution.
+
+    Both axes preserve the principle "hosted plans monetize
+    convenience, not restrictions": quota = inconvenience (you
+    can wait until tomorrow); size cap = inconvenience (you can
+    break the content into chunks OR upgrade). Quality is never
+    touched, so the product itself is never blamed.
+
+    Why size cap matters as a tier axis: token cost scales with
+    input length. A 64 KB request at frontier-model rates is
+    materially more expensive than a 4 KB one. Without a per-tier
+    size cap, one Starter user pasting a long document drains as
+    much budget as 20 typical Starter users put together. With
+    the cap, our economics stay predictable, and the user with a
+    long-document workflow has an obvious upgrade trigger.
+
+  - **Replace OpenRouter with Cloudflare Workers AI as hosted
+    backend.** Tempting because (a) we're already on Cloudflare,
+    (b) it's cheaper, (c) one vendor instead of two. Rejected:
+    CF Workers AI hosts only open-source models — no Claude, no
+    GPT, no Gemini Pro. Frontier proprietary models are exactly
+    what justify the hosted tier's price; without them, hosted
+    juice loses against BYO (where the user could just connect
+    their own Claude / OpenAI account). Stay on OpenRouter for
+    hosted — it has access to the full frontier-model catalogue,
+    including the daily-key + credit-cap pattern that simplifies
+    abuse mitigation. CF Workers AI remains in the **BYO** list
+    (revision 4) as a power-user option for those who specifically
+    want CF's privacy posture or cheap open-source inference.
+
+### Decisions locked-in (revision 4)
+
+  - **Distribution = Mac App Store only.** Most-trusted channel from
+    the user's perspective; gives IAP for free; handles updates +
+    refunds + parental controls + family sharing automatically; one
+    payment relationship (Apple) instead of two (Apple + Stripe).
+    Trade-offs accepted: 15–30 % Apple commission, App Review cycles,
+    sandbox restrictions.
+  - **First-submission strip strategy** — risky entitlements stripped
+    from 1.0 to maximise approval odds; added back via incremental
+    updates after the app has standing in MAS:
+      • **Defer #A11 region capture** —
+        `NSScreenCaptureUsageDescription` gets the strictest
+        scrutiny. Add in a post-1.0 update with a Welcome-window
+        explainer screen.
+      • **CGEventTap (Full Gesture Mode) deferred to 1.1.** v1.0
+        ships **Carbon-only / Limited Mode**: ⌥⌘V opens the
+        BigHUD as a key window, Enter / click-to-commit, no
+        press-and-hold gesture. Worse UX but ships clean
+        through review. The press-and-hold gesture lands in 1.1
+        once we have MAS reviewer trust and can argue for the
+        entitlement with a track record behind us.
+      • Keep all AI provider integrations (BYO + Hosted) — pure
+        network code, no sandbox concerns.
+      • Update Welcome window's tagline/copy for 1.0 to reflect
+        Limited-Mode-only ("Open with ⌥⌘V, pick a clip, hit
+        Enter") and quietly drop the press-and-hold mention until
+        1.1 brings it back.
+
+### Hosted backend — final architecture (revision 4)
+
+Build out as planned. Two refinements vs. revision 3:
+
+  - **Daily OpenRouter keys** instead of hourly. User's instinct
+    was right — the hourly TTL was over-cautious. Leak blast radius
+    is bounded by the per-key credit cap regardless of TTL (an
+    attacker can't drain more than the key's cap, however long
+    they have it). Daily TTL halves Worker request volume,
+    massively improves offline tolerance (user opens DrPaste once
+    a day, fetches a key, works offline for the rest of the
+    session), and simplifies the user-facing quota mental model:
+    "200 AI actions per day on Starter, 1,000 on Plus" — resets
+    every midnight, no monthly accumulation headaches.
+
+  - **RevenueCat from day 1** for Apple IAP receipt validation
+    instead of writing the Apple `verifyReceipt` code ourselves.
+    Free tier up to $2.5k MTR (covers all of year 1 even with
+    optimistic projections). After that, RevenueCat takes 1 % of
+    revenue past the free threshold — material but not painful at
+    scale. Gives us:
+      • Apple receipt validation handled (saves ~30 lines of
+        Worker code we'd otherwise maintain forever);
+      • Subscriber dashboard out of the box;
+      • Webhooks for renewal / cancellation events (lets us purge
+        stale OpenRouter sub-keys when a sub lapses);
+      • Cross-platform ready if we ever ship iOS / web versions.
+    Trade-off — another vendor dependency. If RevenueCat goes down
+    we can't issue keys for new sessions; existing daily keys
+    keep working until they expire. Acceptable.
+
+**Final architecture:**
+
+```
+DrPaste client → Apple IAP (purchase)
+                ↓
+                receipt
+                ↓
+        RevenueCat (validates Apple receipt,
+                    surfaces entitlement "drpaste_plus_v1")
+                ↓
+                entitlement
+                ↓
+DrPaste client → Cloudflare Worker (~70 lines now that
+                                    RevenueCat handles receipts)
+                — checks RevenueCat API for active entitlement
+                — checks KV: is there a current daily key for
+                  this user?
+                — if not, creates an OpenRouter sub-key with
+                  the tier's daily credit cap (e.g. $0.20/day
+                  Starter, $1.00/day Plus), stores in KV with
+                  24 h TTL, returns it
+                ↓
+                daily OpenRouter key
+                ↓
+DrPaste client → OpenRouter directly with the daily key
+                ↓
+                AI response
+```
+
+**Worker request volume on this architecture:** ~1 request per
+user per day (fresh-key fetch on app launch, key reused all day).
+Cloudflare free tier 100 k requests/day = headroom for ~100 k
+active paid subscribers. Effectively zero server cost until DrPaste
+has tens of thousands of paid subs.
+
+### Open questions still to resolve before v1.0
+
+  - **OpenRouter dependency risk.** If OpenRouter goes down, raises
+    prices, or changes ToS, our hosted tier is directly affected.
+    Mitigation: keep the Worker's outbound abstraction generic
+    (interface, not concrete `OpenRouterClient`) so we can swap
+    aggregators (Replicate, Together AI, Fireworks) by editing one
+    file. No client-side code knows the upstream brand.
+  - **Quota model.** Per-action count or token cap? Settled on
+    daily credit cap per OpenRouter sub-key for simplicity. User-
+    facing copy: "200 AI actions per day on Starter, 1,000 on
+    Plus". Behind the scenes it's actually a credit limit (e.g.
+    $0.20/day) sized so that average actions land in the advertised
+    count range. Heavy actions (long context, expensive model)
+    consume more "actions" — fair behaviour, just needs honest
+    Settings copy.
+  - **Abuse mitigation.** One pathological user shouldn't be able
+    to drain our OpenRouter balance via prompt-injection or
+    automated scripting. The per-user daily-key + scoped credit
+    cap structurally handles this: blast radius of any single
+    compromise is at most that user's daily cap. Worker also
+    rate-limits key-issuance requests per RevenueCat user ID
+    (one per minute) to defeat key-rotation abuse.
+  - **Annual pricing for Plus = $39/year.** Locked in. Reasoning is
+    psychological rather than math-driven: $39 sits firmly in the
+    "under $40" mental bracket and reads as a clear discount from
+    12 × $5 = $60 (35 % off vs the monthly rate). Higher prices
+    like $50 or $48 (the symmetrical 17 %-off-Starter math) test
+    worse in indie SaaS A/B's — the $40 ceiling is a known
+    psychological cliff. Cash flow benefit is the same (yearly
+    paid upfront), churn benefit is bigger (the bigger up-front
+    commitment correlates with longer retention).
+  - **What happens when subscription lapses mid-day.** RevenueCat
+    webhook fires `EXPIRATION` event → Worker deletes the active
+    OpenRouter sub-key for that user. Client's daily key stops
+    working immediately on next request; client surfaces a friendly
+    "subscription expired, renew?" prompt routing back to Apple
+    IAP. Never a "switch to BYO" prompt — same rule as quota
+    exhaustion (strategic rule from revision 1).
+
+---
+
+### Core philosophy
+
+DrPaste is a local-first clipboard operating system for the AI era.
+Seven principles guide every product decision:
+
+  1. Your clipboard belongs to you.
+  2. Your AI providers belong to you.
+  3. Bring Your Own AI is free forever.
+  4. Paid plans exist only for convenience.
+  5. No vendor lock-in.
+  6. Local-first whenever possible.
+  7. Advanced users should always stay in control.
+
+DrPaste must never feel like a locked SaaS platform or an AI
+subscription trap. The product should feel fast, native, keyboard-first,
+developer-friendly, privacy-respecting, optional-cloud,
+optional-hosted-AI. The application itself is free to install and use.
+
+### AI usage modes
+
+DrPaste supports two fundamentally different AI usage modes.
+
+**1. Bring Your Own AI (free forever)** — Advanced users connect their
+own AI providers. Supported: OpenAI, Anthropic Claude, Gemini,
+OpenRouter, Ollama, LM Studio, llama.cpp, Mistral, DeepSeek, xAI Grok,
+custom OpenAI-compatible endpoints. When using personal providers, ALL
+AI features unlocked, DrPaste does not charge any fees, does not meter
+usage, does not limit functionality. The user pays providers directly.
+Permanently free.
+
+Product messaging must explicitly state:
+*"Bring Your Own AI — completely free forever."* and
+*"DrPaste does not charge for AI features when you use your own
+providers."*
+
+This is a critical trust-building element of the product philosophy.
+BYO must NOT be presented as a workaround, fallback, downgrade, or
+hidden feature. It must be positioned as an advanced mode, a power-user
+feature, a developer-friendly philosophy.
+
+**2. Hosted AI plans** — For regular users who don't want to deal with
+API keys, providers, billing, token limits, model selection, or
+technical setup, DrPaste offers simple hosted AI subscriptions.
+Messaging focuses on simplicity and convenience: *"Enable AI
+instantly. No API keys required. Just works."*
+
+### Subscription tiers (hosted AI)
+
+**Hosted AI Starter — $1/month.** Casual / non-technical users,
+lightweight AI usage. Simple AI setup, no API keys, limited AI quota,
+limited clipboard size, basic AI models, smaller daily/monthly usage
+caps. Aggressively token-limited, designed to stay safely profitable,
+optimised for inexpensive models.
+
+**Hosted AI Plus — $5/month.** Active users, frequent clipboard AI
+workflows, professional usage. Larger AI quota, larger clipboard
+processing, better AI models, more AI actions, higher usage limits,
+faster processing priority. Still feels simple, non-technical,
+effortless.
+
+### Critical strategic rule
+
+Hosted quota exhaustion must NEVER suggest switching to Bring Your Own
+AI.
+
+  - **Wrong:** *"Your quota ended. Connect your own provider."*
+  - **Right:** *"Upgrade for higher AI limits."*
+
+Bring Your Own AI is NOT part of the monetization funnel. It is a
+separate product philosophy. The hosted AI plans monetize convenience
+and simplicity, not restrictions.
+
+### Marketing positioning
+
+DrPaste must NOT market itself as *"another AI app"*, *"an AI wrapper"*,
+or *"a chatbot"*. Instead: *"The clipboard layer for the AI era"* /
+*"Supercharge Copy & Paste"* / *"AI-powered clipboard workflows"*.
+
+The core user experience is: press and hold paste → preview clipboard
+history → transform content instantly → release to paste. This
+interaction model is the heart of the product identity.
+
+### Product identity
+
+DrPaste should feel magical, lightweight, native to macOS, productivity-
+focused, fast enough to become muscle memory. The AI feels integrated
+into the clipboard workflow itself — not like opening a website,
+launching a chatbot, or switching contexts.
+
+### UX philosophy
+
+Advanced users want control, custom providers, local AI, unrestricted
+workflows. Regular users want simplicity, instant setup, "it just
+works". DrPaste must support both groups equally well without forcing
+either workflow onto the other.
+
+### Trust & transparency
+
+The application clearly communicates: what is processed locally, what
+is sent to AI providers, which provider is being used, when hosted AI
+is active, when personal providers are active. Privacy-respecting
+behaviour is part of the brand identity.
+
+### Long-term strategic advantage
+
+This model creates strong developer goodwill, trust from power users,
+recurring revenue from convenience, low-friction onboarding, high
+community loyalty, reduced backlash against subscriptions. The product
+becomes easy for normal users, powerful for advanced users, sustainable
+as a business — without compromising user freedom.
+
+---
+
 ## Active backlog
 
 Sorted roughly by value-to-effort ratio, not strict priority. Pick whatever
@@ -798,6 +1164,466 @@ recovered via `git log --follow BACKLOG.md` and inspected with
 `git show <commit>:BACKLOG.md`. The early revisions are bilingual and
 include verbose technical reasoning per "Правка"; this current revision is
 the curated, English-only working document.
+
+### 0.28.1 — Per-provider icons in Add provider sheet
+
+Polish. The Add provider sheet was rendering every cloud kind with
+the same generic `cloud` SF Symbol and every local kind with
+`desktopcomputer` — a column of identical glyphs that gave no
+visual identity cues. Each `ProviderKind` already exposes
+`iconName` (per-kind SF Symbol) and `brandColor` (signature hue),
+both of which the HUD action chips have been using since 0.9.0;
+the picker just wasn't reading them.
+
+Fix: `kindRow` now renders each provider's actual icon glyph
+inside a 26 pt circle filled with the brand colour at 16 % opacity,
+foreground colour set to the brand hue at full saturation. The
+picker now reads as a row of distinct brands instead of a column
+of identical clouds — same visual language as the HUD, easier to
+scan when there are 14 providers across 5 sections.
+
+### 0.28.0 — Four new AI providers + Ocean theme + thumbnail polish + suggested-models layout fix
+
+Big-ish release combining four loosely related changes that all
+landed together.
+
+**Four new AI providers — Together AI, Cloudflare Workers AI, Groq, Cerebras**
+
+  - **Together AI** (https://together.ai) — second major aggregator
+    after OpenRouter, especially strong for open-source models
+    (Llama, Mistral, Qwen, DeepSeek). OpenAI-compatible base URL
+    `https://api.together.xyz/v1`. Default model
+    `meta-llama/Llama-3.3-70B-Instruct-Turbo`. Brand color: deep
+    navy (`#1F40C7`). Icon: `network` glyph.
+  - **Cloudflare Workers AI** (https://developers.cloudflare.com/workers-ai)
+    — Cloudflare's own inference hosted on their edge network.
+    Cheap, OpenAI-compatible, free tier. Catch: the base URL bakes
+    the account ID in (`https://api.cloudflare.com/client/v4/accounts/<ID>/ai/v1`),
+    so we mark `requiresBaseURL` and seed the placeholder
+    `YOUR_ACCOUNT_ID` for the user to replace. Default model
+    `@cf/meta/llama-3.1-8b-instruct`. Brand color: Cloudflare
+    orange (`#F58020`). Icon: `cloud.bolt.fill` (cloud platform +
+    fast inference).
+  - **Groq** (https://groq.com) — custom LPU hardware, ultra-fast
+    Llama / Mixtral / Gemma inference, generous free tier.
+    OpenAI-compatible base URL `https://api.groq.com/openai/v1`.
+    Default model `llama-3.3-70b-versatile`. Brand color: red.
+    Icon: `bolt.fill`.
+  - **Cerebras** (https://inference.cerebras.ai) — wafer-scale
+    chips, even faster than Groq on Llama 3.3 70B (1000+ tokens/sec).
+    OpenAI-compatible base URL `https://api.cerebras.ai/v1`. Default
+    model `llama3.3-70b`. Brand color: magenta-purple. Icon:
+    `gauge.with.dots.needle.67percent` (speedometer).
+
+**UI: merged Gateway + new "Fast inference" section**
+
+`ProviderAddSheet` reorganised to reflect the new categorisation:
+
+```
+Cloud
+  Anthropic, OpenAI, Gemini, Grok, Mistral, DeepSeek
+Gateway              ← OpenRouter + Together + Cloudflare Workers AI
+                       (one account, many models — same UX shape)
+Fast inference        ← Groq + Cerebras (specialised hardware)
+Local
+  Ollama, LM Studio, llama.cpp
+Other
+  Custom
+```
+
+Previously I had Cloudflare Workers AI as its own "Cloud platform"
+section. User correctly pointed out that Cloud platform and Gateway
+are conceptually the same — one auth, many models. Merged.
+
+**Ocean — sixth theme, bright tropical palette**
+
+Vivid (warm, dark base) and Soft (warm, pastel) are both warm-spectrum.
+The new Ocean theme fills the cool-spectrum chromatic gap with a
+deliberately distinct identity:
+
+  - Background gradient — bright cyan top (`#11A6C7`) → deep teal
+    bottom (`#085277`), ~86 % opacity over the system blur.
+    Reads as "tropical lagoon" / "Mediterranean afternoon".
+  - Accent — hot coral (`#FF6B5C`) for selection rings, chips,
+    hover. Warm color on cool base = high chromatic contrast,
+    high attention pull.
+  - Accumulator highlight — golden yellow (`#FFD933`) for the
+    ⌥⌘S carrier stripe. Third hue rotates around the colour
+    wheel so the palette feels playful, not monotone.
+  - Border — turquoise (`#00C7CC`) at 65 % opacity, 1.5 pt
+    matching the Vivid / Soft thicker border style.
+
+**Suggested-models layout fix in ProviderEditor**
+
+User report: OpenRouter / Together model slugs like
+`anthropic/claude-sonnet-4.5` and
+`meta-llama/Llama-3.3-70B-Instruct-Turbo` rendered as hideous
+mid-word-wrapped columns in the suggested-models list because the
+old layout was a fixed-grid HStack with each chip squashed into
+~70 pt fixed width. SwiftUI's text wrapping mangled the slugs into
+"an-/thropic/-/claude-/-sonnet-/-4.5" — readable as hieroglyphs only.
+
+Switched to a horizontally-scrolling row of capsule chips. Each chip
+stays on one line at its natural width (`.fixedSize()`), the row
+scrolls right if total exceeds the dialog. User sees the full slug
+they're clicking, picks by skim instead of decoding word wraps.
+
+**Thumbnail picker shrunk to fit six themes**
+
+Six themes (Auto / Light / Dark / Vivid / Soft / Ocean) at the
+previous 110 × 70 thumbnail size + 14 pt spacing = 730 pt, well
+over the Settings tab content width (~580 pt). Shrunk to 78 × 52
+with 8 pt spacing — fits at ~508 pt with breathing room. Inner
+mini-HUD content (header dots, row capsules, action chips) also
+scaled to ~0.6× so the mini-HUD still reads correctly at the
+smaller frame. Picker wrapped in horizontal `ScrollView` so
+future theme additions don't re-fight the layout.
+
+### 0.27.1 — OpenRouter actually appears in "Add provider" sheet
+
+Embarrassing follow-up to 0.26.0. I added OpenRouter to the
+`ProviderKind` enum and wired it through every metadata switch +
+the runtime factory — but the Settings → AI Providers → "Add
+provider…" sheet hardcodes its menu from a manually-maintained
+literal array. New providers must be added to that array OR they
+literally cannot be picked from the UI no matter how complete the
+backing code is.
+
+`ProviderAddSheet.body` had the Cloud list as
+`[.anthropic, .openai, .gemini, .grok, .mistral, .deepseek]` —
+no `.openrouter` anywhere. So even though `defaultBaseURL`,
+`apiKeyDocsURL`, `makeConcrete`, and the rest of the metadata
+were live, users couldn't reach the configuration sheet.
+
+**Fix**
+
+Added a new "Gateway" section header between Cloud and Local
+with `.openrouter` as its only entry. Separating it out (rather
+than tucking it under Cloud) makes the value prop visible — users
+understand "this isn't a direct vendor account, it's an
+aggregator". Future aggregators (Together AI, Replicate, Fireworks,
+…) slot under the same header without re-cluttering Cloud.
+
+### 0.27.0 — Vivid / Soft themes now actually look distinct from Dark / Light
+
+User feedback after 0.25.1: Vivid and Soft barely differed from Dark
+and Light. Root cause was that my tint layer ran at 30–35 % opacity
+on top of the system VisualEffect blur, which kept the system blur
+dominant. Net result: Vivid = "Dark with a faint orange wash";
+Soft = "Light with a faint pastel wash". Not the strong identity
+those tiers were supposed to deliver.
+
+**Three changes that together make the themes pop**
+
+  1. **Replace single-color tints with vertical LinearGradients**
+     at much higher opacity. `ThemeBackgroundFill` (new SwiftUI
+     view) returns:
+     - Vivid — deep indigo (#150340) → plum (#392033) gradient at
+       85–92 % opacity. System blur is barely visible underneath
+       — the theme owns the surface.
+     - Soft  — warm cream (#FFF5F0) → pale lavender (#F0EAFD)
+       gradient at 78–82 % opacity. Same domination, much lighter
+       palette.
+  2. **Theme-aware borders.** New `hudBorderColor` and
+     `hudBorderWidth` properties on `AppTheme`. Auto/Light/Dark
+     get the existing hairline `Color.primary.opacity(0.08)` at
+     0.5 pt — invisible-by-design. Vivid gets a 1.5 pt accent-
+     orange frame at 60 % opacity (`#FF8019`); Soft gets a 1.5 pt
+     dusty-rose frame at 45 % (`#D16AA6`). The edge framing alone
+     makes the theme readable from across the room.
+  3. **Beefier accent palette.** Vivid orange went from `#FF6B36`
+     to `#FF8019` (more saturated, more "electric"). Vivid
+     accumulator green went from `#00D4AA` to `#27F2C7` (proper
+     fluorescent teal). Soft swapped its old "soft lavender" for
+     `#D16AA6` (dusty rose-purple) and replaced the mint
+     accumulator with `#73C79E` (sage). Both pairs read as
+     deliberate "signature palette" choices rather than slight
+     tints of system colors.
+
+**Thumbnails updated to match**
+
+`AppearancePicker`'s thumbnails now render the same gradients (mini-
+LinearGradient inside the 110×70 thumbnail rect) so the Settings
+preview accurately predicts what the HUD will look like. Previously
+the thumbnails used the old solid-tint colors and the HUD looked
+different from the preview — that's fixed.
+
+**Migration**
+
+`hudBackgroundTint` (the old single-color property) kept as a
+deprecated `.clear` stub so any unmigrated caller compiles and
+draws nothing. New code uses `ThemeBackgroundFill(theme:)`.
+`BigHUDView` and `MiniHUDView` switched over. Cheat sheet
+panel still uses just the system blur — the cheat sheet is
+informational chrome that should match the chrome palette of
+the underlying app surfaces, and its rounded-rect background is
+small enough that gradient overkill would feel decorative rather
+than functional. Reconsider if user feedback says otherwise.
+
+### 0.26.2 — Crosshair pulses + inline hint pill ("Click and drag to capture a region")
+
+Polish pass on 0.26.1's drawn crosshair. System cursor stays visible
+(no `CGDisplayHideCursor` — too risky), but two additions make it
+unmistakable that the user is in capture mode:
+
+  - **Pulse animation** — when capture arms, the drawn crosshair
+    runs a 3-cycle opacity pulse (1.0 → 0.35 → 1.0, autoreverses,
+    ~0.4 s per cycle, ease-in-ease-out). Attracts the eye to the
+    cursor area for the moment they enter the gesture, then settles
+    to a steady visible state.
+  - **Hint pill** — a small rounded-rect label appears 14 pt right
+    + 16 pt below the crosshair: "Click and drag to capture a
+    region". Same anti-glare styling as the crosshair (white text
+    on semi-opaque black with a thin white edge). Fades out after
+    1.8 s — long enough to read on first use, doesn't linger on
+    subsequent captures. Also dismissed immediately when the user
+    begins a drag (they clearly understood; no need to keep
+    blocking what they're capturing).
+
+The hint follows the cursor through any mouse motion before the
+fade starts, so the user can move the mouse before clicking and the
+hint stays anchored to the cursor. Multi-display safe: hint is
+tied to the same per-screen overlay as the crosshair, so it only
+shows on the active screen.
+
+System cursor (whatever arrow / I-beam the underlying app had)
+stays visible too — accepted as a small visual quirk. The pulsing
+crosshair + hint is the unambiguous "capture mode" signal even
+when the system cursor doesn't change shape.
+
+### 0.26.1 — Crosshair cursor, attempt #4 — draw our own, stop fighting AppKit
+
+Third attempt (0.25.0 brute-force `NSCursor.crosshair.push()` + 30 Hz
+Timer hammering `set()`) also failed in user testing. Time to admit
+the approach is fundamentally wrong and switch to what macOS's own
+⌘⇧4 region-capture actually does internally.
+
+**Why NSCursor.* doesn't work for our case (fundamental, not a bug)**
+
+`NSCursor.set()` is APP-SCOPED. When the cursor is over another
+app's window, THAT app's cursor rect wins — set in response to
+mouse-enter / cursor-update events. Our background-app `.set()`
+calls from a Timer or NSEvent monitor don't take effect because we
+don't "own" the cursor area when the pointer is over Safari /
+Finder / Xcode etc. Same root cause that defeated all three
+previous attempts:
+
+  - `addCursorRect(_:cursor:)` — silently skipped on non-key
+    panels (0.22.0).
+  - `NSTrackingArea + .cursorUpdate + .activeAlways` — events
+    delivered unreliably to non-activating panels (0.23.0).
+  - `NSCursor.push() + 30 Hz set() hammer` — app-scope ceiling,
+    other apps re-assert their own cursor faster than we can
+    re-set ours (0.25.0).
+
+The right approach is to stop relying on system cursor APIs and
+draw our own crosshair on top.
+
+**The actual fix — draw our own crosshair, track mouse manually**
+
+`CursorOverlayContentView` rewritten to host a CALayer-based
+crosshair (two crossing white lines with a 4-pt gap and a center
+dot, all with a black shadow for visibility against any
+background). Position updated via two NSEvent monitors:
+
+  - `addGlobalMonitorForEvents(.mouseMoved + .leftMouseDragged)`
+    — catches mouse moves OVER OTHER APPS' windows (the typical
+    case during capture). Fires on background; we push the global
+    mouse coord down to each overlay panel.
+  - `addLocalMonitorForEvents` for the same mask — catches mouse
+    moves over our own overlay panels (they're transparent but
+    they're still our windows). Returns the event unmodified so
+    selection-overlay drag events still flow.
+
+Each `CursorOverlayPanel` decides whether it owns the current
+mouse coord (its screen contains the point) and shows /
+hides the crosshair accordingly — multi-display setups stay
+sane.
+
+**Selection-overlay z-order — keep the crosshair on top**
+
+Previously `beginSelection()` tore down the cursor overlays when
+transitioning to the selection drag. Now they stay alive through
+both armed and selecting states (the crosshair must follow the
+mouse during the drag too). The selection overlay panels are
+built first, then we re-front the cursor overlays so their
+crosshair layer sits on top of the selection's dim + rectangle.
+
+**Defensive fallback retained**
+
+`NSCursor.crosshair.push()` / `pop()` still called on
+arm / teardown. On macOS versions where it happens to work the
+user gets a real system crosshair-shaped cursor IN ADDITION to
+our drawn one. On versions where it doesn't, the drawn crosshair
+carries the signal alone. Either way the user always sees a
+crosshair when capture is armed.
+
+**Slight visual quirk (acknowledged)**
+
+When system cursor doesn't change (most macOS versions for our
+case), the user sees BOTH the system arrow AND our crosshair near
+the mouse position. The arrow is just outside the crosshair's
+center — close enough that the crosshair is unambiguously the
+focal indicator. The alternative (hiding system cursor via
+`CGDisplayHideCursor`) is too risky: if our process crashes
+mid-capture the cursor stays hidden until reboot. Drawn-crosshair-
+on-top is the right trade.
+
+### 0.26.0 — OpenRouter provider — one key, 100+ models
+
+Adds OpenRouter (https://openrouter.ai) to the provider lineup. One
+API key, dozens of vendors reachable through a single OpenAI-
+compatible endpoint — Claude / GPT / Gemini / Llama / Mistral /
+DeepSeek / Qwen / Grok / dozens more. For users who don't want to
+juggle six separate API keys (and six separate billing
+relationships), OpenRouter is the right answer; this just makes it
+visible alongside the direct vendors.
+
+Honest disclosure: this should have been in 0.13.0 when we added
+the OpenAI-compatible base class. Pure oversight on my part — the
+gateway endpoint is exactly the same wire format we already
+implement for OpenAI / Grok / Mistral / DeepSeek. Adding it now
+takes seven case-inserts on `ProviderKind` plus one line in
+`AIProviderRegistry.makeConcrete`.
+
+  - `ProviderKind.openrouter` slotted between `.deepseek` and
+    `.ollama` so all cloud providers stay grouped above the
+    local ones.
+  - `displayName` / `badgeLabel` = "OpenRouter".
+  - `iconName` = `arrow.triangle.merge` — many lines merging into
+    one reads as "router / multiplexer" at a glance.
+  - `brandColor` = `.pink` — outside the existing cloud-vendor
+    palette (orange/green/blue/primary/purple/indigo) so a router-
+    routed action stands out as "gateway-routed" in the action list.
+  - `defaultBaseURL` = `https://openrouter.ai/api/v1`.
+  - `defaultModel` = `anthropic/claude-sonnet-4.5` — Claude
+    through the gateway matches our anthropic flagship default.
+  - `suggestedModels` is a curated cross-vendor sampling:
+    `anthropic/claude-sonnet-4.5`, `anthropic/claude-3.5-haiku`,
+    `openai/gpt-5`, `openai/gpt-4o-mini`, `google/gemini-2.5-pro`,
+    `meta-llama/llama-3.1-70b-instruct`, `mistralai/mistral-large`,
+    `deepseek/deepseek-chat`, `qwen/qwen-2.5-72b-instruct`,
+    `x-ai/grok-4`. Showcases the gateway's value; users can type
+    any slug from openrouter.ai/models.
+  - `apiKeyDocsURL` = `https://openrouter.ai/settings/keys` so the
+    "Get an API key" link in ProviderEditor points to the right
+    page.
+  - `AIProviderRegistry.makeConcrete` returns an
+    `OpenAICompatibleProvider` with the OpenRouter base URL — same
+    code path as OpenAI / Grok / Mistral / DeepSeek, no new
+    networking code needed.
+
+Streaming, model selection, status-dot connection-test, the
+hold-preview / region-capture flows — all already work because
+OpenRouter speaks the same wire protocol the OpenAI-compatible
+base provider implements.
+
+### 0.25.1 — Appearance picker actually reaches MiniHUD + cheat sheet, Vivid/Soft tint visible
+
+Follow-up to 0.25.0. After looking at the cut, two gaps:
+
+  1. MiniHUDController's panel wasn't calling `subscribeToAppTheme()`,
+     so MiniHUD ignored theme changes entirely.
+  2. Even with NSAppearance applied, Vivid and Soft looked identical
+     to Dark and Light respectively because the SwiftUI views never
+     read `theme.current.hudBackgroundTint` or
+     `theme.current.accentColor` — they kept using the system accent
+     and clear background.
+
+Both fixed in this bump:
+
+  - `MiniHUDController.buildPanel()` now calls
+    `p.subscribeToAppTheme()`.
+  - `RegionCaptureCheatSheetController.buildPanel()` same.
+  - `BigHUDView` and `MiniHUDView` gained
+    `@ObservedObject private var theme = ThemeManager.shared` and
+    overlay a `RoundedRectangle.fill(theme.current.hudBackgroundTint)`
+    on top of their `VisualEffect` blur. For Auto/Light/Dark the tint
+    is `.clear` so the system blur shows through unchanged; Vivid
+    adds a warm dark overlay (~35% opacity), Soft a cool pastel one
+    (~30%).
+  - `BigHUDView.accent` computed property now reads
+    `theme.current.accentColor ?? Color(nsColor: .controlAccentColor)`.
+    All chip backgrounds, selection rings, hover highlights, and
+    Settings-recovery link colors that already referenced `accent`
+    now automatically pick up the Vivid orange / Soft lavender.
+
+Net effect: cycling through Auto → Light → Dark → Vivid → Soft in
+Settings now visibly changes both BigHUD and MiniHUD chrome — same
+shape and layout, distinctly different palette. Auto vs Light look
+identical when the system is in Light Mode (by design — Auto
+follows the system); switch the system to Dark Mode and Auto
+follows, Light stays light. Vivid sits on dark with bright orange
+selection rings; Soft sits on light with lavender selection rings.
+
+### 0.25.0 — Appearance picker + crosshair cursor that actually appears
+
+Two unrelated features in one bump because they shipped together.
+
+**Appearance picker — Fantastical-style theme thumbnails**
+
+New "Appearance" section in Settings → General. Five preset themes,
+each rendered as a small thumbnail preview of the BigHUD in that
+theme's palette (mimics the picker in Fantastical / Notes app):
+
+  - **Auto** — follows system day/night. DrPaste's default since 0.2.0;
+    the thumbnail renders split light/dark to signal "this one switches".
+  - **Light** — forced light, ignores system Dark Mode.
+  - **Dark** — forced dark, ignores system Light Mode.
+  - **Vivid** — high-contrast saturated palette on a dark base.
+    Bright orange accent (#FF6B36), vivid teal highlights (#00D4AA).
+  - **Soft** — bright pastel palette on a light base. Soft lavender
+    accent (#B19CD9), mint highlights (#95E1D3).
+
+New files: `AppTheme.swift` (the model + ThemeManager singleton +
+SwiftUI ThemeThumbnail view). `SettingsWindow.swift` gains an
+`AppearancePicker` view rendered inside a new `Section("Appearance")`
+above the existing HUD section.
+
+Wiring: `ThemeManager` persists the choice to UserDefaults, broadcasts
+`appThemeDidChange` notification on change. New `NSWindow` extension
+`subscribeToAppTheme()` registers a selector-based observer that
+re-applies the appearance on every change — call once in any panel's
+init. BigHUDPanel wired; MiniHUDController / overlay panels can be
+extended in a follow-up if visual gaps are noticed.
+
+Caveats — this initial cut applies the appearance override via
+`NSWindow.appearance = ...`. Vivid/Soft are functionally close to
+Dark/Light respectively until the BigHUD/MiniHUD content views also
+read `ThemeManager.shared.current.accentColor` and friends in their
+SwiftUI bodies. Iteration #2 will wire the custom accent + highlight
+colors into the chrome.
+
+**Cursor crosshair — fix #3 (hopefully final)**
+
+The crosshair cursor for region-capture armed state STILL didn't
+appear despite the 0.23.0 NSTrackingArea fix. Root cause this time:
+macOS doesn't reliably deliver cursor events to non-key
+non-activating panels regardless of which API you use
+(`addCursorRect`, `NSTrackingArea` with `.cursorUpdate`, `NSCursor.set`
+inside `mouseMoved`). And even when our app does call `NSCursor.set()`,
+other apps' cursor rects re-assert their own cursor the moment the
+pointer enters their window region — which over our screen-spanning
+overlay happens constantly because the overlay is invisible to the
+cursor manager (transparent fill, no key status).
+
+The actually-working approach is brute force:
+
+  1. `NSCursor.crosshair.push()` once on arm — sets the crosshair
+     as the default fallback on the cursor stack.
+  2. A 30 Hz Timer that calls `NSCursor.crosshair.set()` every
+     frame. When another app's cursor briefly wins as the pointer
+     transits their window, our hammered `set()` re-asserts within
+     ~33 ms — imperceptible flicker, rock-solid visual signal.
+  3. `NSCursor.pop()` on teardown to restore the previous cursor
+     stack state.
+
+`startCursorEnforcement()` fires from `arm()` and runs through
+both armed + selecting states (selection overlay also wants the
+crosshair throughout the drag). `stopCursorEnforcement()` fires
+from `tearDown()` — the single termination point for both the
+success path (capture committed) and all cancel paths (⌥⌘ release,
+Esc, mid-drag bail).
 
 ### 0.24.3 — Hotkey recorder can capture ⌥⌘<letter> chords
 

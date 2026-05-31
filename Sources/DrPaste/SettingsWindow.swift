@@ -110,6 +110,10 @@ struct GeneralTab: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
+            Section("Appearance") {
+                AppearancePicker()
+            }
+
             Section("HUD") {
                 HStack {
                     Text("Font size:")
@@ -285,6 +289,45 @@ struct GeneralTab: View {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd"
         return f.string(from: Date())
+    }
+}
+
+// MARK: - Appearance picker (Fantastical-style theme thumbnails)
+
+/// Five-up row of theme preview thumbnails with selection state and a
+/// caption explaining the active theme. Wired to `ThemeManager.shared`
+/// so picking a thumbnail immediately re-skins every open panel.
+struct AppearancePicker: View {
+    @ObservedObject private var manager = ThemeManager.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Horizontal scroll lets the picker survive future
+            // additions without re-fighting layout. At current 78 pt
+            // thumbnail + 8 pt spacing, 6 themes (Auto / Light /
+            // Dark / Vivid / Soft / Ocean) fit cleanly in a typical
+            // Settings tab width; the scroll only engages if the
+            // window is narrowed or more themes get added later.
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 8) {
+                    ForEach(AppTheme.allCases) { theme in
+                        Button {
+                            manager.setTheme(theme)
+                        } label: {
+                            ThemeThumbnail(theme: theme,
+                                           selected: theme == manager.current)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.vertical, 4)
+                .padding(.horizontal, 1)
+            }
+            Text(manager.current.caption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 
@@ -701,17 +744,38 @@ struct ProviderEditor: View {
                 TextField(provider.kind.defaultModel, text: $provider.model)
             }
             if !provider.kind.suggestedModels.isEmpty {
-                HStack {
+                HStack(alignment: .top) {
                     Spacer().frame(width: 110)
-                    HStack(spacing: 4) {
-                        ForEach(provider.kind.suggestedModels, id: \.self) { m in
-                            Button(m) { provider.model = m }
-                                .buttonStyle(.borderless)
-                                .font(.caption)
-                                .foregroundStyle(.tint)
+                    // Long model slugs like `meta-llama/Llama-3.3-70B-...`
+                    // wreck the previous fixed-grid layout — SwiftUI
+                    // wrapped them mid-word into 6-character columns of
+                    // ladder text. Switch to a horizontally-scrolling
+                    // row of capsule chips: each chip stays on one line
+                    // at its natural width (`.fixedSize`), the row
+                    // scrolls right if the total exceeds the dialog
+                    // width. User can read the full slug they're
+                    // clicking and pick by skim, instead of decoding
+                    // hieroglyphic word-wraps.
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(provider.kind.suggestedModels, id: \.self) { m in
+                                Button { provider.model = m } label: {
+                                    Text(m)
+                                        .font(.caption)
+                                        .foregroundStyle(.tint)
+                                        .lineLimit(1)
+                                        .fixedSize()
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(
+                                            Capsule().fill(Color.accentColor.opacity(0.10))
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
+                        .padding(.vertical, 2)
                     }
-                    Spacer()
                 }
             }
 
@@ -874,6 +938,25 @@ struct ProviderAddSheet: View {
                     ForEach([ProviderKind.anthropic, .openai, .gemini, .grok, .mistral, .deepseek], id: \.self) {
                         kindRow($0)
                     }
+                    // Gateways — one account, many models. OpenRouter
+                    // and Together AI are aggregators; Cloudflare
+                    // Workers AI is a cloud platform that exposes
+                    // many models through one account. Same UX shape
+                    // (one auth, many model slugs), so same section.
+                    sectionHeader("Gateway")
+                    ForEach([ProviderKind.openrouter, .together, .cloudflareWorkers], id: \.self) {
+                        kindRow($0)
+                    }
+                    // Fast-inference platforms — specialised hardware
+                    // (Groq's LPU, Cerebras's wafer-scale chip)
+                    // optimised for ultra-fast token generation.
+                    // Smaller model selection than gateways but much
+                    // lower latency — well suited to quick paste-
+                    // action flows where speed matters most.
+                    sectionHeader("Fast inference")
+                    ForEach([ProviderKind.groq, .cerebras], id: \.self) {
+                        kindRow($0)
+                    }
                     sectionHeader("Local")
                     ForEach([ProviderKind.ollama, .lmstudio, .llamaCpp], id: \.self) {
                         kindRow($0)
@@ -904,9 +987,21 @@ struct ProviderAddSheet: View {
     @ViewBuilder
     private func kindRow(_ kind: ProviderKind) -> some View {
         Button { onClose(kind) } label: {
-            HStack {
-                Image(systemName: kind.isLocal ? "desktopcomputer" : "cloud")
-                    .foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                // Each provider gets its own per-kind icon + brand
+                // colour — same glyph the HUD action chips show — so
+                // the picker reads as a row of distinct identities
+                // instead of a column of identical clouds. Icon sits
+                // inside a soft tinted circle so brand colours stay
+                // legible against the row's neutral grey background.
+                ZStack {
+                    Circle()
+                        .fill(kind.brandColor.opacity(0.16))
+                        .frame(width: 26, height: 26)
+                    Image(systemName: kind.iconName)
+                        .foregroundStyle(kind.brandColor)
+                        .font(.system(size: 13, weight: .medium))
+                }
                 Text(kind.displayName)
                 Spacer()
                 Image(systemName: "chevron.right").foregroundStyle(.tertiary).font(.caption)
