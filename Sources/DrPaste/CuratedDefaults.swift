@@ -68,6 +68,15 @@ enum CuratedDefaults {
         "builtin.image_rotate_left",    // left (90° CCW)
         "builtin.image_ascii_art",
 
+        // NOTE: AI image styles (Pencil sketch / Watercolor / Cartoon)
+        // are NOT listed here. They're CustomAIDescriptor entries
+        // seeded with kind == .image, and their enabled flag lives on
+        // the descriptor itself (which defaults to true) — same model
+        // as the text AI defaults (Translate, Fix grammar). The
+        // `actionID.hasPrefix("user.")` arm in isEnabledByDefault below
+        // covers them on the rare path where curated defaults are
+        // consulted for a customAI id.
+
         // Files — core 4.
         "builtin.files_paths",
         "builtin.files_names",

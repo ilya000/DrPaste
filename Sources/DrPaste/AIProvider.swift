@@ -231,6 +231,78 @@ enum ProviderKind: String, Codable, CaseIterable {
         isLocal || self == .custom || self == .cloudflareWorkers
     }
 
+    /// Whether this provider can run image-in / image-out edit
+    /// requests (used by `AIImageAction`). Drives the Edit Action
+    /// editor's Provider picker filter in Image mode — only kinds
+    /// with `supportsImageEdit == true` are listed.
+    ///
+    /// Supported today:
+    ///   • OpenAI       — `/v1/images/edits` with gpt-image-1
+    ///   • Gemini       — `:generateContent` with
+    ///                    gemini-2.5-flash-image-preview (or
+    ///                    -native variants), inlineData base64
+    ///   • OpenRouter   — `/v1/chat/completions` with a multimodal
+    ///                    image-capable model (Gemini Flash Image,
+    ///                    Flux via fal-ai/*, …) — response contains
+    ///                    an inline image part the gateway forwarded
+    ///                    from the underlying vendor.
+    ///   • Custom       — OpenAI-compatible custom endpoint. We
+    ///                    can't know in advance whether the user's
+    ///                    URL implements /images/edits or not, so
+    ///                    we let it through and dispatch as OpenAI-
+    ///                    shape. If the endpoint doesn't speak it,
+    ///                    the HTTP error message surfaces in the
+    ///                    failure notice and the user knows to
+    ///                    switch providers.
+    ///
+    /// Returns false for the rest: Anthropic / Claude has vision
+    /// input but no image generation; OpenAI-compat gateways with
+    /// known text-only models (Together, Groq, Cerebras) don't
+    /// expose /images/edits; local inference servers (Ollama, LM
+    /// Studio, llama.cpp) ship text-only models. Cloudflare Workers
+    /// AI hosts Flux models but its API shape is per-model
+    /// proprietary and not wired here yet — would be a follow-up.
+    var supportsImageEdit: Bool {
+        switch self {
+        case .openai, .gemini, .openrouter, .custom:
+            return true
+        case .anthropic, .grok, .mistral, .deepseek,
+             .together, .cloudflareWorkers, .groq, .cerebras,
+             .ollama, .lmstudio, .llamaCpp:
+            return false
+        }
+    }
+
+    /// Cost-rank for image generation/edit. Lower = cheaper. Used
+    /// by the auto-select logic to prefer cheap providers when the
+    /// user hasn't pinned one explicitly. Numbers are anchored to
+    /// May-2026 list prices for the canonical image model on each
+    /// provider:
+    ///   • Gemini 2.5 Flash Image Preview — ~$0.039 / image
+    ///   • OpenRouter — proxies cheap providers (Flux, Imagen)
+    ///     and is usually below OpenAI for equivalent quality
+    ///   • OpenAI gpt-image-1 — $0.011 (low) … $0.167 (high),
+    ///     defaults to medium ≈ $0.042 in our wiring
+    ///   • Custom — unknown, could be a free local server OR a
+    ///     pricier hosted endpoint; ranked last because we can't
+    ///     reason about its cost from the registry alone
+    ///
+    /// Returns `Int.max` for kinds that can't run image edits at
+    /// all, so a `.sorted(by: { $0.imageEditCostRank < $1.imageEditCostRank })`
+    /// pass naturally pushes them to the end.
+    var imageEditCostRank: Int {
+        switch self {
+        case .gemini:     return 1
+        case .openrouter: return 2
+        case .openai:     return 3
+        case .custom:     return 4
+        case .anthropic, .grok, .mistral, .deepseek,
+             .together, .cloudflareWorkers, .groq, .cerebras,
+             .ollama, .lmstudio, .llamaCpp:
+            return Int.max
+        }
+    }
+
     var defaultBaseURL: String? {
         switch self {
         case .ollama:            return "http://localhost:11434"
@@ -537,6 +609,58 @@ final class AIProviderRegistry: ObservableObject {
         config.providers.first(where: { $0.id == id })?.kind
     }
 
+    /// Cheapest enabled image-capable provider, by
+    /// `ProviderKind.imageEditCostRank`. Returns nil when nothing
+    /// in the registry can run image edits.
+    ///
+    /// This is the single source of truth for "pick a provider to
+    /// run an image action when the user hasn't pinned one" — used
+    /// by both the runtime soft fallback (`AIImageAction.resolveProvider`)
+    /// and by the four UI surfaces that mirror that chain (Edit
+    /// Action provider picker auto-select + effective-provider
+    /// hint, Settings → Playground inflight label, live HUD
+    /// inflight label). Keeping it in one place stops them from
+    /// drifting apart and surfacing different provider names for
+    /// the same action.
+    ///
+    /// Tie-break order when two enabled providers share the same
+    /// rank (rare today since each kind has a unique rank, but
+    /// possible if the user adds two Custom providers): preserve
+    /// registry order so the user's manually-arranged list wins.
+    ///
+    /// Cached — SwiftUI re-renders that drive picker chips and HUD
+    /// badges call this on every view-body evaluation, and the
+    /// filter+sort otherwise runs dozens of times per second during
+    /// a streaming AI loading panel. Cache is invalidated on every
+    /// mutating registry call (`upsert`, `remove`, `setDefault`,
+    /// `invalidateCache`) so it's always at most one config-version
+    /// stale.
+    func cheapestEnabledImageProvider() -> ConfiguredProvider? {
+        if cheapestImageProviderCacheValid {
+            return cheapestImageProviderCache
+        }
+        let result = config.providers
+            .filter { $0.enabled && $0.kind.supportsImageEdit }
+            .sorted { $0.kind.imageEditCostRank < $1.kind.imageEditCostRank }
+            .first
+        cheapestImageProviderCache = result
+        cheapestImageProviderCacheValid = true
+        return result
+    }
+
+    /// Drop the cached `cheapestEnabledImageProvider` reading. Called
+    /// internally on every mutation; also exposed for the existing
+    /// `invalidateCache()` entry point so external invalidations
+    /// (e.g. after a Keychain key write that doesn't go through
+    /// upsert) clear this cache too.
+    func invalidateImageProviderCache() {
+        cheapestImageProviderCache = nil
+        cheapestImageProviderCacheValid = false
+    }
+
+    private var cheapestImageProviderCache: ConfiguredProvider? = nil
+    private var cheapestImageProviderCacheValid: Bool = false
+
     /// Upsert a provider. When apiKey is non-nil, the key is saved to Keychain.
     func upsert(_ cp: ConfiguredProvider, apiKey: String? = nil) {
         if let key = apiKey, !key.isEmpty {
@@ -550,6 +674,7 @@ final class AIProviderRegistry: ObservableObject {
         }
         config = newCfg
         providerCache.removeValue(forKey: cp.id)
+        invalidateImageProviderCache()
     }
 
     func remove(providerID: String) {
@@ -561,17 +686,24 @@ final class AIProviderRegistry: ObservableObject {
         }
         config = newCfg
         providerCache.removeValue(forKey: providerID)
+        invalidateImageProviderCache()
     }
 
     func setDefault(providerID: String) {
         var newCfg = config
         newCfg.defaultProviderID = providerID
         config = newCfg
+        // Default change doesn't move which providers are
+        // image-capable, but `effectiveProvider`-style lookups
+        // upstream may have cached "Default resolves to X" — drop
+        // the image-cheapest cache too for consistency.
+        invalidateImageProviderCache()
     }
 
     /// Force-clears the provider cache. Call after external config mutations.
     func invalidateCache() {
         providerCache.removeAll()
+        invalidateImageProviderCache()
     }
 
     /// Wipes all configured providers and their Keychain API keys, then restores
@@ -582,6 +714,7 @@ final class AIProviderRegistry: ObservableObject {
             APIKeyStorage.remove(for: cp.id)
         }
         providerCache.removeAll()
+        invalidateImageProviderCache()
         config = ProvidersConfig.defaultConfig()
     }
 
@@ -1321,7 +1454,17 @@ struct AIAction: ClipboardAction {
 enum DefaultAISeed {
     /// Increment when adding new default AI actions to ship to existing users on upgrade.
     /// v2: switch seeded entries from hardcoded "anthropic" providerID to "" (follow default).
-    static let currentSeedVersion: Int = 2
+    /// v3: add three image-AI styles (Pencil sketch / Watercolor / Cartoon) with
+    ///     kind == .image. They route through gpt-image-1 when the resolved
+    ///     provider is OpenAI, and surface as regular AI actions in Settings →
+    ///     Actions so users can edit the prompt, switch provider, or clone
+    ///     them into their own styles ("Oil paint", "Stained glass", …).
+    /// v4 — added one text→image seed: "AI: Whiteboard sketch" with
+    ///     kind == .textToImage. Copy any concept text and the action
+    ///     generates a clean black-and-white marker-on-whiteboard
+    ///     illustration. Universal — works for meeting notes,
+    ///     document figures, brainstorm visualisation.
+    static let currentSeedVersion: Int = 4
 
     /// Sentinel for `providerID`: empty string means "use whatever provider is currently default".
     /// Action follows the user's default selection — change the default in Settings → AI and
@@ -1371,6 +1514,93 @@ enum DefaultAISeed {
                 promptTemplate: "Rewrite the input in a more formal, professional tone. Preserve language and meaning. Reply with the rewritten text only.",
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText", "markdown"]
+            ),
+
+            // Image-AI seeds — v3 of the seed table. Each ships as a
+            // regular CustomAIDescriptor with kind == .image so it
+            // appears in Settings → Actions → AI alongside the text
+            // entries, fully editable. Prompts are tuned for
+            // gpt-image-1 (the only image-edit endpoint we currently
+            // dispatch to); users can clone any of these into their
+            // own styles by editing the prompt and giving the
+            // descriptor a new id.
+            CustomAIDescriptor(
+                id: "user.ai_image_sketch",
+                title: "AI: Pencil sketch",
+                promptTemplate: """
+                Convert this image into a hand-drawn pencil sketch. \
+                Black and white only, no color. Clean cross-hatching \
+                for shadow, light pencil strokes for mid-tones, \
+                untouched white paper for highlights. Preserve the \
+                subject's recognizable outline and proportions \
+                exactly. Output as if drawn on plain white paper \
+                with a graphite pencil.
+                """,
+                providerID: defaultProviderSentinel,
+                applicableTypes: ["image"],
+                kind: .image
+            ),
+            CustomAIDescriptor(
+                id: "user.ai_image_watercolor",
+                title: "AI: Watercolor",
+                promptTemplate: """
+                Transform this image into a soft watercolor painting. \
+                Visible brush strokes, gentle color bleeding at \
+                edges, translucent washes layered on top of each \
+                other. Preserve the original composition and colour \
+                palette but render it as if painted with wet \
+                pigments on cold-press watercolor paper. Slight \
+                paper texture is welcome.
+                """,
+                providerID: defaultProviderSentinel,
+                applicableTypes: ["image"],
+                kind: .image
+            ),
+            CustomAIDescriptor(
+                id: "user.ai_image_cartoon",
+                title: "AI: Cartoon",
+                promptTemplate: """
+                Convert this image into a clean cartoon illustration. \
+                Bold black outlines around every shape, flat solid \
+                fills inside (no gradients, no photoreal shading), \
+                slightly simplified facial features and proportions. \
+                Vibrant but limited color palette — think modern \
+                animation production style. Preserve subject \
+                recognizability.
+                """,
+                providerID: defaultProviderSentinel,
+                applicableTypes: ["image"],
+                kind: .image
+            ),
+
+            // Text → Image seed — v4 of the seed table. The user
+            // copies any concept text (a sentence, a sketch idea,
+            // a meeting topic, a UX flow description) and runs this
+            // action; the model produces a clean whiteboard-style
+            // sketch they can drop into a doc, slide, or notes
+            // app. Universal — works for technical diagrams,
+            // brainstorm visualisations, slide-deck illustrations,
+            // notebook headers. Black-and-white on white background
+            // keeps the cost low (smaller PNG to download) and the
+            // result reads as "I sketched this on a whiteboard"
+            // rather than "AI made this for me".
+            CustomAIDescriptor(
+                id: "user.ai_text_to_image_whiteboard",
+                title: "AI: Whiteboard sketch",
+                promptTemplate: """
+                Create a clean black-and-white whiteboard-style \
+                illustration of the concept described below. Hand-drawn \
+                marker on a white background, simple confident lines, \
+                minimal shading. The drawing should clearly convey the \
+                main idea visually — recognisable shapes, labelled \
+                arrows or callouts only when essential. No photoreal \
+                rendering, no colour, no gradients, no text outside \
+                short callout labels. Aim for the feel of a quick \
+                explainer sketch you'd see on a meeting whiteboard.
+                """,
+                providerID: defaultProviderSentinel,
+                applicableTypes: ["text", "markdown", "richText", "code"],
+                kind: .textToImage
             )
         ]
     }

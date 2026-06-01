@@ -1165,6 +1165,509 @@ recovered via `git log --follow BACKLOG.md` and inspected with
 include verbose technical reasoning per "Правка"; this current revision is
 the curated, English-only working document.
 
+### 0.32.9 — Edit-button label + small-system fallback + Playground persistence
+
+**Edit-button icon.** Pencil-only SF Symbol was opaque ("what is this
+stick?"). Replaced with `Label("Edit", systemImage: "square.and.pencil")`
+— same icon family Mail / Notes / Reminders use for their compose
+buttons. Tooltip via `.help(...)` spells out what the editor exposes.
+
+**Small system fallback image.** The previous fallback chain ended
+at "user's desktop wallpaper" — typically a 5K-6K HEIC, slow to load
+even after downscale. Replaced with a probe of `/Library/User Pictures/`
+(Apple's stock account-avatar set, 80-512 px TIFFs / PNGs across
+Photos / Animals / Nature / Flowers subfolders). First image found
+wins. If User Pictures is absent (sandboxed install), the absolute
+floor is now an SF Symbol (`photo.on.rectangle.angled`) rendered onto
+a soft-blue 256×256 PNG. Always works, always small.
+
+**Playground sample persistence.** Per-tab Sample input edits
+(text for text tabs, dropped image for the Image tab) now persist
+across app restarts via two new ActionConfig fields:
+
+  - `playgroundSamples: [String: String]` — keyed by
+    SemanticKind.rawValue, stores the user's edited text
+  - `playgroundImageBlobs: [String: String]` — keyed by kind,
+    stores the filename of a dropped image
+
+Same diff-against-default normalisation as the per-action
+`actionTestSamples` map (typing the curated text back in clears the
+override, so future updates to the curated default propagate).
+`ContentTypeTab.onAppear` loads the override before falling back to
+`SettingsSamples.sample(for:)`; `.onChange(of: sampleText)` persists
+text edits on every keystroke; image drops call
+`registry.setPlaygroundImageRel`. Reset button clears the persisted
+override AND the in-memory state.
+
+Files:
+  - `SettingsWindow.swift` — Edit button Label, onAppear /
+    onChange persistence hooks, Reset behaviour, drop handler
+  - `ActionConfig.swift` — `playgroundSamples` +
+    `playgroundImageBlobs` fields + decoder + CodingKeys
+  - `Actions.swift` — `playgroundSample(forKind:)` /
+    `setPlaygroundSample` / `playgroundImageRel(forKind:)` /
+    `setPlaygroundImageRel` registry helpers
+  - `ActionTestSamples.swift` — `makeSystemWallpaperSampleItem`
+    rewritten to scan `/Library/User Pictures/`; new
+    `makeSFSymbolSampleItem` as absolute floor
+
+### 0.32.8 — Edit button: `square.and.pencil` icon + "Edit" label
+
+Cosmetic follow-up to 0.32.7. The bare text "Edit" button worked but
+adding the canonical macOS edit glyph in front gives the row stronger
+recognition without making the button wider — Label compose its icon
+and text on one line.
+
+Files: `SettingsWindow.swift`.
+
+### 0.32.7 — Playground Sample input image-aware + Result HUD-style + Mandrill auto-download
+
+Three things in one release.
+
+**Playground Sample input for the Image tab now renders an actual
+image** instead of placeholder text "(use Settings sample image when
+ready)". Pulls the same `ActionTestSamples.makeSampleImageItem()`
+chain the Edit Action sheet uses — bundled Mandrill → cached
+Mandrill → User Pictures → SF Symbol. Drag-drop a different image
+to replace, with the dropped picture copied into images dir under a
+per-tab stable filename.
+
+**Playground Result pane uses TestOutputPane** — the same
+HUD-style component the Edit Action sheet renders. Identical
+spinner / "Provider · Model · 4.2s" / failure-notice / image-preview /
+rich-text-preview chrome everywhere. The legacy `ResultPane` struct
+was deleted; one renderer for all preview surfaces.
+
+**Mandrill auto-download.** First launch with no bundled or cached
+Mandrill kicks off a background `Task.detached` that fetches
+`https://sipi.usc.edu/database/preview/misc/4.2.03.png` (public
+domain, 1973 USC-SIPI test image) and caches it at
+`AppStorage.imagesDir/Mandrill-cached.png`. 10s timeout, atomic
+write, NSImage validation before commit. Subsequent calls read from
+the cache instantly. NSLock-guarded so concurrent dialog opens
+don't fire twenty parallel downloads. Silent failure if SIPI is
+unreachable — fallback chain takes over.
+
+Files:
+  - `SettingsWindow.swift` — image-aware leftColumn, TestOutputPane
+    in Result, dead `ResultPane` removed, inflight chrome wiring
+  - `ActionConfig.swift` — `SettingsSamples.sample(for: .image)`
+    routes to `ActionTestSamples.makeSampleImageItem()`
+  - `ActionTestSamples.swift` — `prefetchMandrillIfNeeded` +
+    `makeCachedMandrillSampleItem` + USC-SIPI URL constant
+
+### 0.32.6 — Bundled Mandrill resource lookup
+
+Make `makeSampleImageItem()` look for `Mandrill.png` (or .jpg) in
+`Bundle.module` before the procedural fallback. Lets a user drop the
+classic USC-SIPI Mandrill test image into `Sources/DrPaste/Resources/`
+once and have it shipped with future signed builds — no per-launch
+download required. PNG fast-path (header sniff) skips needless re-
+encode; everything else converts to PNG so downstream paths can
+assume `public.png` representation uniformly.
+
+Files: `ActionTestSamples.swift`.
+
+### 0.32.5 — "Applies to" grid matches Playground tabs + procedural portrait
+
+User: "Image / PDF / Files barely visible — disabled greying is
+confusing; the checkboxes should match the Playground tabs exactly
+and just mean 'enabled for this tab'."
+
+**Centralised content-type list** — new `SemanticKind.userVisibleKinds`
+returns the canonical Playground / Edit-Action tab order
+(`text, richText, url, json, table, markdown, code, image, files`).
+Both `SettingsWindow.visibleContentTypes` and
+`ActionEditor.allTypes` now read from this single source so the two
+surfaces can't drift.
+
+**Dropped paternalistic greying.** Old `isTypeApplicable(_:)` probed
+the action against synthetic items of each kind and disabled the
+checkbox when the action couldn't handle that type. Removed — every
+checkbox is freely toggleable now, and the user's deliberate choice
+becomes the persisted state. Email and PDF are gone from the grid
+(they have no Playground tab; classification still works internally).
+
+**Procedural portrait sample image** (transitional, replaced in
+0.32.7+ by Mandrill). 512×512 NSBezierPath drawing of a stylised
+figure in a wide-brimmed hat — recognisable subject, rich colour,
+embedded "DrPaste sample" text. Deliberately *not* Lenna (model
+disavowed in 2019, banned from IEEE / Nature).
+
+Files: `ClipboardModel.swift`, `SettingsWindow.swift`,
+`ActionEditor.swift`, `ActionTestSamples.swift`.
+
+### 0.32.4 — Preserve rich-text formatting for simple transformations
+
+User: "Никакие простые преобразования текста не должны убивать
+разметку текста."
+
+`CustomTransformationAction.apply` flattened any rich-text input to
+plain text (`item.previewText`) and ran the engine against that —
+losing the user's bold / italic / colour / hyperlink markup. Fixed:
+
+  - New `TransformationEngine.preservesRichTextFormatting: Bool`
+    flag. True for character-local engines (`caseChange`,
+    `unicodeStyle`, `cyrillicToLatin`) plus the special-handled
+    `trim` and the boundary-adding `wrap` / `prepend` / `append`.
+    False for engines that restructure text (sortLines, jsonFormat,
+    slugify, camelCase / snake / kebab, base64, urlEncode, markdown
+    extract, regex / findReplace — the last two could span runs).
+  - New `TransformationRuntime.applyToAttributed(...)` dispatches
+    per kind:
+    * character-local → `applyPerRun` (enumerate attributes, run
+      transformation on each substring, append with run's original
+      attributes)
+    * `trim` → NSString-based outer-whitespace strip preserving
+      inner runs
+    * `wrap` / `prepend` / `append` → plain prefix/suffix flanking
+      the attributed original
+  - `CustomTransformationAction.apply` checks
+    `item.semantic == .richText && engine.preservesRichTextFormatting`,
+    loads the RTF blob, calls `applyToAttributed`, returns through
+    `makeRichTextItem` so the output stays a `.richText` clip.
+
+Result: in the Playground Rich-text tab, "UPPERCASE" applied to a
+sample with bold / italic / hyperlink turns letters uppercase while
+keeping every formatting attribute intact.
+
+Files: `CustomTransformation.swift`.
+
+### 0.32.3 — Rich-text Input handling: markdown source + RTF round-trip
+
+Rich-text built-in actions (`rich_to_wiki`, `rich_to_md`,
+`rich_to_html`, `rich_to_unicode_style`, `paste_as_text`,
+`clean_formatting`) all read `representations["public.rtf"]` to
+extract the NSAttributedString. Plain-text input from a TextEditor
+left them with nothing to convert.
+
+Fixed: when the action being tested is rich-text-only (probed via
+new `registry.actionRequiresRichText(_:)`), `runTest` parses the
+testInput markdown via `NSAttributedString(markdown:)`, writes an
+RTF blob to `AppStorage.blobsDir`, and builds the inputItem with
+`semantic: .richText` and `representations["public.rtf"]`. The
+action's `.apply` now has real rich content to convert.
+
+Per-action illustrative samples updated: each rich-text action
+ships with a sample showing exactly the inline elements its target
+format renders (`**bold**` → `'''bold'''` for wiki, → `<strong>`
+for HTML, etc.).
+
+Files: `ActionTestSamples.swift`, `Actions.swift`, `ActionEditor.swift`.
+
+### 0.32.2 — Image-aware Edit Action Input field + drag-drop persistence
+
+Image-applicable actions (OCR / Grayscale / Rotate / AI image
+styles / …) now render an actual image preview in the Input panel
+instead of placeholder text. New file-drop target replaces the
+sample with the user's picture; drops persist via new
+`ActionConfig.actionTestImageBlobs: [String: String]` (keyed by
+action ID, value is a rel filename inside `AppStorage.imagesDir`).
+
+`registry.actionAcceptsImage(_:)` probes each action's
+`isApplicable` against a synthetic `.image` clip so any new image
+action (third-party plug-in, future built-in) automatically gets
+the image input UI without us updating a whitelist.
+
+Reset button next to the Input label appears when an override
+exists; clears the persisted blob and regenerates the procedural
+sample.
+
+Files: `ActionConfig.swift`, `Actions.swift`, `ActionEditor.swift`,
+`ActionTestSamples.swift`.
+
+### 0.32.1 — Test sample persistence + full action coverage + HUD-style Output
+
+**Persistence.** New `actionTestSamples: [String: String]` field in
+ActionConfig stores per-action testInput overrides. Edit Action
+dialog loads override → curated default → empty. Save persists when
+modified this session, normalises against curated default so typing
+the curated text back in clears the override. Empty string IS
+persisted as "user explicitly cleared this".
+
+**Full action coverage.** `ActionTestSamples.textSample(for:)`
+extended from 30 to 50+ entries — covers every bundled built-in
+plus seeded user.* actions. Each sample is curated to illustrate
+its specific action's effect: translate gets an English greeting,
+JSON minify gets pretty-printed JSON to compress, layout repair
+gets Russian phrase typed with English keyboard, etc.
+
+**HUD-style Output pane.** New `TestOutputPane` View (file
+`TestOutputPane.swift`) renders `ApplyOutcome` with the same chrome
+as BigHUD: spinner with "Provider · Model · 4.2s" capsule for AI
+actions, failure notice with orange ⚠ + reason, side-effect notice,
+image preview via `ImagePreview`, rich-text preview via
+`RichTextPreviewView`. Replaces the legacy plain-text TextEditor
+mirror — no more flat text strings flattening image results.
+
+Files: `ActionConfig.swift`, `Actions.swift`, `ActionEditor.swift`,
+`ActionTestSamples.swift`, `TestOutputPane.swift` (new).
+
+### 0.32.0 polish — Edit dialog routes image actions correctly + test sample pre-population
+
+Two follow-ups after first 0.32.0 user test:
+
+**Bug 1 — image actions opened as "Built-in" instead of "AI".**
+
+`SettingsWindow.openEditor` used `if action is AIAction` to route the
+pencil button to `.editAI(desc)`. Because `AIImageAction` is its own
+struct (not a subclass of `AIAction`), the check missed it and the
+action fell through to the `.editBuiltin` arm. Result: the dialog
+displayed "Edit Built-in Action" with a locked handler field instead
+of the editable prompt + provider picker. Fix: route any action whose
+ID is in `registry.config.customAI` to `.editAI(desc)` regardless of
+the concrete action type. Now AIAction (text) and AIImageAction
+(image) both surface in the same editor — same prompt textarea, same
+provider picker, same hotkey field, same save flow (which already
+preserves `desc.kind` from the 0.32.0 rework).
+
+**Feature — per-action test samples in the Edit dialog.**
+
+User request from before the regression chase: every action should
+ship with an illustrative sample pre-populated in the Test panel so
+clicking "Run test" immediately demonstrates what the action does.
+New file `ActionTestSamples.swift` carries a curated map of
+action-id → sample text covering all bundled actions:
+
+  - Translate → English sentence
+  - Fix grammar → typo-riddled snippet
+  - Formal tone → casual chat message
+  - Summarize → multi-sentence paragraph
+  - Case actions → "The quick brown fox jumps over the lazy dog."
+  - camelCase / snake_case / kebab-case → "user account email address"
+  - Trim → string with leading/trailing whitespace
+  - Sort / unique lines → multi-line fruit list with duplicates
+  - Base64 encode/decode → matching round-trip pair
+  - URL encode/decode → realistic search URL
+  - JSON actions → minified JSON with nested object + array
+  - Code wrap / tabs↔spaces → tiny Swift function
+  - Markdown actions → headings + bold + italic + links
+  - URL strip-tracking → URL with utm_*, fbclid, etc.
+  - Layout repair → Russian phrase typed with English layout
+  - Cyrillic transliterate → Russian sentence
+  - Unicode pseudo-fonts → mixed-case alphabet + digits
+  - Plain ASCII (font_plain) → stylized text to flatten
+  - Tables → CSV with header + 3 rows
+  - Rich-text actions → demonstrative sentence
+  - AI image styles → placeholder note ("Run test will use a
+    generated sample image"), with the actual sample being a 512×512
+    procedural PNG (gradient sky + mountain silhouette + DrPaste
+    wordmark) generated at runtime in `ActionEditor.runTest`
+
+`ActionEditor.loadInitialState` pre-fills `testInput` from
+`ActionTestSamples.textSample(for: id)` whenever the action being
+edited has a registered sample. Unknown IDs (third-party user-added
+descriptors) keep the empty default.
+
+`ActionEditor.runTest` detects image descriptors (`context` is
+`.editAI(desc)` with `desc.kind == .image`), generates the sample
+image via `ActionTestSamples.makeSampleImageItem()`, runs the
+descriptor's prompt through `AIImageAction.apply`, and surfaces the
+result through a new `describeImageOutcome` helper that reports the
+generated PNG's dimensions + file size and points the user at the
+BigHUD preview for the actual visual result. Test panel itself stays
+text-only for now — inline NSImage preview is a follow-up if users
+ask for it.
+
+Files:
+  - `ActionTestSamples.swift` — new (~250 lines): textSample table +
+    procedural makeSampleImageItem
+  - `ActionEditor.swift` — `loadInitialState` pre-fills testInput;
+    `runTest` branches on descriptor.kind for image path;
+    `describeImageOutcome` helper
+  - `SettingsWindow.swift` — `openEditor` routes by customAI
+    membership instead of concrete type, fixes image-action dialog
+    opening as Built-in
+
+### 0.32.0 — AI image transformations (Sketch / Watercolor / Cartoon)
+
+User request: at least 2-3 AI image transformations like "pencil sketch
+in the style of Sketch". User picked: 3 styles to ship initially, route
+through the *default* AI provider (transparent to the user), surface in
+HUD preview pane as regular AI actions.
+
+**Unified architecture — text + image AI share one descriptor**
+
+First-cut implementation (a discarded draft) hardcoded the 3 styles as
+`builtin.ai_image_*` actions in a dedicated `AIImageActionsPack`. User
+flagged the inconsistency: text AI actions (Translate, Fix grammar, …)
+are seeded as editable `CustomAIDescriptor` entries with `user.*` IDs,
+visible in Settings → Actions → AI with a prompt textarea and a
+per-action provider picker. Image styles should follow the same
+philosophy so the user can:
+
+  - Edit the prompt to taste ("make the sketch darker", "add a sepia
+    tint to the watercolor", …)
+  - Switch the per-action provider (default vs explicit)
+  - Rename the action
+  - Clone any seeded style into their own ("Stained glass", "Oil paint",
+    "1990s anime") by editing prompt + giving the descriptor a new id
+
+**What ships**
+
+`CustomAIDescriptor` grows a `kind: Kind` enum field with cases `.text`
+and `.image`. Decodes default to `.text` so pre-0.32.0 `actions.json`
+files load unchanged. Three new descriptors land via
+`DefaultAISeed.defaults()` (currentSeedVersion bumped 2 → 3):
+
+  - `user.ai_image_sketch` — "AI: Pencil sketch"
+  - `user.ai_image_watercolor` — "AI: Watercolor"
+  - `user.ai_image_cartoon` — "AI: Cartoon"
+
+All three appear in Settings → Actions → AI alongside Translate /
+Summarize / Fix grammar, fully editable through the existing AI editor.
+Existing users on 0.31.x get them appended on next launch via the
+standard seed-version migration; brand-new installs get them at first
+launch.
+
+**Materialisation**
+
+`ActionRegistry.rebuildCustomAI` switches on `desc.kind`:
+  - `.text` → instantiates an `AIAction` (existing path, unchanged)
+  - `.image` → instantiates an `AIImageAction`
+
+Both action types share the same `(id, title, promptTemplate,
+providerID)` shape so the Settings editor doesn't need a kind-specific
+form — image entries reuse the same prompt textarea and provider
+picker the user already knows from Translate.
+
+**AIImageAction shape**
+
+`isLocal == false` puts it on the same code path as text `AIAction` in
+`main.swift / refreshPreview`: HUD shows the in-flight panel
+(provider · model · elapsed), `aiStreamingTask` drives cancellation,
+deferred-paste handoff on ⌥⌘ release works the same way. The image
+API doesn't stream tokens, so `applyStreaming` falls back to `apply`;
+the only "stream" is the elapsed counter ticking up.
+
+`isApplicable` is hardcoded to image clips (`context.contains(.image)`
+or rich-text with embedded image) regardless of what the descriptor's
+`applicableTypes` lists. Storing `applicableTypes = ["image"]` in the
+descriptor keeps the Codable shape uniform; the value is informational
+for `.image` entries.
+
+**Provider routing — v1 scope**
+
+`AIImageAction.resolveProvider`:
+  1. If `providerID` is set → that explicit provider.
+  2. Else → registry's `defaultProvider`.
+  3. Validate the resolved provider's `.kind == .openai` (currently
+     the only kind whose endpoint exposes `/v1/images/edits`).
+  4. Validate API key present in Keychain/fallback.
+
+Failure at any step returns a clear `ApplyOutcome.failed` recommending
+the user add an OpenAI key. Future expansion (per-kind routing for
+Gemini 2.5 Flash Image, Replicate's Flux/SDXL via OpenRouter
+multimodal, etc.) is a one-place switch on `cp.kind`.
+
+**HTTP**
+
+`AIImageHTTP.runEdit` performs the actual multipart POST to
+`https://api.openai.com/v1/images/edits` with `model=gpt-image-1`,
+`size=1024x1024`, `n=1`, the source PNG as the `image` field, and the
+descriptor's `promptTemplate` as the `prompt` field. Handles both
+`b64_json` and `url` response shapes. 90 s timeout, 4 MB source cap.
+
+**Cost**
+
+gpt-image-1 at 1024×1024 standard quality is ~$0.04/image. Pinned at
+n=1 and 1024×1024 (cheapest tier) so the per-call cost is predictable.
+Source images over 4 MB fail with a "chain Compress JPEG or Resize
+1920" message rather than handing the user an HTTP 413.
+
+**Runway of additional styles**
+
+The user can now add any of these themselves via the Settings AI
+editor (clone an existing image descriptor, edit the prompt, give it
+a new id). For the seed table we'd add similar `user.*` entries in
+`DefaultAISeed.defaults()` and bump `currentSeedVersion` again:
+
+  - Oil painting — visible brush texture, rich color depth
+  - Pixel art — 16-bit / 8-bit retro grid look
+  - Pop art (Warhol) — high-contrast duotone color blocks
+  - Line drawing / coloring book — clean outlines, blank fills
+  - Blueprint — white-on-blue technical drawing aesthetic
+  - Anime / manga — flat shading, distinctive eye treatment
+  - Charcoal — heavy smudge, dramatic high contrast
+  - Stained glass — black leading + jewel-tone panels
+  - Sticker — die-cut white border around isolated subject
+  - Vintage photo — sepia tone + period grain
+  - Caricature — exaggerated proportions
+  - Background removal — transparent PNG (mask workflow, separate
+    endpoint variant)
+
+Files:
+  - `ActionConfig.swift` — `CustomAIDescriptor.Kind` enum + decode default
+  - `Actions.swift` — `rebuildCustomAI` switches on `desc.kind`
+  - `AIProvider.swift` — `DefaultAISeed.defaults()` adds 3 image entries,
+    `currentSeedVersion` 2 → 3
+  - `AIImageActions.swift` — new (`AIImageAction` + `AIImageHTTP`)
+  - `main.swift` — removed `registry.register(AIImageActionsPack.all)`;
+    image actions now flow through `rebuildCustomAI`
+  - `CuratedDefaults.swift` — removed 3 `builtin.ai_image_*` entries
+    (they're customAI descriptors now, governed by their own `enabled` field)
+  - `AppBrand.swift` — version bump 0.31.1 → 0.32.0
+
+### 0.31.1 — HUD overlap regression: spinner-forever + two surfaces (region-capture stacking)
+
+User reported the 0.31.0 fix was incomplete. Symptoms with fast tap-
+and-release of a per-action hotkey: sometimes 2 HUDs visible at once,
+MiniHUD spinner keeps spinning indefinitely while the request
+"continues in the background".
+
+Root cause that 0.31.0 missed: the region-capture arm guard in
+`armRegionCapture()` checked `bigHUDPanel?.isVisible`,
+`pendingDeferredPasteApp`, and `aiStreamingTask` — but not
+`actionHotkeyTask`. The direct-trigger MiniHUD lives off
+`actionHotkeyTask`, not `aiStreamingTask`. So a fast ⌥⌘+letter tap
+(MiniHUD up, AI streaming on `actionHotkeyTask`) followed by bare ⌥⌘
+held alone for 400 ms would arm region capture, putting the cursor
+overlay + cheat sheet on screen *next to* the still-spinning MiniHUD.
+Two unrelated surfaces, AI continuing in the background, exactly what
+the user described.
+
+Defensive sweep, single commit:
+
+1. **Region-capture arm guard expanded.** `actionHotkeyTask`,
+   `bigHUDOpenTask`, and `MiniHUDController.shared.isVisible` are
+   now also checked. Any in-flight DrPaste state blocks region-
+   capture arm. Mutually exclusive surfaces by construction.
+2. **`bigHUDOpenTask` tracked.** The inner `Task { @MainActor in }`
+   inside `openBigHUDFocusedOnAction` was previously fire-and-forget
+   — rapid hold-preview fires could stack two parallel `simulateCopy`
+   polls racing to set `bigHUDState.actionIndex`. Now tracked,
+   cancelled before starting a new one, cleared on every exit path
+   plus an extra `Task.isCancelled` check after the await.
+3. **`openHUD`, `openBigHUDFocusedOnAction`, and
+   `openBigHUDFocusedOnCapturedImage` all do the same teardown
+   prologue.** Cancel `actionHotkeyTask`, `bigHUDOpenTask`,
+   `aiStreamingTask`, clear `pendingDeferredPasteApp`, hide MiniHUD.
+   Previously each path did a slightly different subset — region
+   capture's "open BigHUD on captured image" did none of it.
+4. **`closeBigHUD` clears `pendingDeferredPasteApp` + hides
+   MiniHUD.** Belt-and-braces: when BigHUD closes, no MiniHUD should
+   be left on screen. A late-arriving deferred-paste completion
+   handler used to be able to fire a paste behind the user's back
+   after they'd cancelled the BigHUD.
+5. **`MiniHUDController` gets generation tokens.** New
+   `ShowToken`-returning `show()` plus `hideIfOwner(_:)`. The
+   direct-trigger task captures the token at show time and uses it
+   on every cancellation branch so a cancelled task doesn't
+   accidentally hide a *successor's* MiniHUD (rapid same-hotkey
+   tap-tap: task N's MiniHUD replaced by task N+1's before task N
+   reaches its cancellation point).
+6. **`actionHotkeyDidFire` always hides MiniHUD on cancel
+   branches.** Previously the two `if Task.isCancelled { return }`
+   bailouts left MiniHUD on screen, trusting the caller to hide it.
+   With the token in hand, the task can do this safely without
+   nuking a replacement.
+
+Files:
+  - `main.swift` — guards, task tracking, prologue refactor in 3
+    BigHUD open paths, `closeBigHUD` hardening
+  - `MiniHUD.swift` — `ShowToken` + `hideIfOwner(_:)` + `isVisible`
+  - `AppBrand.swift` — version bump 0.31.0 → 0.31.1
+
 ### 0.31.0 — HUD overlap + stranded BigHUD + in-flight action cancellation
 
 User report: in heavy AI flows ("⌥⌘ hold → hotkey → ⌥⌘ release"

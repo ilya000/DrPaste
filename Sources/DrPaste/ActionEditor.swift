@@ -92,6 +92,12 @@ final class ActionEditorWindowController {
         w.delegate = delegate
         retainDelegate = delegate
         window = w
+        // Triple-layer focus assertion — accessory-app activation
+        // is sometimes blocked by macOS focus-stealing protection,
+        // so we cover all three handles (orderFrontRegardless,
+        // makeKeyAndOrderFront, NSApp.activate) so at least one
+        // reliably brings the window to the foreground.
+        w.orderFrontRegardless()
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -100,6 +106,28 @@ final class ActionEditorWindowController {
         window?.orderOut(nil)
         window = nil
         retainDelegate = nil
+    }
+
+    /// Bring the existing editor window to the front. No-op if no
+    /// window is open. Used by the Settings list's Edit button to
+    /// handle the re-click case: user already has the editor open,
+    /// switches back to Settings, clicks Edit on the SAME action —
+    /// the SwiftUI `onChange(of: editorContextKey)` doesn't fire
+    /// (string key unchanged) so `show()` never runs and the
+    /// window stays buried behind Settings. `raise()` is called
+    /// unconditionally on every Edit click so the window comes
+    /// forward whether the key changed or not.
+    ///
+    /// Belt-and-braces focus stack — accessory apps can have
+    /// `NSApp.activate(ignoringOtherApps:)` ignored by macOS focus-
+    /// stealing protection, so we layer `orderFrontRegardless` +
+    /// `makeKeyAndOrderFront` + `activate` so at least one
+    /// reliably wins.
+    func raise() {
+        guard let w = window else { return }
+        w.orderFrontRegardless()
+        w.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     /// Retain the delegate alongside the window — NSWindow.delegate is
@@ -193,19 +221,62 @@ struct ActionEditor: View {
     @State private var transformationParams: [String: String] = [:]
     @State private var aiPrompt: String = ""
     @State private var aiProviderID: String = "anthropic"
+    /// AI mode for the descriptor under construction: text-in/text-out
+    /// (default — Translate / Summarize / etc.) or image-in/image-out
+    /// (gpt-image-1 style transforms — Pencil sketch / Watercolor /
+    /// Cartoon / user-authored "Oil painting" / "Pop art" / …). UI
+    /// surfaces this as a segmented picker at the top of the AI
+    /// section. For `.editAI(desc)` contexts the picker reads the
+    /// descriptor's existing kind on load; for `.createNew` it
+    /// defaults to .text and the user flips before composing the
+    /// prompt.
+    @State private var aiKind: CustomAIDescriptor.Kind = .text
 
     // Test panel
     @State private var testInput: String = ""
-    @State private var testOutput: String = ""
     @State private var testRunning: Bool = false
+    /// Image-mode input for image-applicable actions (OCR, AI styles,
+    /// Grayscale, …). Populated on dialog open with either the user's
+    /// persisted custom image or a procedurally-generated sample.
+    /// User can drag-drop a new image onto the Input area to replace
+    /// it; the new image is copied to `AppStorage.imagesDir` and
+    /// persisted via `registry.setTestImageRel(_:forActionID:)`.
+    @State private var testImageItem: ClipboardItem? = nil
+    /// True when the editor should render an image preview in the
+    /// Input panel instead of the text editor. Set from
+    /// `registry.actionAcceptsImage(_:)` in loadInitialState.
+    @State private var testInputIsImage: Bool = false
+    /// Captured at dialog open via `loadInitialState` — the sample as it
+    /// stood before any user typing this session. Diffed against
+    /// `testInput` on Save to decide whether to persist a per-action
+    /// override: only deliberate changes go to disk.
+    @State private var originalTestSample: String? = nil
+    /// Outcome of the most recent `runTest`. Drives the new HUD-style
+    /// Output pane (spinner / failure notice / image preview / etc.)
+    /// in place of the old plain-text TextEditor mirror.
+    @State private var testOutcome: ApplyOutcome?
+    /// Inflight descriptor for AI actions — feeds the "Provider · Model
+    /// · 4.2s" line in the loading panel, same chrome as BigHUD and
+    /// MiniHUD use.
+    @State private var testInflight: AIInflight?
+    @State private var testElapsed: TimeInterval = 0
+    /// 10 Hz timer that ticks `testElapsed` while an AI test is running,
+    /// same chrome as BigHUD's `aiTickTimer`. Invalidated on completion.
+    @State private var testTickTimer: Timer?
 
     // Misc
     @State private var conflictMessage: String? = nil
     @State private var showRegexHelp: Bool = false
 
-    private let allTypes: [SemanticKind] = [
-        .text, .richText, .url, .email, .json, .code, .markdown, .table, .image, .pdf, .files
-    ]
+    /// User-facing content types — the same list the Settings
+    /// playground tabs use (single source of truth via
+    /// `SemanticKind.userVisibleKinds`). The "Applies to" checkbox
+    /// grid mirrors the tabs exactly: ticking a box means "include
+    /// this action under the tab for this content type AND fire it
+    /// when the focused clip is detected as this kind". Untick to
+    /// hide. No greyed-out auto-applicability check — the user
+    /// owns the decision.
+    private var allTypes: [SemanticKind] { SemanticKind.userVisibleKinds }
 
     private var isEditing: Bool {
         switch context {
@@ -407,47 +478,36 @@ struct ActionEditor: View {
             let columns = [GridItem(.adaptive(minimum: 110), spacing: 6)]
             LazyVGrid(columns: columns, alignment: .leading, spacing: 4) {
                 ForEach(allTypes, id: \.self) { type in
-                    let applicable = isTypeApplicable(type)
+                    // Every checkbox is freely toggleable — no
+                    // greyed-out "auto-detected as inapplicable"
+                    // state. The checkbox is the user's deliberate
+                    // choice: "this action belongs under the
+                    // <type> tab and fires for clips of that
+                    // semantic kind". Removing the disabled-greying
+                    // mirrors the Playground UI where every tab is
+                    // visible and equal-weight.
                     Toggle(isOn: Binding(
                         get: { applicableTypes.contains(type) },
                         set: { isOn in
-                            guard applicable else { return }
                             if isOn { applicableTypes.insert(type) }
                             else { applicableTypes.remove(type) }
                         }
                     )) {
                         Text(type.displayName)
                             .font(.system(size: 12))
-                            .foregroundStyle(applicable ? .primary : .tertiary)
                     }
                     .toggleStyle(.checkbox)
-                    .disabled(!applicable)
                 }
             }
         }
     }
 
-    /// #12: Is the action capable of handling this content type at all?
-    /// Inapplicable types are shown disabled and unchecked.
-    private func isTypeApplicable(_ type: SemanticKind) -> Bool {
-        switch kind {
-        case .builtin:
-            let id: String
-            if case .editBuiltin(let actionID, _, _) = context { id = actionID }
-            else if !builtinID.isEmpty { id = builtinID }
-            else { return true }
-            guard let action = registry.actions.first(where: { $0.id == id }) else { return true }
-            let sample = SettingsSamples.sample(for: type)
-            let ctx = ContextDetector.detect(sample)
-            return action.isApplicable(item: sample, context: ctx)
-        case .transformation:
-            // Text-based engines apply to text-based content. Image/files engines not yet defined.
-            return [.text, .richText, .markdown, .code, .table, .url, .email, .json].contains(type)
-        case .ai:
-            // AI prompts operate on text content. Images/PDF/files require extraction first.
-            return [.text, .richText, .markdown, .code, .url, .email, .json, .table].contains(type)
-        }
-    }
+    // `isTypeApplicable` was removed when the "Applies to" grid
+    // switched to fully-toggleable checkboxes — the user owns the
+    // decision instead of the editor inferring per-type capability
+    // and greying out boxes. The auto-inference for first-open
+    // preselection still lives in `inferApplicableTypes(builtinID:)`
+    // below; from then on the checkboxes are pure user state.
 
     // MARK: - Mode-specific config
 
@@ -726,29 +786,100 @@ struct ActionEditor: View {
     @ViewBuilder
     private var aiConfig: some View {
         VStack(alignment: .leading, spacing: 8) {
+            // Kind picker — text-in/text-out vs image-in/image-out.
+            // Picking Image flips the entire descriptor lane: prompt
+            // template hint changes to image-style, Input panel
+            // switches to image preview, applicableTypes locks to
+            // ["image"], runtime dispatches to AIImageAction →
+            // gpt-image-1. The user writes whatever prompt makes
+            // sense ("Convert to oil painting", "Add a soft blur",
+            // "Make it look like a 1920s photo") and the system
+            // routes it correctly.
             HStack {
-                Text("Provider:").font(.caption).foregroundStyle(.secondary)
+                Text("Operation:").font(.caption).foregroundStyle(.secondary)
                     .frame(width: 100, alignment: .leading)
-                Picker("", selection: $aiProviderID) {
-                    // Sentinel "" maps to "use whatever is set as default".
-                    let defaultName = AIProviderRegistry.shared.defaultProvider?.displayName
-                    Text("Default" + (defaultName.map { " (\($0))" } ?? "")).tag("")
-                    Divider()
-                    ForEach(AIProviderRegistry.shared.config.providers) { p in
-                        Text(p.displayName).tag(p.id)
-                    }
+                Picker("", selection: $aiKind) {
+                    Text("Text → text").tag(CustomAIDescriptor.Kind.text)
+                    Text("Text → image").tag(CustomAIDescriptor.Kind.textToImage)
+                    Text("Image → image").tag(CustomAIDescriptor.Kind.image)
                 }
-                .pickerStyle(.menu)
+                .pickerStyle(.segmented)
                 .labelsHidden()
+                .onChange(of: aiKind) { newKind in
+                    // Sync state that depends on kind. Three modes:
+                    //   - text       → text input, applicableTypes pickable
+                    //   - textToImage → text input, applicableTypes
+                    //                   defaults to text-bearing kinds
+                    //   - image      → image input panel, applicableTypes
+                    //                   locked to [.image]
+                    switch newKind {
+                    case .image:
+                        applicableTypes = [.image]
+                        testInputIsImage = true
+                        if testImageItem == nil {
+                            testImageItem = ActionTestSamples.makeSampleImageItem()
+                        }
+                    case .textToImage:
+                        // Default to text-content kinds for text→image —
+                        // user can untick what they don't want. Don't
+                        // reset if they've already chosen something.
+                        if applicableTypes.isEmpty || applicableTypes == [.image] {
+                            applicableTypes = [.text, .markdown, .richText, .code]
+                        }
+                        testInputIsImage = false
+                    case .text:
+                        if applicableTypes == [.image] {
+                            applicableTypes = [.text, .markdown, .richText]
+                        }
+                        testInputIsImage = false
+                    }
+                    // Re-pin the Provider picker selection to a
+                    // provider that can actually run THIS operation.
+                    // Without this, switching text → image leaves the
+                    // selection on (say) Anthropic, which can't run
+                    // images at all — the soft-fallback would still
+                    // route correctly but the picker would visibly
+                    // lie about who's about to fire.
+                    autoSelectProviderForCurrentKind()
+                }
             }
-            if aiProviderID.isEmpty {
+            if aiKind == .image {
                 HStack(spacing: 4) {
                     Spacer().frame(width: 100)
-                    Text("This action follows the default provider. Change the default in Settings → AI and this action follows automatically.")
+                    Text("Image → image: edits an existing image (clipboard) using your prompt. Runs on OpenAI (gpt-image-1), Google Gemini (gemini-2.5-flash-image-preview), OpenRouter (image-capable model), or a Custom OpenAI-compatible endpoint. The Provider picker below is filtered to image-capable kinds.")
                         .font(.caption2).foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            if aiKind == .textToImage {
+                HStack(spacing: 4) {
+                    Spacer().frame(width: 100)
+                    Text("Text → image: generates a NEW image from clipboard text + your prompt. Use \"{input}\" in your prompt to mark where the clipboard text goes; otherwise it's appended at the end. Same provider lineup as Image → image.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            providerPickerRow
+
+            // "Effective provider" hint under the picker. Two flavours:
+            //
+            //   • Default is picked AND it works for this operation →
+            //     "Resolves to <resolved.displayName> (the current
+            //     default)" so the user sees the actual brand the
+            //     action will hit.
+            //
+            //   • Default is picked but the default can't run this
+            //     operation (image mode + Anthropic default) → soft
+            //     fallback finds an image-capable provider → "Default
+            //     (<chat default>) can't run image actions. Falling
+            //     back to <resolved.displayName>." so the user
+            //     understands why the badge shows a different brand
+            //     than the chat default.
+            //
+            //   • No working provider at all (image mode + zero
+            //     image-capable providers configured) → orange warning
+            //     pointing them to Settings → AI.
+            providerHintRow
             // #7 Templates menu — quick-fill prompt from common patterns
             HStack {
                 Text("Templates:").font(.caption).foregroundStyle(.secondary)
@@ -774,10 +905,389 @@ struct ActionEditor: View {
                 .font(.system(.body, design: .monospaced))
                 .frame(minHeight: 100, maxHeight: 160)
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
-            Text("Tip: write what the AI should do with the input. The clipboard text is automatically passed as the user message.")
-                .font(.caption2).foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
+            // Tip text adapts to the kind so the user knows what
+            // the prompt is actually being applied to.
+            if aiKind == .image {
+                Text("Tip: describe how the AI should re-render the image. Examples: \"Convert to oil painting with thick visible brushstrokes\", \"Add a soft vignette and warm sepia tone\", \"Make it look like a 1920s sepia photograph\". The source image is passed as the `image` input to gpt-image-1.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Tip: write what the AI should do with the input. The clipboard text is automatically passed as the user message.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+    }
+
+    // MARK: - Provider picker
+
+    /// Provider row — label with the effective provider's brand
+    /// icon, then a menu picker listing EVERY configured provider.
+    /// Image-mode disables the rows that can't run image edits
+    /// (they're greyed out but still visible so the user sees the
+    /// full lineup and understands what's available vs not).
+    @ViewBuilder
+    private var providerPickerRow: some View {
+        HStack {
+            HStack(spacing: 6) {
+                Text("Provider:").font(.caption).foregroundStyle(.secondary)
+                // Brand icon of the EFFECTIVE resolved provider
+                // (per-action override → default → image-capable
+                // soft fallback). Tells the user at a glance which
+                // brand the action will hit — particularly important
+                // when "Default" doesn't work for the operation and
+                // the soft fallback rerouted to a different provider.
+                if let effective = effectiveProvider() {
+                    Image(systemName: effective.kind.iconName)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(effective.kind.brandColor)
+                        .frame(width: 16, height: 16)
+                        .background(Circle().fill(effective.kind.brandColor.opacity(0.18)))
+                } else {
+                    // No working provider for this operation —
+                    // small orange warning glyph in the lookup
+                    // position so the row visually flags the
+                    // missing config.
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.orange)
+                        .frame(width: 16, height: 16)
+                }
+            }
+            .frame(width: 100, alignment: .leading)
+
+            // Custom menu picker — built by hand instead of SwiftUI's
+            // `Picker` because we want to disable individual entries
+            // (per-provider) without filtering them out. SwiftUI's
+            // built-in Picker doesn't expose a per-row `.disabled()`
+            // hook, so we use a Menu with Buttons and an explicit
+            // selection-mirroring label.
+            Menu {
+                // Default sentinel — always available. Its label
+                // shows the effective resolved provider so the user
+                // sees what "Default" actually means right now.
+                Button {
+                    aiProviderID = ""
+                } label: {
+                    HStack {
+                        Text("Default" + defaultEffectiveSuffix)
+                        if aiProviderID.isEmpty {
+                            Spacer()
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+                Divider()
+                // Every configured provider — disabled when the
+                // current operation needs image-edit capability the
+                // provider doesn't have. Still visible so the user
+                // sees the full lineup and knows what's available.
+                ForEach(AIProviderRegistry.shared.config.providers) { p in
+                    let needsImage = (aiKind == .image || aiKind == .textToImage)
+                    let usable = !needsImage || p.kind.supportsImageEdit
+                    Button {
+                        if usable { aiProviderID = p.id }
+                    } label: {
+                        HStack {
+                            Image(systemName: p.kind.iconName)
+                                .foregroundStyle(p.kind.brandColor)
+                            Text(p.displayName)
+                            if !usable {
+                                Text("— no image support")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            if aiProviderID == p.id {
+                                Spacer()
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                    .disabled(!usable)
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(currentPickerLabel)
+                    // Reroute warning glyph — appears only when the
+                    // chip is showing a provider OTHER than what the
+                    // user nominally picked (broken explicit, or
+                    // Default sentinel landing on a non-default
+                    // provider because chat default can't run the
+                    // operation). Visible cue that the system
+                    // self-corrected so the user isn't surprised
+                    // when the Preview HUD names a brand they
+                    // didn't choose.
+                    if isProviderRerouted {
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.orange)
+                            .help(rerouteTooltip)
+                    }
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(RoundedRectangle(cornerRadius: 5)
+                    .fill(Color.primary.opacity(0.06)))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            Spacer()
+        }
+    }
+
+    /// True when what the user picked in the menu doesn't match
+    /// what's actually going to run. Two reroute scenarios:
+    ///   • Explicit override is missing, disabled, or wrong-
+    ///     capability — runtime soft-falls back to a different
+    ///     provider.
+    ///   • Default sentinel selected, but chat default can't run
+    ///     the current operation (e.g. Anthropic + image action)
+    ///     — runtime reroutes to a different provider.
+    private var isProviderRerouted: Bool {
+        let cfg = AIProviderRegistry.shared.config
+        let needsImage = (kind == .ai && (aiKind == .image || aiKind == .textToImage))
+        guard let effective = effectiveProvider() else { return false }
+        if !aiProviderID.isEmpty {
+            // Explicit override broken if it doesn't exist, is
+            // disabled, or lacks the needed capability.
+            if let cp = cfg.providers.first(where: { $0.id == aiProviderID }),
+               cp.enabled, (!needsImage || cp.kind.supportsImageEdit) {
+                return false
+            }
+            return true
+        }
+        // Default sentinel — rerouted when chat default differs
+        // from the effective resolved provider.
+        if let chatDefault = AIProviderRegistry.shared.defaultProvider {
+            return chatDefault.id != effective.id
+        }
+        return false
+    }
+
+    /// Tooltip for the reroute glyph — explains WHY the chip is
+    /// showing a different provider than the menu selection.
+    private var rerouteTooltip: String {
+        let cfg = AIProviderRegistry.shared.config
+        let needsImage = (kind == .ai && (aiKind == .image || aiKind == .textToImage))
+        let effective = effectiveProvider()
+        let effectiveName = effective?.displayName ?? "—"
+        if !aiProviderID.isEmpty {
+            if let cp = cfg.providers.first(where: { $0.id == aiProviderID }) {
+                if !cp.enabled {
+                    return "Picked provider “\(cp.displayName)” is disabled. Routed to \(effectiveName) instead."
+                }
+                if needsImage && !cp.kind.supportsImageEdit {
+                    return "Picked provider “\(cp.displayName)” can't run image operations. Routed to \(effectiveName) instead."
+                }
+            } else {
+                return "Picked provider no longer exists. Routed to \(effectiveName) instead."
+            }
+        }
+        // Default sentinel reroute.
+        if let chatDefault = AIProviderRegistry.shared.defaultProvider {
+            return "Default chat provider “\(chatDefault.displayName)” can't run this. Routed to \(effectiveName) instead."
+        }
+        return "Routed to \(effectiveName)."
+    }
+
+    /// Hint paragraph shown beneath the Provider picker. Four states:
+    ///   • Orange "no image-capable provider at all" — nothing in
+    ///     the registry can satisfy this operation.
+    ///   • Orange reroute notice — Default sentinel or explicit
+    ///     override picked something that can't run; system
+    ///     auto-routed to a working provider.
+    ///   • Grey "Default resolves to X" — Default sentinel works
+    ///     fine; just spelling out who that is.
+    ///   • Hidden — explicit override is working as picked, no
+    ///     need to comment.
+    @ViewBuilder
+    private var providerHintRow: some View {
+        let cfg = AIProviderRegistry.shared.config
+        let needsImage = (aiKind == .image || aiKind == .textToImage)
+        let effective = effectiveProvider()
+        if needsImage && effective == nil {
+            HStack(spacing: 4) {
+                Spacer().frame(width: 100)
+                Label(
+                    "No image-capable provider configured. Add OpenAI, Gemini, OpenRouter, or a Custom OpenAI-compatible endpoint in Settings → AI.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption2)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        } else if let effective = effective, isProviderRerouted {
+            // Explicit override or Default rerouted — spell out the
+            // why so the orange glyph on the chip has context.
+            HStack(spacing: 4) {
+                Spacer().frame(width: 100)
+                if !aiProviderID.isEmpty {
+                    // Explicit override broken.
+                    if let cp = cfg.providers.first(where: { $0.id == aiProviderID }) {
+                        Text("Picked provider “\(cp.displayName)” \(brokenExplicitReason(cp: cp, needsImage: needsImage)). Routed to \(effective.displayName).")
+                            .font(.caption2).foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text("Picked provider no longer exists. Routed to \(effective.displayName).")
+                            .font(.caption2).foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else if let chatDefault = AIProviderRegistry.shared.defaultProvider {
+                    // Default sentinel rerouted.
+                    Text("Default chat provider (\(chatDefault.displayName)) can't run this. Routed to \(effective.displayName).")
+                        .font(.caption2).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        } else if aiProviderID.isEmpty, let effective = effective {
+            // Default sentinel works fine — just label who that is.
+            HStack(spacing: 4) {
+                Spacer().frame(width: 100)
+                Text("Resolves to \(effective.displayName). Change the default in Settings → AI to switch.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// Label shown inside the Menu's selected-value chip.
+    ///
+    /// Strict-truth rule: the chip MUST name the provider that
+    /// will actually fire the request, not whatever sentinel is
+    /// stored in `aiProviderID`. The user gets ONE consistent
+    /// story across the chip, the leading icon, the hint row,
+    /// and the Preview HUD — if any of these three disagree we've
+    /// lied about what's about to happen.
+    ///
+    /// Three cases:
+    ///   1. Explicit override picks an enabled, capability-matching
+    ///      provider → show its name straight.
+    ///   2. Explicit override picks a missing / disabled / non-
+    ///      image-capable provider → show the effective fallback's
+    ///      name, NOT the broken explicit (the chip would otherwise
+    ///      lie). The hint row + icon will flag this as a reroute.
+    ///   3. Default sentinel → show "Default · <effective-name>"
+    ///      where the effective name is what the runtime chain
+    ///      actually lands on (chat default if usable, otherwise
+    ///      cheapest image-capable). The sentinel ITSELF in the
+    ///      dropdown still names the chat default (see
+    ///      `defaultEffectiveSuffix`) — that's the "what would
+    ///      happen if you re-pick Default" view — but the chip
+    ///      shows what's happening NOW.
+    private var currentPickerLabel: String {
+        let cfg = AIProviderRegistry.shared.config
+        let needsImage = (kind == .ai && (aiKind == .image || aiKind == .textToImage))
+        // Case 1 — explicit override is usable as-is.
+        if !aiProviderID.isEmpty,
+           let cp = cfg.providers.first(where: { $0.id == aiProviderID }),
+           cp.enabled,
+           (!needsImage || cp.kind.supportsImageEdit) {
+            return cp.displayName
+        }
+        // Case 3 — Default sentinel selected (aiProviderID empty).
+        if aiProviderID.isEmpty {
+            if let effective = effectiveProvider() {
+                return "Default · \(effective.displayName)"
+            }
+            return "Default"
+        }
+        // Case 2 — explicit override is broken (missing/disabled/
+        // wrong capability). Don't lie; surface the fallback.
+        if let effective = effectiveProvider() {
+            return effective.displayName
+        }
+        return "—"
+    }
+
+    /// " (Anthropic Claude)" or similar suffix appended after the
+    /// word "Default" inside the dropdown. Computed from the live
+    /// chat default — not the image-fallback resolution — because
+    /// inside the menu we want to surface what "Default" maps to
+    /// in the registry, not the image-action override.
+    private var defaultEffectiveSuffix: String {
+        if let d = AIProviderRegistry.shared.defaultProvider {
+            return " (\(d.displayName))"
+        }
+        return ""
+    }
+
+    /// Repair the Provider picker selection. NEVER silently pins
+    /// an explicit override — that would change the action's
+    /// long-term routing (jumping off Default sentinel means the
+    /// action stops following Settings → AI changes, and stops
+    /// taking advantage of newly-added cheaper providers). The
+    /// only mutation we do is reset a BROKEN explicit (missing /
+    /// disabled / wrong-capability) back to the Default sentinel
+    /// so the picker doesn't sit on a stale ID.
+    ///
+    /// Showing the actual worker provider to the user is the chip
+    /// label's job — `currentPickerLabel` reads "Default · OpenAI"
+    /// when Default resolves to OpenAI via the soft fallback. The
+    /// reroute glyph + hint row spell out WHY.
+    @MainActor
+    private func autoSelectProviderForCurrentKind() {
+        guard !aiProviderID.isEmpty else { return }
+        let cfg = AIProviderRegistry.shared.config
+        let needsImage = (kind == .ai && (aiKind == .image || aiKind == .textToImage))
+        // If the explicit override is still valid for the current
+        // operation, leave the user's choice alone.
+        if let cp = cfg.providers.first(where: { $0.id == aiProviderID }),
+           cp.enabled,
+           (!needsImage || cp.kind.supportsImageEdit) {
+            return
+        }
+        // Otherwise drop back to Default sentinel. The label, icon,
+        // reroute glyph and hint will tell the user what's actually
+        // running now (without re-pinning that as a stored override).
+        aiProviderID = ""
+    }
+
+    /// Plain-English why this explicit override doesn't work for
+    /// the current operation. Used by `providerHintRow` and
+    /// `rerouteTooltip` so the user gets the same phrasing in
+    /// both surfaces. Pulled out of the `@ViewBuilder` body
+    /// because Swift's result-builder doesn't tolerate plain
+    /// assignments inside its branches.
+    private func brokenExplicitReason(cp: ConfiguredProvider, needsImage: Bool) -> String {
+        if !cp.enabled { return "is disabled" }
+        if needsImage && !cp.kind.supportsImageEdit { return "can't run image actions" }
+        return "isn't usable"
+    }
+
+    /// Walk the same resolution chain `AIImageAction.resolveProvider`
+    /// uses at runtime so the UI shows the real provider that will
+    /// fire when the user clicks Run. For text-only actions there's
+    /// no capability gate — every configured provider qualifies, so
+    /// the default wins outright.
+    private func effectiveProvider() -> ConfiguredProvider? {
+        let cfg = AIProviderRegistry.shared.config
+        let needsImage = (aiKind == .image || aiKind == .textToImage)
+        // 1. Per-action explicit override wins if it's usable.
+        if !aiProviderID.isEmpty,
+           let cp = cfg.providers.first(where: { $0.id == aiProviderID }),
+           cp.enabled,
+           (!needsImage || cp.kind.supportsImageEdit) {
+            return cp
+        }
+        // 2. Configured default — usable when no operation gate or
+        //    when the default itself supports image edits.
+        if let defaultID = cfg.defaultProviderID,
+           let cp = cfg.providers.first(where: { $0.id == defaultID }),
+           cp.enabled,
+           (!needsImage || cp.kind.supportsImageEdit) {
+            return cp
+        }
+        // 3. Soft fallback — for image operations only, pick the
+        //    cheapest enabled image-capable provider. Matches the
+        //    runtime AIImageAction.resolveProvider chain (which
+        //    also walks providers in cost-rank order).
+        if needsImage {
+            return AIProviderRegistry.shared.cheapestEnabledImageProvider()
+        }
+        // 4. For text-only operations, any enabled provider works.
+        return cfg.providers.first { $0.enabled }
     }
 
     // MARK: - Test panel
@@ -794,23 +1304,113 @@ struct ActionEditor: View {
             }
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Input").font(.caption2).foregroundStyle(.secondary)
-                    TextEditor(text: $testInput)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(height: 70)
-                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+                    HStack(spacing: 4) {
+                        Text("Input").font(.caption2).foregroundStyle(.secondary)
+                        if testInputIsImage {
+                            Spacer()
+                            // Reset only enabled when the user has a
+                            // persisted custom image — otherwise the
+                            // procedural sample is already in effect.
+                            if let id = currentActionID,
+                               registry.testImageRel(forActionID: id) != nil {
+                                Button("Reset") { resetTestImageToProcedural() }
+                                    .controlSize(.mini)
+                                    .buttonStyle(.borderless)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    if testInputIsImage {
+                        testImageInputView
+                    } else {
+                        TextEditor(text: $testInput)
+                            .font(.system(.body, design: .monospaced))
+                            .frame(height: 160)
+                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+                    }
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Output").font(.caption2).foregroundStyle(.secondary)
-                    TextEditor(text: .constant(testOutput))
-                        .font(.system(.body, design: .monospaced))
-                        .frame(height: 70)
-                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
+                    // onRun makes the empty-state play glyph a real
+                    // button — click anywhere in the Output pane to
+                    // fire the test. Mirrors the toolbar "Run test"
+                    // button so the user can reach for whichever
+                    // affordance is closer to their pointer.
+                    TestOutputPane(
+                        outcome: testOutcome,
+                        isRunning: testRunning,
+                        inflight: testInflight,
+                        elapsed: testElapsed,
+                        actionTitle: title.isEmpty ? nil : title,
+                        onRun: { runTest() }
+                    )
+                    .frame(height: 160)
+                    .frame(maxWidth: .infinity)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
                 }
             }
         }
         .padding(.horizontal, 20).padding(.vertical, 12)
         .background(Color.primary.opacity(0.02))
+    }
+
+    /// Image preview for image-applicable actions. Renders the current
+    /// `testImageItem` via the same `ImagePreview` view BigHUD uses,
+    /// with a drop-target overlay so the user can drag a different
+    /// image file in to replace the sample.
+    @ViewBuilder
+    private var testImageInputView: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 4)
+                .stroke(Color.secondary.opacity(0.3))
+            if let item = testImageItem {
+                ImagePreview(item: item)
+                    .padding(4)
+            } else {
+                VStack(spacing: 6) {
+                    Image(systemName: "photo")
+                        .font(.system(size: 22))
+                        .foregroundStyle(.secondary)
+                    Text("Drop an image here")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(height: 160)
+        .onDrop(of: ["public.file-url", "public.image"], isTargeted: nil) { providers in
+            guard let provider = providers.first else { return false }
+            // file-url path — user dragged a file from Finder.
+            if provider.hasItemConformingToTypeIdentifier("public.file-url") {
+                provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
+                    var fileURL: URL?
+                    if let data = item as? Data,
+                       let url = URL(dataRepresentation: data, relativeTo: nil) {
+                        fileURL = url
+                    } else if let url = item as? URL {
+                        fileURL = url
+                    }
+                    if let url = fileURL {
+                        DispatchQueue.main.async { handleDroppedImage(at: url) }
+                    }
+                }
+                return true
+            }
+            // raw image — user dragged from another app's image canvas.
+            // Materialise to a tmp file then run through the same
+            // re-encode/persist path. Less common than file-URL drops.
+            if provider.hasItemConformingToTypeIdentifier("public.image") {
+                provider.loadDataRepresentation(forTypeIdentifier: "public.image") { data, _ in
+                    guard let data = data else { return }
+                    let tmp = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("drpaste-drop-\(UUID().uuidString).png")
+                    try? data.write(to: tmp)
+                    DispatchQueue.main.async { handleDroppedImage(at: tmp) }
+                }
+                return true
+            }
+            return false
+        }
     }
 
     // MARK: - Footer
@@ -897,7 +1497,151 @@ struct ActionEditor: View {
             applicableTypes = Set(d.applicableTypes.compactMap { SemanticKind(rawValue: $0) })
             aiPrompt = d.promptTemplate
             aiProviderID = d.providerID
+            aiKind = d.kind     // image-mode picker honours existing descriptor
         }
+        // Pre-fill the Test panel Input. Two render modes:
+        //
+        //   • Image-applicable actions (OCR / Grayscale / AI: Watercolor
+        //     / …) — Input panel shows an actual image, not text.
+        //     Priority for the image: user's persisted custom image,
+        //     then a procedurally-generated sample.
+        //
+        //   • Everything else — Input panel shows a TextEditor.
+        //     Priority: user's persisted text override, curated default,
+        //     empty (user-defined actions with no example yet).
+        if let id = currentActionID {
+            // Image-mode actions take their own branch.
+            if isImageActionID(id) {
+                testInputIsImage = true
+                if let rel = registry.testImageRel(forActionID: id),
+                   FileManager.default.fileExists(atPath:
+                        AppStorage.imagesDir.appendingPathComponent(rel).path) {
+                    testImageItem = imageItemFromRel(rel)
+                } else {
+                    testImageItem = ActionTestSamples.makeSampleImageItem()
+                }
+                // We still call testSample for the placeholder string so
+                // it shows under the image (or in the descriptive text
+                // for action types that have both).
+                let sample = registry.testSample(forActionID: id)
+                originalTestSample = sample
+                testInput = sample ?? ""
+            } else if testInput.isEmpty {
+                testInputIsImage = false
+                let sample = registry.testSample(forActionID: id)
+                originalTestSample = sample
+                testInput = sample ?? ""
+            }
+        }
+        // Pin Provider picker to a working provider for the loaded
+        // action's mode. Without this the picker chip in image mode
+        // would show "Default · Anthropic Claude" while runtime
+        // soft-falls back to OpenAI — visible lie.
+        autoSelectProviderForCurrentKind()
+    }
+
+    /// Whether the action being edited accepts image INPUT (and so
+    /// the Input panel renders an image-preview drop target instead
+    /// of a text editor). Image→image actions take an image in;
+    /// text→image takes text in (no image preview needed) even
+    /// though the output is an image.
+    @MainActor
+    private func isImageActionID(_ id: String) -> Bool {
+        // AI image (image→image) — honour the live `aiKind` picker.
+        // textToImage stays text-input so it falls through to the
+        // text editor path below.
+        if kind == .ai && aiKind == .image { return true }
+        // Built-in / transformation actions — probe via registry helper
+        // (uses isApplicable against a synthetic image clip).
+        return registry.actionAcceptsImage(id)
+    }
+
+    /// Build a transient ClipboardItem pointing at an existing image
+    /// file in `AppStorage.imagesDir`. Used to load a previously-
+    /// persisted custom test image back into the editor.
+    @MainActor
+    private func imageItemFromRel(_ rel: String) -> ClipboardItem? {
+        let url = AppStorage.imagesDir.appendingPathComponent(rel)
+        guard let data = try? Data(contentsOf: url),
+              let img = NSImage(data: data) else { return nil }
+        // Also write to blobs/ so PasteboardWriter / image actions
+        // that look up `public.png` representation find the bytes.
+        let blobName = rel + ".bin"
+        let blobURL = AppStorage.blobsDir.appendingPathComponent(blobName)
+        try? data.write(to: blobURL)
+        let s = img.size
+        let (w, h): (Int, Int) = {
+            if let rep = img.representations.first {
+                return (rep.pixelsWide, rep.pixelsHigh)
+            }
+            return (Int(s.width), Int(s.height))
+        }()
+        return ClipboardItem(
+            id: UUID(),
+            semantic: .image,
+            createdAt: Date(),
+            representations: ["public.png": blobName],
+            typesOrdered: ["public.png"],
+            previewText: "Custom test image \(data.count / 1024) KB",
+            previewImageRel: rel,
+            originalImageWidth: w,
+            originalImageHeight: h,
+            originalImageFileSize: data.count,
+            imageFormat: "PNG",
+            sourceBundleID: nil,
+            sourceAppName: "Editor Test",
+            sourceWindowTitle: nil,
+            tags: []
+        )
+    }
+
+    /// Drag-drop handler. Copies the dropped image file into
+    /// `AppStorage.imagesDir` under a stable per-action filename so
+    /// repeated drops overwrite cleanly, then refreshes the in-
+    /// memory `testImageItem` and persists the rel via
+    /// `registry.setTestImageRel`.
+    @MainActor
+    private func handleDroppedImage(at sourceURL: URL) {
+        guard let id = currentActionID else { return }
+        // Sanity-check the file is a readable image format.
+        guard let data = try? Data(contentsOf: sourceURL),
+              NSImage(data: data) != nil else { return }
+        // Re-encode JPEG / HEIC / etc to PNG so the standard
+        // previewImageRel-as-PNG assumption holds throughout the
+        // image-action paths. PNG is also what gpt-image-1 wants.
+        let pngData: Data = {
+            if data.count > 8,
+               data[0] == 0x89, data[1] == 0x50, data[2] == 0x4E, data[3] == 0x47 {
+                return data
+            }
+            if let img = NSImage(data: data),
+               let tiff = img.tiffRepresentation,
+               let bmp = NSBitmapImageRep(data: tiff),
+               let png = bmp.representation(using: .png, properties: [:]) {
+                return png
+            }
+            return data
+        }()
+        let slug = id.replacingOccurrences(of: ".", with: "_")
+        let rel = "drpaste-custom-sample-\(slug).png"
+        let url = AppStorage.imagesDir.appendingPathComponent(rel)
+        do {
+            try pngData.write(to: url, options: .atomic)
+        } catch {
+            return
+        }
+        registry.setTestImageRel(rel, forActionID: id)
+        testImageItem = imageItemFromRel(rel)
+    }
+
+    /// "Reset to default" — drop the user's custom image override and
+    /// regenerate the procedural sample. Bound to the small "Reset"
+    /// button under the image preview.
+    @MainActor
+    private func resetTestImageToProcedural() {
+        guard let id = currentActionID else { return }
+        registry.setTestImageRel(nil, forActionID: id)
+        testImageItem = ActionTestSamples.makeSampleImageItem()
     }
 
     private func inferApplicableTypes(builtinID: String) -> Set<SemanticKind> {
@@ -963,51 +1707,125 @@ struct ActionEditor: View {
             registry.setHotkey(hotkey, for: targetID)
 
         case .ai:
+            // `aiKind` is the source of truth — picker at the top of
+            // the AI section sets it on .createNew, and loadInitialState
+            // reads it from the descriptor on .editAI(desc). The user
+            // can flip kind at any time and Save honours their choice.
+            // applicableTypes is force-set to ["image"] when the user
+            // picks Image mode (image-AI routing ignores the field
+            // anyway, but storing the matching value keeps actions.json
+            // self-consistent).
+            let resolvedApplicableTypes: [String] =
+                aiKind == .image ? ["image"] : appliesArray
             let descriptor = CustomAIDescriptor(
                 id: targetID,
                 title: trimmedTitle,
                 promptTemplate: aiPrompt,
                 providerID: aiProviderID,
-                applicableTypes: appliesArray,
-                enabled: true
+                applicableTypes: resolvedApplicableTypes,
+                enabled: true,
+                kind: aiKind
             )
             registry.upsertCustomAI(descriptor)
             registry.setHotkey(hotkey, for: targetID)
+        }
+        // Persist the test-panel Input sample only if the user actually
+        // modified it this session. Diffing against the originalTestSample
+        // captured at dialog open avoids writing a stale curated-default
+        // value back as an override (which would freeze it against
+        // future updates to the curated table). The registry helper
+        // further normalises by removing the override when the new
+        // value matches the current curated default — so an explicit
+        // "type the curated text back in" gesture also clears any
+        // prior stale override.
+        if testInput != (originalTestSample ?? "") {
+            registry.setTestSample(testInput, forActionID: targetID)
         }
         onClose()
     }
 
     private func runTest() {
         testRunning = true
-        testOutput = ""
+        testOutcome = nil
+        testInflight = nil
+        testElapsed = 0
+        testTickTimer?.invalidate()
+        testTickTimer = nil
 
-        let inputItem = ClipboardItem(
-            id: UUID(),
-            semantic: .text,
-            createdAt: Date(),
-            representations: [:],
-            typesOrdered: [],
-            previewText: testInput,
-            previewImageRel: nil,
-            sourceBundleID: nil,
-            sourceAppName: "Editor Test",
-            sourceWindowTitle: nil,
-            tags: []
-        )
+        // Build the input clip. Three modes:
+        //
+        //   • Image actions      — use `testImageItem` (persisted
+        //                          custom or procedural sample).
+        //   • Rich-text actions  — parse `testInput` as markdown,
+        //                          synthesise an RTF blob, build a
+        //                          .richText item with public.rtf
+        //                          representation. Without this the
+        //                          actions (rich_to_wiki / _md / _html
+        //                          / _unicode_style / paste_as_text /
+        //                          clean_formatting) get no RTF to
+        //                          read and produce trivial output.
+        //   • Everything else    — plain .text item with testInput
+        //                          as previewText.
+        let inputItem: ClipboardItem
+        if testInputIsImage {
+            if let img = testImageItem {
+                inputItem = img
+            } else if let img = ActionTestSamples.makeSampleImageItem() {
+                inputItem = img
+                testImageItem = img
+            } else {
+                testOutcome = .failed(
+                    original: makeTextProbe(),
+                    reason: "Couldn't generate sample image for the test.",
+                    recovery: nil
+                )
+                testRunning = false
+                return
+            }
+        } else if let id = currentActionID,
+                  registry.actionRequiresRichText(id),
+                  let rich = ActionTestSamples.makeRichTextItem(markdown: testInput) {
+            inputItem = rich
+        } else {
+            inputItem = ClipboardItem(
+                id: UUID(),
+                semantic: .text,
+                createdAt: Date(),
+                representations: [:],
+                typesOrdered: [],
+                previewText: testInput,
+                previewImageRel: nil,
+                sourceBundleID: nil,
+                sourceAppName: "Editor Test",
+                sourceWindowTitle: nil,
+                tags: []
+            )
+        }
         let ctx = ContextDetector.detect(inputItem)
+        // `aiKind` is the live source of truth — covers newly-created
+        // and existing image/text-to-image AI actions. Three modes:
+        //   - text       → AIAction text→text
+        //   - image      → AIImageAction image→image
+        //   - textToImage → AITextToImageAction text→image
+        let isImageAI: Bool = (kind == .ai && aiKind == .image)
+        let isTextToImageAI: Bool = (kind == .ai && aiKind == .textToImage)
 
         switch kind {
         case .builtin:
             guard let id = currentActionID,
                   let action = registry.actions.first(where: { $0.id == id }) else {
-                testOutput = "(no built-in selected)"
+                testOutcome = .failed(
+                    original: inputItem,
+                    reason: "No built-in selected.",
+                    recovery: nil
+                )
                 testRunning = false
                 return
             }
             Task {
                 let outcome = await action.apply(item: inputItem, context: ctx)
                 await MainActor.run {
-                    testOutput = describeOutcome(outcome)
+                    testOutcome = outcome
                     testRunning = false
                 }
             }
@@ -1016,39 +1834,195 @@ struct ActionEditor: View {
                 let result = try TransformationRuntime.apply(engine: transformationEngine,
                                                               input: testInput,
                                                               params: transformationParams)
-                testOutput = result
+                testOutcome = .preview(makeTextItem(result, from: inputItem))
             } catch let TransformationError.invalidRegex(msg) {
-                testOutput = "⚠ Invalid regex: \(msg)"
+                testOutcome = .failed(
+                    original: inputItem,
+                    reason: "Invalid regex: \(msg)",
+                    recovery: nil
+                )
             } catch {
-                testOutput = "⚠ \(error.localizedDescription)"
+                testOutcome = .failed(
+                    original: inputItem,
+                    reason: error.localizedDescription,
+                    recovery: nil
+                )
             }
             testRunning = false
         case .ai:
-            let action = AIAction(
-                id: "test.ai",
-                title: title.isEmpty ? "AI test" : title,
-                promptTemplate: aiPrompt,
-                providerID: aiProviderID,
-                applicableTypes: applicableTypes.isEmpty ? [.text] : applicableTypes
-            )
-            Task {
-                let outcome = await action.apply(item: inputItem, context: ctx)
-                await MainActor.run {
-                    testOutput = describeOutcome(outcome)
-                    testRunning = false
+            // Set up the AI inflight chrome so the Output pane shows the
+            // same "Provider · Model · 4.2s" loading state as BigHUD/MiniHUD.
+            // Resolve the provider label via AIProviderRegistry — same path
+            // AppDelegate.makeAIInflight uses for the HUD chrome.
+            let defaultTitle: String
+            if isImageAI { defaultTitle = "AI image test" }
+            else if isTextToImageAI { defaultTitle = "AI text→image test" }
+            else { defaultTitle = "AI test" }
+            testInflight = resolveTestInflight(actionTitle:
+                title.isEmpty ? defaultTitle : title)
+            startTestTickTimer()
+
+            let resolvedProviderID: String? = aiProviderID.isEmpty ? nil : aiProviderID
+            if isImageAI {
+                let action = AIImageAction(
+                    id: "test.ai_image",
+                    title: title.isEmpty ? defaultTitle : title,
+                    promptTemplate: aiPrompt,
+                    providerID: resolvedProviderID
+                )
+                Task {
+                    let outcome = await action.apply(item: inputItem, context: ctx)
+                    await MainActor.run {
+                        testOutcome = outcome
+                        testRunning = false
+                        stopTestTickTimer()
+                        testInflight = nil
+                    }
+                }
+            } else if isTextToImageAI {
+                let action = AITextToImageAction(
+                    id: "test.ai_text_to_image",
+                    title: title.isEmpty ? defaultTitle : title,
+                    promptTemplate: aiPrompt,
+                    providerID: resolvedProviderID
+                )
+                Task {
+                    let outcome = await action.apply(item: inputItem, context: ctx)
+                    await MainActor.run {
+                        testOutcome = outcome
+                        testRunning = false
+                        stopTestTickTimer()
+                        testInflight = nil
+                    }
+                }
+            } else {
+                let action = AIAction(
+                    id: "test.ai",
+                    title: title.isEmpty ? "AI test" : title,
+                    promptTemplate: aiPrompt,
+                    providerID: aiProviderID,
+                    applicableTypes: applicableTypes.isEmpty ? [.text] : applicableTypes
+                )
+                Task {
+                    let outcome = await action.apply(item: inputItem, context: ctx)
+                    await MainActor.run {
+                        testOutcome = outcome
+                        testRunning = false
+                        stopTestTickTimer()
+                        testInflight = nil
+                    }
                 }
             }
         }
     }
 
-    private func describeOutcome(_ outcome: ApplyOutcome) -> String {
-        switch outcome {
-        case .preview(let item): return item.previewText ?? ""
-        case .failed(_, let reason, _): return "⚠ \(reason)"
-        case .sideEffect(let desc, _): return "→ \(desc)"
-        case .alternativeCommit(let item, _): return item.previewText ?? ""
+    // MARK: - Test helpers
+
+    /// Probe item used by `runTest` to detect whether a built-in action
+    /// is image-applicable. We need a probe with non-zero image content
+    /// so the action's `isApplicable` resolves correctly via the
+    /// `.image` context.
+    @MainActor
+    private func makeImageProbe() -> ClipboardItem {
+        // 1×1 PNG, smallest valid image — purely for predicate
+        // resolution, not actual rendering. The real test input uses
+        // `ActionTestSamples.makeSampleImageItem()`.
+        var item = ClipboardItem(
+            id: UUID(),
+            semantic: .image,
+            createdAt: Date(),
+            representations: [:],
+            typesOrdered: [],
+            previewText: nil,
+            previewImageRel: nil,
+            sourceBundleID: nil,
+            sourceAppName: "Editor probe",
+            sourceWindowTitle: nil,
+            tags: []
+        )
+        item.semantic = .image
+        return item
+    }
+
+    private func makeTextProbe() -> ClipboardItem {
+        ClipboardItem(
+            id: UUID(),
+            semantic: .text,
+            createdAt: Date(),
+            representations: [:],
+            typesOrdered: [],
+            previewText: "x",
+            previewImageRel: nil,
+            sourceBundleID: nil,
+            sourceAppName: "Editor probe",
+            sourceWindowTitle: nil,
+            tags: []
+        )
+    }
+
+    /// Build the in-flight descriptor for the loading panel. Resolves the
+    /// active provider (per-action override or default) for the
+    /// "Provider · Model" line. Matches `AppDelegate.makeAIInflight` so
+    /// the user sees identical chrome in Settings as they would in the
+    /// live HUD when this action runs.
+    @MainActor
+    private func resolveTestInflight(actionTitle: String) -> AIInflight {
+        let isImageAI: Bool = (kind == .ai
+                                && (aiKind == .image || aiKind == .textToImage))
+        // Walk the SAME chain runtime uses — `effectiveProvider()`
+        // mirrors `AIImageAction.resolveProvider` (per-action override
+        // → default → soft-fallback to any enabled image-capable
+        // provider when the operation needs images). Without this
+        // the Output panel showed "Anthropic Claude · gpt-image-1"
+        // for image actions whose chat default was Anthropic but
+        // whose REAL execution rerouted to OpenAI via soft fallback
+        // — lying about which provider actually ran the request.
+        if let cp = effectiveProvider() {
+            let modelLabel: String
+            if isImageAI {
+                modelLabel = (cp.kind == .gemini)
+                    ? "gemini-2.5-flash-image-preview"
+                    : "gpt-image-1"
+            } else {
+                modelLabel = cp.model
+            }
+            return AIInflight(
+                providerLabel: cp.displayName,
+                modelName: modelLabel,
+                actionTitle: actionTitle,
+                startedAt: Date()
+            )
+        }
+        return AIInflight(
+            providerLabel: "AI",
+            modelName: isImageAI ? "gpt-image-1" : "unknown",
+            actionTitle: actionTitle,
+            startedAt: Date()
+        )
+    }
+
+    @MainActor
+    private func startTestTickTimer() {
+        stopTestTickTimer()
+        let started = testInflight?.startedAt ?? Date()
+        testTickTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+            Task { @MainActor in
+                self.testElapsed = Date().timeIntervalSince(started)
+            }
         }
     }
+
+    @MainActor
+    private func stopTestTickTimer() {
+        testTickTimer?.invalidate()
+        testTickTimer = nil
+    }
+
+    // `describeOutcome` / `describeImageOutcome` were the plain-text
+    // summarisers for the legacy `testOutput` TextEditor mirror.
+    // Replaced by `TestOutputPane` which renders the live ApplyOutcome
+    // (spinner / failure notice / image preview / etc.) directly, so
+    // no string flattening is needed.
 }
 
 // MARK: - Built-in handler categories

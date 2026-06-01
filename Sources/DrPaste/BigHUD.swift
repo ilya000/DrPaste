@@ -753,9 +753,14 @@ struct BigHUDView: View {
         let title = state.actionTitleProvider?(a.id, a.title) ?? a.title
         return HStack(spacing: 4) {
             if let badge = providerBadge(for: a) {
-                // AI action — provider badge with brand color
+                // AI action — provider badge with brand color.
+                // `isAvailable` flips to false when an image action's
+                // resolved provider can't actually do image edits;
+                // the badge renders grayscale + diagonal slash so
+                // the user sees the mismatch before running.
                 ProviderBadgeView(text: badge.label, color: badge.color,
-                                  fontSize: sz(9), iconName: badge.icon)
+                                  fontSize: sz(9), iconName: badge.icon,
+                                  isAvailable: providerAvailable(for: a))
             } else {
                 // Built-in or transformation — type icon
                 Image(systemName: actionTypeIcon(for: a))
@@ -799,25 +804,72 @@ struct BigHUDView: View {
 
     /// Provider badge for AI actions. Returns label, color, and SF Symbol.
     /// Resolves dynamically — actions with empty / nil providerID follow the current default.
+    /// Handles both `AIAction` (text-in/text-out) and `AIImageAction`
+    /// (image-in/image-out). Image-AI badges short-circuit to OpenAI
+    /// because gpt-image-1 only lives there — the badge reflects the
+    /// real routing target, not the chat default which may be a
+    /// different provider.
     private func providerBadge(for action: ClipboardAction)
         -> (label: String, color: Color, icon: String)?
     {
-        guard let ai = action as? AIAction else { return nil }
-        let resolvedKind: ProviderKind? = {
-            if let id = ai.providerID, !id.isEmpty,
-               let cp = AIProviderRegistry.shared.config.providers.first(where: { $0.id == id }) {
-                return cp.kind
-            }
-            // Fall through to default provider for nil / empty providerID.
-            if let defaultID = AIProviderRegistry.shared.config.defaultProviderID,
-               !defaultID.isEmpty,
-               let cp = AIProviderRegistry.shared.config.providers.first(where: { $0.id == defaultID }) {
-                return cp.kind
-            }
+        guard let cp = resolveExecutorProvider(for: action) else {
+            // Fallback chip when no provider qualifies — surfaces
+            // "AI" generically so the row still parses as AI.
+            return action is AIAction || action is AIImageAction || action is AITextToImageAction
+                ? ("AI", Color.gray, "sparkle")
+                : nil
+        }
+        return (cp.kind.badgeLabel, badgeColor(for: cp.kind), cp.kind.iconName)
+    }
+
+    /// Single source of truth for "which provider is actually going
+    /// to run this action". Mirrors `AIImageAction.resolveProvider`
+    /// for image actions and the analogous chain for text actions.
+    /// All HUD-side surfaces (badge brand icon, badge color,
+    /// availability slash overlay, future tooltips) go through here
+    /// so the HUD never disagrees with itself or with the Edit
+    /// Action picker about who's about to fire.
+    private func resolveExecutorProvider(for action: ClipboardAction)
+        -> ConfiguredProvider?
+    {
+        let providerID: String?
+        let needsImage: Bool
+        if let ai = action as? AIAction {
+            providerID = ai.providerID
+            needsImage = false
+        } else if let ai = action as? AIImageAction {
+            providerID = ai.providerID
+            needsImage = true
+        } else if let ai = action as? AITextToImageAction {
+            providerID = ai.providerID
+            needsImage = true
+        } else {
             return nil
-        }()
-        guard let kind = resolvedKind else { return ("AI", Color.gray, "sparkle") }
-        return (kind.badgeLabel, badgeColor(for: kind), kind.iconName)
+        }
+        let cfg = AIProviderRegistry.shared.config
+        // 1. Explicit override — only if usable.
+        if let id = providerID, !id.isEmpty,
+           let cp = cfg.providers.first(where: { $0.id == id }),
+           cp.enabled,
+           (!needsImage || cp.kind.supportsImageEdit) {
+            return cp
+        }
+        // 2. Chat default — only if usable for this operation.
+        if let defaultID = cfg.defaultProviderID,
+           let cp = cfg.providers.first(where: { $0.id == defaultID }),
+           cp.enabled,
+           (!needsImage || cp.kind.supportsImageEdit) {
+            return cp
+        }
+        // 3. Image soft-fallback — cheapest enabled image-capable.
+        //    Cost order (Gemini → OpenRouter → OpenAI → Custom)
+        //    matches `AIImageAction.resolveProvider` so the chip
+        //    brand matches the worker brand.
+        if needsImage {
+            return AIProviderRegistry.shared.cheapestEnabledImageProvider()
+        }
+        // 4. Text fallback — any enabled provider.
+        return cfg.providers.first { $0.enabled }
     }
 
     private func badgeColor(for kind: ProviderKind) -> Color {
@@ -827,6 +879,24 @@ struct BigHUDView: View {
         // local provider, which made local-AI chips visually
         // indistinguishable from non-AI built-ins.
         kind.brandColor
+    }
+
+    /// Whether the action can actually execute right now — i.e.
+    /// `resolveExecutorProvider` finds SOMETHING (enabled, right
+    /// capability). Returns false only when nothing in the registry
+    /// qualifies; the badge then renders in a disabled/slashed
+    /// state so the user sees the problem before clicking. Local
+    /// (non-AI) actions are always available.
+    ///
+    /// Using the same resolver as the badge guarantees that the
+    /// slash overlay and the icon brand never disagree — if we
+    /// have a working provider its icon shows in color, if we
+    /// don't we show greyed with the slash.
+    private func providerAvailable(for action: ClipboardAction) -> Bool {
+        guard action is AIAction
+                || action is AIImageAction
+                || action is AITextToImageAction else { return true }
+        return resolveExecutorProvider(for: action) != nil
     }
 
     // MARK: footer
@@ -850,6 +920,14 @@ struct BigHUDView: View {
                 keyHint("release", "paste")
             } else {
                 keyHint("⏎", "paste")
+                // ⌥⌘⏎ pastes the focused row but leaves the HUD up
+                // so the user can queue another paste — bare ⏎
+                // still does the historical paste-and-close. The
+                // hint is Limited-Mode-only because Gesture Mode
+                // has ⌥⌘ implicitly held, which would make every
+                // ⏎ a paste-and-keep, breaking the release-paste
+                // contract.
+                keyHint("⌥⌘⏎", "paste & keep")
             }
             keyHint("esc", "cancel")
             Spacer()
@@ -911,19 +989,45 @@ struct VisualEffect: NSViewRepresentable {
 /// Provider badge — a small SF Symbol icon shown to the left of the title in
 /// the action chip. Uses the provider's branded color. The `text` parameter
 /// is kept for backward compatibility and is shown in the Settings tooltip.
+///
+/// `isAvailable == false` renders the badge in a grayscale / dimmed
+/// "disabled" state with a strikethrough slash overlay — used when an
+/// image-AI action's resolved provider can't actually do image edits
+/// (e.g., the default chat provider is Anthropic and the user hasn't
+/// configured an image-capable fallback, OR they explicitly picked a
+/// non-image provider per-action). The icon signals "this won't work"
+/// immediately without having to run the action and read the error.
 struct ProviderBadgeView: View {
     let text: String
     let color: Color
     let fontSize: CGFloat
     var iconName: String = "sparkle"
+    var isAvailable: Bool = true
 
     var body: some View {
-        Image(systemName: iconName)
-            .font(.system(size: fontSize + 1, weight: .medium))
-            .foregroundStyle(color)
-            .frame(width: fontSize + 4, height: fontSize + 4)
-            .background(Circle().fill(color.opacity(0.18)))
-            .help(text)
+        let effectiveColor: Color = isAvailable ? color : .secondary
+        let bgOpacity: Double = isAvailable ? 0.18 : 0.10
+        ZStack {
+            Image(systemName: iconName)
+                .font(.system(size: fontSize + 1, weight: .medium))
+                .foregroundStyle(effectiveColor)
+                .frame(width: fontSize + 4, height: fontSize + 4)
+                .background(Circle().fill(effectiveColor.opacity(bgOpacity)))
+                .opacity(isAvailable ? 1.0 : 0.55)
+                .saturation(isAvailable ? 1.0 : 0.0)
+            // Strikethrough slash when unavailable — drawn over the
+            // icon at a slight rotation so it reads as "disabled /
+            // not connected" without obscuring the provider glyph.
+            if !isAvailable {
+                Image(systemName: "line.diagonal")
+                    .font(.system(size: fontSize + 4, weight: .heavy))
+                    .foregroundStyle(.red)
+                    .opacity(0.75)
+            }
+        }
+        .help(isAvailable
+              ? text
+              : "\(text) — this provider can't run image edits. Pick OpenAI, Gemini, or OpenRouter in the action's provider field.")
     }
 }
 

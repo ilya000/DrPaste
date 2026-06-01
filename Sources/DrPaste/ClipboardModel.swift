@@ -31,6 +31,19 @@ enum SemanticKind: String, Codable, CaseIterable {
     case files
     case unknown
 
+    /// Content types surfaced as user-facing Playground tabs and as
+    /// the "Applies to" checkbox grid in the Edit Action sheet.
+    /// Single source of truth — SettingsWindow's TabView and
+    /// ActionEditor's checkbox grid must show the same list in the
+    /// same order, otherwise the user can't reason about what
+    /// "Applies to" actually controls. `email` and `pdf` are
+    /// classified internally (auto-detect, paste flow, etc.) but
+    /// don't get their own Playground tabs — too niche to spend
+    /// real estate on. `unknown` is internal-only.
+    static let userVisibleKinds: [SemanticKind] = [
+        .text, .richText, .url, .json, .table, .markdown, .code, .image, .files
+    ]
+
     var displayName: String {
         switch self {
         case .text:     return "Plain text"

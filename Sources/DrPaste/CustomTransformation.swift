@@ -218,6 +218,39 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
             return false
         }
     }
+
+    /// True when applying this engine to rich-text input via the
+    /// per-attributed-run path produces the right answer — i.e. when
+    /// the transformation is character-local (caseChange, unicodeStyle,
+    /// cyrillicToLatin) OR edge-local in a way the runtime handles
+    /// specially (trim, wrap, prepend, append). For these engines
+    /// `CustomTransformationAction.apply` takes the formatting-
+    /// preserving branch: bold / italic / colour / hyperlink markup
+    /// from the source clip survives into the result.
+    ///
+    /// Engines flagged false restructure the text (sortLines drops or
+    /// reorders runs; jsonFormat reflows; slugify / camelCase / snake
+    /// / kebab strip whitespace; base64 / url encode produces unrelated
+    /// output; mdToPlain / mdExtract* extract subsets; lineFilter
+    /// drops lines; regex / findReplace match across run boundaries
+    /// unreliably; wordCount outputs statistics). Those keep the
+    /// plain-text path — the result is always plain text by design.
+    var preservesRichTextFormatting: Bool {
+        switch self {
+        case .caseChange, .unicodeStyle, .cyrillicToLatin,
+             .trim, .wrap, .prepend, .append:
+            return true
+        case .regexReplace, .findReplace, .lineFilter,
+             .sortLines, .uniqueLines, .jsonFormat,
+             .camelCase, .snakeCase, .kebabCase,
+             .base64Encode, .base64Decode,
+             .urlPercentEncode, .urlPercentDecode,
+             .slugify, .wordCount,
+             .mdToPlain, .mdExtractHeadings, .mdExtractLinks,
+             .urlStripTracking:
+            return false
+        }
+    }
 }
 
 // MARK: - Descriptor
@@ -254,6 +287,41 @@ struct CustomTransformationAction: ClipboardAction {
         guard let engine = descriptor.engine else {
             return .failed(original: item, reason: "Unknown engine: \(descriptor.engineID)", recovery: nil)
         }
+        // Rich-text input + an engine that preserves formatting per
+        // attributed run → take the formatting-preserving path. Without
+        // this, uppercase / unicodeStyle / cyrillicTranslit / trim /
+        // wrap / etc. would flatten any rich-text input to plain text
+        // (item.previewText) and discard the user's bold / italic /
+        // colour / hyperlink markup. Engines that restructure the text
+        // (sortLines, jsonFormat, slugify, snake_case, base64, …) keep
+        // the plain-text path because per-run application is
+        // semantically wrong for them.
+        if item.semantic == .richText,
+           engine.preservesRichTextFormatting,
+           let rel = item.representations["public.rtf"] ?? item.representations["com.apple.flat-rtfd"],
+           let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
+           let attr = try? NSAttributedString(
+                data: data,
+                options: [.documentType: rel.hasSuffix(".rtfd") || rel.contains("rtfd")
+                    ? NSAttributedString.DocumentType.rtfd
+                    : NSAttributedString.DocumentType.rtf],
+                documentAttributes: nil
+           ) {
+            do {
+                let transformed = try TransformationRuntime.applyToAttributed(
+                    engine: engine,
+                    input: attr,
+                    params: descriptor.parameters
+                )
+                return .preview(makeRichTextItem(transformed, from: item))
+            } catch let TransformationError.invalidRegex(msg) {
+                return .failed(original: item, reason: "Invalid regex: \(msg)", recovery: nil)
+            } catch {
+                return .failed(original: item, reason: error.localizedDescription, recovery: nil)
+            }
+        }
+        // Plain-text path — original behaviour. Engines that don't
+        // preserve formatting always come through here.
         let input = item.previewText ?? ""
         do {
             let result = try TransformationRuntime.apply(engine: engine,
@@ -307,6 +375,121 @@ enum TransformationRuntime {
         case .unicodeStyle:      return unicodeStyle(input, params: params)
         case .cyrillicToLatin:   return cyrillicTransliterate(input)
         }
+    }
+
+    // MARK: - Attributed-string entry point
+
+    /// Apply a formatting-preserving engine to an NSAttributedString,
+    /// retaining each attributed run's bold / italic / colour / link /
+    /// underline / etc. markup in the output. Only engines whose
+    /// `preservesRichTextFormatting` flag is true should be passed
+    /// here — the caller (`CustomTransformationAction.apply`) gates
+    /// on that flag and falls back to the plain-text path otherwise.
+    ///
+    /// Strategy per engine kind:
+    ///
+    ///   • Character-local engines (caseChange, unicodeStyle,
+    ///     cyrillicToLatin) — enumerate attributes, apply the
+    ///     transformation to each run's substring, append result
+    ///     with the same attributes. Works because the transformation
+    ///     is positional and independent of surrounding context.
+    ///
+    ///   • Edge-only engines (trim) — trim outer whitespace from the
+    ///     whole attributed string without touching attributes on the
+    ///     surviving range. Per-run application would wrongly trim
+    ///     whitespace inside formatted runs.
+    ///
+    ///   • Boundary-adding engines (wrap, prepend, append) — wrap the
+    ///     original attributed string with plain prefix / suffix
+    ///     strings (they carry no source attributes by definition).
+    ///     Middle content keeps its formatting.
+    static func applyToAttributed(engine: TransformationEngine,
+                                  input: NSAttributedString,
+                                  params: [String: String]) throws -> NSAttributedString {
+        switch engine {
+
+        case .trim:
+            return trimAttributed(input)
+
+        case .prepend:
+            let result = NSMutableAttributedString(string: params["text"] ?? "")
+            result.append(input)
+            return result
+
+        case .append:
+            let result = NSMutableAttributedString(attributedString: input)
+            result.append(NSAttributedString(string: params["text"] ?? ""))
+            return result
+
+        case .wrap:
+            let result = NSMutableAttributedString(string: params["prefix"] ?? "")
+            result.append(input)
+            result.append(NSAttributedString(string: params["suffix"] ?? ""))
+            return result
+
+        case .caseChange, .unicodeStyle, .cyrillicToLatin:
+            return try applyPerRun(engine: engine, input: input, params: params)
+
+        // Everything else either isn't reachable (gated by
+        // `preservesRichTextFormatting`) or would mis-handle the
+        // formatting if forced through. Fall back to plain text.
+        default:
+            let plain = input.string
+            let result = try apply(engine: engine, input: plain, params: params)
+            return NSAttributedString(string: result)
+        }
+    }
+
+    /// Per-attributed-run application. Each run's substring is fed to
+    /// `TransformationRuntime.apply` independently and the transformed
+    /// text gets the run's original attributes back. Safe only for
+    /// character-local engines where the output of a substring is
+    /// independent of surrounding context.
+    private static func applyPerRun(engine: TransformationEngine,
+                                    input: NSAttributedString,
+                                    params: [String: String]) throws -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        var thrown: Error?
+        input.enumerateAttributes(
+            in: NSRange(location: 0, length: input.length),
+            options: []
+        ) { attrs, range, stop in
+            let substring = input.attributedSubstring(from: range).string
+            do {
+                let transformed = try apply(engine: engine, input: substring, params: params)
+                result.append(NSAttributedString(string: transformed, attributes: attrs))
+            } catch {
+                thrown = error
+                stop.pointee = true
+            }
+        }
+        if let err = thrown { throw err }
+        return result
+    }
+
+    /// Trim outer whitespace from an attributed string. Preserves
+    /// every attribute on the surviving substring; only the leading
+    /// and trailing whitespace characters get removed. Counterpart to
+    /// the plain-text `trim(_:)` helper, exposed for the attributed
+    /// path.
+    private static func trimAttributed(_ input: NSAttributedString) -> NSAttributedString {
+        let nsString = input.string as NSString
+        let length = nsString.length
+        let cs = CharacterSet.whitespacesAndNewlines
+        var startLoc = 0
+        var endLoc = length
+        while startLoc < endLoc {
+            let scalar = Unicode.Scalar(nsString.character(at: startLoc))
+            guard let s = scalar, cs.contains(s) else { break }
+            startLoc += 1
+        }
+        while endLoc > startLoc {
+            let scalar = Unicode.Scalar(nsString.character(at: endLoc - 1))
+            guard let s = scalar, cs.contains(s) else { break }
+            endLoc -= 1
+        }
+        guard endLoc > startLoc else { return NSAttributedString(string: "") }
+        return input.attributedSubstring(from: NSRange(location: startLoc, length: endLoc - startLoc))
     }
 
     private static func unicodeStyle(_ input: String, params: [String: String]) -> String {

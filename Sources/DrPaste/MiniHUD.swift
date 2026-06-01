@@ -47,7 +47,24 @@ final class MiniHUDController {
     /// changes their mind mid-stream.
     private var onCancelHandler: (() -> Void)?
 
+    /// Incremented every `show()`. Callers can capture the token at show
+    /// time and pass it to `hideIfOwner(_:)` so a defensive cleanup path
+    /// (a cancelled task that wants to take down "its" MiniHUD) doesn't
+    /// accidentally hide a *different* MiniHUD that a later show()
+    /// replaced it with.
+    private var generation: UInt64 = 0
+    /// The token returned by the most recent `show()` call. Caller uses
+    /// it with `hideIfOwner(_:)`.
+    typealias ShowToken = UInt64
+
     private init() {}
+
+    /// True while the panel is on screen (orderFront'd, not orderOut'd).
+    /// Used by region-capture arm guards to avoid stacking a second
+    /// floating overlay on top of an active MiniHUD — without this
+    /// guard, a fast direct-trigger fire followed by bare ⌥⌘ held alone
+    /// would produce two unrelated DrPaste surfaces on screen at once.
+    var isVisible: Bool { panel?.isVisible == true }
 
     /// Show progress HUD with a label and an optional AI inflight descriptor.
     /// Idempotent — calling while visible updates the label / inflight in
@@ -57,14 +74,17 @@ final class MiniHUDController {
     /// `onCancel`, if provided, is invoked when the user clicks the X button.
     /// It is NOT called when the HUD is dismissed programmatically via
     /// `hide()` — that path is reserved for "action completed normally".
-    func show(label: String, inflight: AIInflight? = nil, onCancel: (() -> Void)? = nil) {
+    @discardableResult
+    func show(label: String, inflight: AIInflight? = nil, onCancel: (() -> Void)? = nil) -> ShowToken {
+        generation &+= 1
+        let token = generation
         state.label = label
         state.inflight = inflight
         state.elapsed = 0
         onCancelHandler = onCancel
         startTickIfNeeded(inflight: inflight)
         if panel == nil { buildPanel() }
-        guard let panel = panel else { return }
+        guard let panel = panel else { return token }
         // Rebuild hosting view only on first show so the @StateObject inside
         // the view tree keeps its identity across label updates.
         if panel.contentView == nil || !(panel.contentView is NSHostingView<MiniHUDView>) {
@@ -75,6 +95,17 @@ final class MiniHUDController {
         }
         positionNearCursor(panel)
         panel.orderFrontRegardless()
+        return token
+    }
+
+    /// Hide the panel only if `token` matches the latest `show()` call.
+    /// Defensive cleanup path for tasks that captured a token at show
+    /// time and want to take down "their" MiniHUD on a cancellation
+    /// branch without accidentally killing a later show() that
+    /// replaced theirs.
+    func hideIfOwner(_ token: ShowToken) {
+        guard token == generation else { return }
+        hide()
     }
 
     /// Hide HUD immediately and stop the elapsed-tick timer. Used by the

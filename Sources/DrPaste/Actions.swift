@@ -468,6 +468,183 @@ final class ActionRegistry: ObservableObject {
         config = copy
     }
 
+    /// Persisted test-panel Input sample for `actionID`. Returns the
+    /// user's override when one exists, otherwise the curated default
+    /// from `ActionTestSamples.textSample(for:)`. ActionEditor calls
+    /// this on dialog open to pre-fill the Input field.
+    func testSample(forActionID actionID: String) -> String? {
+        if let stored = config.actionTestSamples[actionID] {
+            return stored
+        }
+        return ActionTestSamples.textSample(for: actionID)
+    }
+
+    /// Persist a user-edited test-panel Input sample for `actionID`.
+    /// Pass `nil` to drop the override and restore the curated default
+    /// on the next dialog open. Empty string IS persisted as an
+    /// override ("user explicitly cleared this") because that's
+    /// semantically distinct from "use the default".
+    func setTestSample(_ sample: String?, forActionID actionID: String) {
+        var copy = config
+        if let sample = sample {
+            // If the user's typed-in text matches the curated default
+            // verbatim, drop the override — they didn't really change
+            // anything and keeping the entry would balloon
+            // actions.json with redundant data. Removing-on-match also
+            // lets future updates to the curated default surface
+            // automatically for users who never customized.
+            if sample == ActionTestSamples.textSample(for: actionID) {
+                copy.actionTestSamples.removeValue(forKey: actionID)
+            } else {
+                copy.actionTestSamples[actionID] = sample
+            }
+        } else {
+            copy.actionTestSamples.removeValue(forKey: actionID)
+        }
+        config = copy
+    }
+
+    /// Persisted custom image blob for `actionID`'s Test panel Input.
+    /// Returns the rel filename inside `AppStorage.imagesDir`, or nil
+    /// when no user override exists (caller falls back to a
+    /// procedurally-generated sample image).
+    func testImageRel(forActionID actionID: String) -> String? {
+        config.actionTestImageBlobs[actionID]
+    }
+
+    /// Persist a user-supplied image as the Test panel Input for
+    /// `actionID`. `rel` is the filename inside `AppStorage.imagesDir`;
+    /// caller is responsible for copying the bytes there before
+    /// invoking this helper. Pass `nil` to drop the override and
+    /// restore the procedural sample on the next dialog open.
+    func setTestImageRel(_ rel: String?, forActionID actionID: String) {
+        var copy = config
+        if let rel = rel, !rel.isEmpty {
+            copy.actionTestImageBlobs[actionID] = rel
+        } else {
+            copy.actionTestImageBlobs.removeValue(forKey: actionID)
+        }
+        config = copy
+    }
+
+    // MARK: - Playground per-tab samples
+
+    /// Persisted Sample input text for the Playground's `kind` tab.
+    /// Returns the user's override when one exists, otherwise nil so
+    /// the caller can fall back to `SettingsSamples.sample(for:)`.
+    func playgroundSample(forKind kind: SemanticKind) -> String? {
+        config.playgroundSamples[kind.rawValue]
+    }
+
+    /// Persist a user-edited Playground Sample input for `kind`. Pass
+    /// `nil` to drop the override and restore the curated default on
+    /// the next Settings open. Same diff-against-default normalisation
+    /// as `setTestSample`: typing the curated text back in clears any
+    /// prior stale override so future updates to the default
+    /// propagate automatically.
+    func setPlaygroundSample(_ sample: String?, forKind kind: SemanticKind) {
+        var copy = config
+        if let sample = sample {
+            let curatedDefault = SettingsSamples.sample(for: kind).previewText ?? ""
+            if sample == curatedDefault {
+                copy.playgroundSamples.removeValue(forKey: kind.rawValue)
+            } else {
+                copy.playgroundSamples[kind.rawValue] = sample
+            }
+        } else {
+            copy.playgroundSamples.removeValue(forKey: kind.rawValue)
+        }
+        config = copy
+    }
+
+    /// Persisted custom image filename for the Playground's `kind` tab
+    /// (currently only Image tab uses this). Returns the rel inside
+    /// `AppStorage.imagesDir` or nil for "no override — use the
+    /// standard sample-image fallback chain".
+    func playgroundImageRel(forKind kind: SemanticKind) -> String? {
+        config.playgroundImageBlobs[kind.rawValue]
+    }
+
+    /// Persist a user-dropped custom image for the Playground's
+    /// `kind` tab. Same persistence shape as `setTestImageRel` but
+    /// keyed by content-type tab instead of per action.
+    func setPlaygroundImageRel(_ rel: String?, forKind kind: SemanticKind) {
+        var copy = config
+        if let rel = rel, !rel.isEmpty {
+            copy.playgroundImageBlobs[kind.rawValue] = rel
+        } else {
+            copy.playgroundImageBlobs.removeValue(forKey: kind.rawValue)
+        }
+        config = copy
+    }
+
+    /// Whether the action with this ID is image-applicable. Used by the
+    /// ActionEditor to decide if the Test panel Input should render as
+    /// an image preview (drag-drop replaceable) vs the standard text
+    /// editor. Probes the action's `isApplicable` against a synthetic
+    /// image clip so the predicate stays in sync with each action's
+    /// own applicability logic without us maintaining a parallel list.
+    func actionAcceptsImage(_ actionID: String) -> Bool {
+        guard let action = actions.first(where: { $0.id == actionID }) else { return false }
+        let imageProbe = ClipboardItem(
+            id: UUID(),
+            semantic: .image,
+            createdAt: Date(),
+            representations: ["public.png": "probe"],
+            typesOrdered: ["public.png"],
+            previewText: nil,
+            previewImageRel: "probe.png",
+            sourceBundleID: nil,
+            sourceAppName: nil,
+            sourceWindowTitle: nil,
+            tags: []
+        )
+        let ctx = ContextDetector.detect(imageProbe)
+        return action.isApplicable(item: imageProbe, context: ctx)
+    }
+
+    /// Whether the action REQUIRES rich-text input — applicable to
+    /// .richText clips but NOT to plain .text clips. Identifies the
+    /// rich-text family (rich_to_wiki, rich_to_md, rich_to_html,
+    /// rich_to_unicode_style, paste_as_text, clean_formatting). The
+    /// ActionEditor uses this to decide whether `runTest` should
+    /// promote the testInput markdown to a real RTF inputItem before
+    /// dispatching the action; a plain-text item would leave these
+    /// actions with nothing to convert.
+    func actionRequiresRichText(_ actionID: String) -> Bool {
+        guard let action = actions.first(where: { $0.id == actionID }) else { return false }
+        let richProbe = ClipboardItem(
+            id: UUID(),
+            semantic: .richText,
+            createdAt: Date(),
+            representations: ["public.rtf": "probe"],
+            typesOrdered: ["public.rtf"],
+            previewText: "probe",
+            previewImageRel: nil,
+            sourceBundleID: nil,
+            sourceAppName: nil,
+            sourceWindowTitle: nil,
+            tags: []
+        )
+        let textProbe = ClipboardItem(
+            id: UUID(),
+            semantic: .text,
+            createdAt: Date(),
+            representations: [:],
+            typesOrdered: [],
+            previewText: "probe",
+            previewImageRel: nil,
+            sourceBundleID: nil,
+            sourceAppName: nil,
+            sourceWindowTitle: nil,
+            tags: []
+        )
+        let richCtx = ContextDetector.detect(richProbe)
+        let textCtx = ContextDetector.detect(textProbe)
+        return action.isApplicable(item: richProbe, context: richCtx)
+            && !action.isApplicable(item: textProbe, context: textCtx)
+    }
+
     // MARK: - Custom AI
 
     /// Rebuilds AI actions from current config.customAI.
@@ -485,16 +662,45 @@ final class ActionRegistry: ObservableObject {
         // runs immediately after via didSet and re-adds the transformation actions.
         actions.removeAll { $0.id.hasPrefix("user.") }
         for desc in config.customAI {
-            let kinds = Set(desc.applicableTypes.compactMap { SemanticKind(rawValue: $0) })
             let resolvedProviderID: String? = desc.providerID.isEmpty ? nil : desc.providerID
-            let action = AIAction(
-                id: desc.id,
-                title: desc.title,
-                promptTemplate: desc.promptTemplate,
-                providerID: resolvedProviderID,
-                applicableTypes: kinds.isEmpty ? [.text, .richText, .markdown] : kinds
-            )
-            actions.append(action)
+            switch desc.kind {
+            case .text:
+                let kinds = Set(desc.applicableTypes.compactMap { SemanticKind(rawValue: $0) })
+                let action = AIAction(
+                    id: desc.id,
+                    title: desc.title,
+                    promptTemplate: desc.promptTemplate,
+                    providerID: resolvedProviderID,
+                    applicableTypes: kinds.isEmpty ? [.text, .richText, .markdown] : kinds
+                )
+                actions.append(action)
+            case .image:
+                // Image AI actions ignore `applicableTypes` because the
+                // applicability gate is hardcoded to .image (or rich-text
+                // with embedded image). Storing applicableTypes in the
+                // descriptor just keeps the Codable shape uniform — the
+                // value can be ["image"] or [] without affecting behaviour.
+                let action = AIImageAction(
+                    id: desc.id,
+                    title: desc.title,
+                    promptTemplate: desc.promptTemplate,
+                    providerID: resolvedProviderID
+                )
+                actions.append(action)
+            case .textToImage:
+                // Text → Image generation. Like `.image` actions but the
+                // applicability gate is the inverse: text-bearing kinds,
+                // not image kinds. AITextToImageAction.isApplicable
+                // hardcodes the text-content set, so the descriptor's
+                // applicableTypes is also informational only.
+                let action = AITextToImageAction(
+                    id: desc.id,
+                    title: desc.title,
+                    promptTemplate: desc.promptTemplate,
+                    providerID: resolvedProviderID
+                )
+                actions.append(action)
+            }
         }
     }
 

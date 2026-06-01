@@ -61,6 +61,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     /// "both MiniHUD and BigHUD showed at once".
     private var actionHotkeyTask: Task<Void, Never>?
 
+    /// Outstanding inner Task spawned by `openBigHUDFocusedOnAction` to
+    /// run its selection-first ⌘C + BigHUD open. Tracked so a second
+    /// hold-preview fire (user releases ⌥⌘ then quickly re-holds, or
+    /// any other rapid-fire sequence) cancels the prior in-flight open
+    /// instead of stacking two BigHUDs / two simulateCopy polls. Same
+    /// reasoning as `actionHotkeyTask` — keep at most one of each
+    /// surface-opening task in flight.
+    private var bigHUDOpenTask: Task<Void, Never>?
+
+    /// Generation counter for `showBigHUD`'s 80 ms visibility retry.
+    /// Incremented on every successful show AND on every teardown
+    /// (`closeBigHUD`, `deferPasteAfterAILoad`). A retry block
+    /// captures the current value at schedule time and bails when
+    /// the captured value no longer matches — prevents a stale retry
+    /// from resurrecting an orderOut'd BigHUD on top of a deferred-
+    /// paste MiniHUD. Wrap-around at 2^64 is a non-issue in practice.
+    private var bigHUDShowSession: UInt64 = 0
+
     /// Deferred-paste target. Set by `commitBigHUD()` when the user releases
     /// ⌥⌘ while an AI action is still loading: instead of pasting the
     /// placeholder (the un-transformed original clipboard, which is what
@@ -115,6 +133,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         registry.register(RichTextActionsPack.all)
         registry.register(FileActionsPack.all(store: store))
         registry.register(ImageActionsPack.all)
+        // Note: AI image styles (Pencil sketch / Watercolor / Cartoon) are NOT
+        // registered statically here — they're seeded as user.* CustomAIDescriptor
+        // entries via DefaultAISeed.defaults() and materialised by
+        // ActionRegistry.rebuildCustomAI when `kind == .image`. That puts them on
+        // the same Settings → Actions → AI editing surface as text AI actions
+        // (Translate, Fix grammar, etc.) so the user can edit the prompt, switch
+        // provider, rename, or clone them into their own styles.
         registry.register(TypeSlowlyAction())
         NSLog("DrPaste: packs registered")
 
@@ -700,7 +725,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // · elapsed seconds, matching the main HUD preview pane treatment.
         let actionTitle = registry.displayTitle(forActionID: action.id, defaultTitle: action.title)
         let aiInflight = makeAIInflight(for: action)
-        MiniHUDController.shared.show(label: actionTitle, inflight: aiInflight)
+        let hudToken = MiniHUDController.shared.show(label: actionTitle, inflight: aiInflight)
 
         // Selection-first semantics — the whole point of a per-action
         // hotkey is "do X to what I'm looking at". Operating on stale
@@ -709,13 +734,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // whatever was selected. If nothing changes (no selection),
         // fail loudly — better than silently applying the
         // transformation to whatever old thing happened to be in pb.
+        //
+        // `hudToken` captured at show-time lets a cancelled branch take
+        // its own MiniHUD down without accidentally hiding a later
+        // show() (rapid-fire same-hotkey case where task N+1 replaced
+        // task N's MiniHUD before task N's cancellation point ran).
         actionHotkeyTask = Task { @MainActor in
             guard await PasteSimulator.simulateCopyAndAwaitChange() else {
-                MiniHUDController.shared.hide()
+                MiniHUDController.shared.hideIfOwner(hudToken)
                 SoundFeedback.play(.pasteFailure)
                 return
             }
-            if Task.isCancelled { return }
+            if Task.isCancelled {
+                MiniHUDController.shared.hideIfOwner(hudToken)
+                return
+            }
             // Selection captured — audible "got it" cue. Same sound as
             // ⌥⌘C (Quick Copy) because conceptually this IS a copy step:
             // the user's selection just landed in the pasteboard. The
@@ -734,8 +767,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             let item = self.snapshotPasteboardAsItem(pb: pb, sourceApp: frontmost)
             let ctx = ContextDetector.detect(item)
             let outcome = await action.apply(item: item, context: ctx)
-            if Task.isCancelled { return }
-            MiniHUDController.shared.hide()
+            if Task.isCancelled {
+                MiniHUDController.shared.hideIfOwner(hudToken)
+                return
+            }
+            MiniHUDController.shared.hideIfOwner(hudToken)
             switch outcome {
             case .preview(let result), .alternativeCommit(let result, _):
                 self.performStandardPaste(result, savedApp: frontmost)
@@ -1011,6 +1047,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         if bigHUDPanel?.isVisible == true { return }
         if pendingDeferredPasteApp != nil { return }
         if aiStreamingTask != nil { return }
+        // Direct-trigger in flight (MiniHUD on screen with a streaming AI /
+        // image transform). Without this guard the user could fire a fast
+        // ⌥⌘<letter> tap, then keep ⌥⌘ held alone, and 400 ms later the
+        // region-capture cursor overlay + cheat sheet would pop up while
+        // the MiniHUD is still spinning. Two unrelated DrPaste surfaces
+        // on screen at the same time, AI request continuing in the
+        // background — this is the "2 HUDs at once, spinner forever"
+        // scenario the user reported. Same guard family as the three
+        // above: any in-flight DrPaste state blocks region-capture arm.
+        if actionHotkeyTask != nil { return }
+        // Likewise a still-pending hold-preview open (simulateCopy is
+        // mid-poll, BigHUD hasn't materialized yet). Without this an
+        // arm fired while the open task races to completion could leave
+        // both surfaces visible simultaneously.
+        if bigHUDOpenTask != nil { return }
+        // MiniHUD is the user-visible signal that DrPaste is busy. If it
+        // somehow survived an external cancellation path (defensive — we
+        // already cancel the underlying tasks above), don't let region-
+        // capture stack on top of it.
+        if MiniHUDController.shared.isVisible { return }
 
         // Remember which app was frontmost at arm time so the eventual
         // paste lands in the right window. NSWorkspace.frontmostApplication
@@ -1076,6 +1132,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                                                   sourceApp: NSRunningApplication?) {
         markOtherDrPasteAction()
         currentSummonReason = .paste
+        // Match openBigHUDFocusedOnAction / openHUD — cancel any prior
+        // direct-trigger, stranded hold-preview, or deferred-paste
+        // stream and take down the MiniHUD before this BigHUD comes
+        // up. Without these, a region capture finishing while an
+        // older MiniHUD was on screen would leave both surfaces
+        // visible simultaneously and the old action's eventual paste
+        // would land into the wrong app.
+        actionHotkeyTask?.cancel()
+        actionHotkeyTask = nil
+        bigHUDOpenTask?.cancel()
+        bigHUDOpenTask = nil
+        aiStreamingTask?.cancel()
+        aiStreamingTask = nil
+        pendingDeferredPasteApp = nil
+        MiniHUDController.shared.hide()
         savedFrontmostApp = sourceApp
         bigHUDState.items = store.items
         // The freshly-captured image was inserted at index 0 by
@@ -1110,6 +1181,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // user is looking at when the BigHUD-driven paste also fires.
         actionHotkeyTask?.cancel()
         actionHotkeyTask = nil
+        // Same for a prior in-flight hold-preview open. Without this,
+        // rapid ⌥⌘+letter holds (release-then-rehold faster than the
+        // 250 ms simulateCopy poll) could stack two BigHUD open
+        // sequences, each calling refreshPreview and racing to set
+        // bigHUDState.actionIndex.
+        bigHUDOpenTask?.cancel()
+        bigHUDOpenTask = nil
+        // And a deferred-paste AI stream — opening a fresh BigHUD
+        // session means whatever the deferred paste was about to do is
+        // stale (user clearly moved on). Cancel the stream and clear
+        // the target so its completion handler doesn't fire a paste
+        // into the user's app behind the new BigHUD.
+        aiStreamingTask?.cancel()
+        aiStreamingTask = nil
+        pendingDeferredPasteApp = nil
         // Visual de-overlap — if a prior direct-trigger left a MiniHUD
         // on screen, take it down before the BigHUD comes up.
         MiniHUDController.shared.hide()
@@ -1120,7 +1206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // would render a misleading preview and lead to a wrong paste.
         // Issue ⌘C, wait for pb to refresh, then open the HUD with the
         // freshly-captured item at the top.
-        Task { @MainActor in
+        bigHUDOpenTask = Task { @MainActor in
             guard await PasteSimulator.simulateCopyAndAwaitChange() else {
                 // No selection. Failure feedback + reset EventTap's
                 // bigHUDIsActive flag (the engine had set it true in
@@ -1129,8 +1215,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                 // opened.
                 SoundFeedback.play(.pasteFailure)
                 (self.engine as? EventTapEngine)?.resetHudActive()
+                self.bigHUDOpenTask = nil
                 return
             }
+            // Cancellation can land at every await point — a competing
+            // hold-preview fire or a release-during-poll could have
+            // already replaced this task. Check before doing visible
+            // state mutations.
+            if Task.isCancelled { self.bigHUDOpenTask = nil; return }
             // Stranded-BigHUD guard. The ⌘C poll can take up to 250 ms;
             // if the user released ⌥⌘ in that window, hotkeyEngineDidRelease
             // already ran, found nothing to commit (state still empty),
@@ -1138,6 +1230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             // open BigHUD "after the train left" — visible on screen with
             // no user gesture holding it. Bail out instead.
             guard let tap = self.engine as? EventTapEngine, tap.isHudActive else {
+                self.bigHUDOpenTask = nil
                 return
             }
             // Selection captured — same audible "got it" cue as the
@@ -1163,6 +1256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             self.refreshPreview()
             self.updateContentMeta()
             self.showBigHUD()
+            self.bigHUDOpenTask = nil
         }
     }
 
@@ -1199,6 +1293,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // browsing history.
         actionHotkeyTask?.cancel()
         actionHotkeyTask = nil
+        // Same for a stranded hold-preview open in flight.
+        bigHUDOpenTask?.cancel()
+        bigHUDOpenTask = nil
+        // A deferred-paste AI stream is also stale once the user
+        // explicitly opens a fresh BigHUD session — they've moved on
+        // from whatever the pending paste was about to do. Clearing
+        // pendingDeferredPasteApp prevents the streaming task's
+        // completion handler from firing a paste into the user's
+        // original app behind the newly-opened BigHUD.
+        aiStreamingTask?.cancel()
+        aiStreamingTask = nil
+        pendingDeferredPasteApp = nil
         MiniHUDController.shared.hide()
 
         bigHUDState.items = store.items
@@ -1264,6 +1370,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         commitOutcome(outcome, savedApp: savedApp)
     }
 
+    /// Variant of `commitBigHUD` triggered by ⌥⌘⏎: paste the focused
+    /// outcome into the saved target app but DO NOT close the HUD.
+    /// Lets the user paste several clipboard items back-to-back
+    /// without the open-HUD friction every time. Differences from
+    /// the regular commit:
+    ///
+    ///   • `savedFrontmostApp` is preserved (the next paste targets
+    ///     the same app — closing it would orphan the workflow).
+    ///   • `closeBigHUD()` is NOT called — local key monitor stays
+    ///     installed, panel stays on screen at panel level.
+    ///   • After the paste lands in the target app, the HUD is
+    ///     re-keyed and re-activated so arrow/⏎ keys keep going
+    ///     to it instead of leaking into the target app. The
+    ///     120 ms delay is empirical: long enough for the ⌘V we
+    ///     synthesize in `performStandardPaste` to be processed
+    ///     by the target app's runloop, short enough that the
+    ///     user doesn't notice the gap.
+    ///   • Streaming-AI placeholder protection still applies —
+    ///     if the focused row is the placeholder for an in-flight
+    ///     AI call, fall through to the regular `commitBigHUD`
+    ///     path (which routes to `deferPasteAfterAILoad`). Pasting
+    ///     a placeholder repeatedly would surface stale text.
+    @MainActor
+    private func commitBigHUDKeepingOpen() {
+        let savedApp = savedFrontmostApp
+        if bigHUDState.isPreviewLoading, bigHUDState.aiInflight != nil {
+            commitBigHUD()
+            return
+        }
+        guard let outcome = bigHUDState.outcome else { return }
+        commitOutcome(outcome, savedApp: savedApp)
+        // Re-front the HUD after the synthesized ⌘V has had a
+        // chance to land in the target app. Without this the
+        // first ⌥⌘⏎ would steal focus into the target app and
+        // subsequent arrow keys would type into the target's
+        // document instead of navigating the HUD.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self = self, let panel = self.bigHUDPanel else { return }
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKeyAndOrderFront(nil)
+        }
+    }
+
     /// Single-place ApplyOutcome → side-effect mapping. Called by both the
     /// synchronous HUD commit path and the deferred AI-completion path so
     /// they produce identical user-visible behaviour for the same outcome.
@@ -1309,6 +1458,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         stopAITickTimer()
         bigHUDState.accumulator = nil
         bigHUDPanel?.orderOut(nil)
+        // Bump the showBigHUD retry session so any in-flight 80 ms
+        // retry from the initial show doesn't resurrect the panel on
+        // top of the MiniHUD we're about to show. Without this, the
+        // retry can re-orderFront the panel ~80 ms after deferred-
+        // paste handoff, producing the "2 HUDs at once" the user
+        // sees after a fast ⌥⌘+letter tap on an AI action.
+        cancelBigHUDShowRetry()
 
         // Surface the in-flight state in ProgressHUD so the user sees the
         // wait. Identical chrome to what a quick-tap direct-trigger would
@@ -1377,9 +1533,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // BigHUD opened.
         actionHotkeyTask?.cancel()
         actionHotkeyTask = nil
+        // Any in-flight hold-preview open — defensive, in practice
+        // this is nil by the time the user can close, but covers the
+        // edge case where a fresh open task is still mid-poll when
+        // commit/cancel arrives.
+        bigHUDOpenTask?.cancel()
+        bigHUDOpenTask = nil
+        // The deferred-paste indicator (MiniHUD with the streaming AI
+        // task) is a DIFFERENT mode of BigHUD teardown — handled by
+        // deferPasteAfterAILoad, NOT this path. By the time we hit
+        // closeBigHUD, any deferred-paste state is stale; clear it
+        // so a late-arriving completion handler doesn't paste behind
+        // the user's back.
+        pendingDeferredPasteApp = nil
+        // Belt-and-braces — if a MiniHUD somehow survived (deferred-
+        // paste indicator that should have been hidden by the
+        // completion handler, or a direct-trigger orphan), take it
+        // down here. Mutually exclusive surfaces: when BigHUD closes,
+        // no MiniHUD should be left on screen.
+        MiniHUDController.shared.hide()
         bigHUDState.aiInflight = nil
         bigHUDState.accumulator = nil
         bigHUDPanel?.orderOut(nil)
+        // Same anti-resurrection guard as deferPasteAfterAILoad — kill
+        // any pending 80 ms visibility retry that might still re-show
+        // the panel after we've explicitly torn down.
+        cancelBigHUDShowRetry()
+        // CRITICAL: clear the EventTap's bigHUDIsActive flag. Without
+        // this the engine keeps thinking the HUD is up and swallows
+        // every keyDown system-wide via the navigation switch's
+        // `default: return nil` arm — including plain ⌘V into other
+        // apps (Settings text fields, Edit Action sample input,
+        // anywhere). User-reported: "can't paste into Sample Input,
+        // only type." Normal gesture-mode close already clears the
+        // flag via the ⌥⌘-release flagsChanged path, but X-button /
+        // Esc / Limited Mode commit / programmatic close all bypass
+        // it. Belt-and-braces: always reset on teardown.
+        (engine as? EventTapEngine)?.resetHudActive()
     }
 
     private func navigate(_ direction: NavDirection) {
@@ -1527,22 +1717,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     /// path), or for AI actions whose configured provider is missing.
     @MainActor
     private func makeAIInflight(for action: ClipboardAction) -> AIInflight? {
-        guard let ai = action as? AIAction else { return nil }
-        // Resolve providerID: nil/empty means "follow the default".
-        let resolvedID: String? = {
-            if let id = ai.providerID, !id.isEmpty { return id }
-            return AIProviderRegistry.shared.config.defaultProviderID
+        // Both AIAction (text) and AIImageAction (image) drive the
+        // "Provider · Model · 4.2s" HUD chrome. Extract the per-action
+        // provider override (if any) — both store it as `providerID:
+        // String?` with the same "nil/empty means follow default"
+        // semantics. Without the AIImageAction arm, image actions
+        // hit the generic "processing…" loading panel because
+        // bigHUDState.aiInflight stays nil — matches the bug the user
+        // reported ("вижу processing и спинер" instead of provider
+        // chrome).
+        let explicitID: String?
+        let isImageish: Bool
+        if let ai = action as? AIAction {
+            explicitID = ai.providerID
+            isImageish = false
+        } else if let ai = action as? AIImageAction {
+            explicitID = ai.providerID
+            isImageish = true
+        } else if let ai = action as? AITextToImageAction {
+            explicitID = ai.providerID
+            isImageish = true
+        } else {
+            return nil
+        }
+        let cfg = AIProviderRegistry.shared.config
+        // Mirror the runtime resolveProvider chain so the chrome
+        // doesn't lie about which provider actually runs the
+        // request. For image actions specifically, the chat default
+        // may be non-image-capable (Anthropic etc.) — runtime then
+        // soft-falls back to OpenAI / Gemini / OpenRouter — and the
+        // inflight label has to reflect THAT, not the chat default.
+        let cp: ConfiguredProvider? = {
+            if let id = explicitID, !id.isEmpty,
+               let p = cfg.providers.first(where: { $0.id == id }),
+               p.enabled,
+               (!isImageish || p.kind.supportsImageEdit) {
+                return p
+            }
+            if let defaultID = cfg.defaultProviderID,
+               let p = cfg.providers.first(where: { $0.id == defaultID }),
+               p.enabled,
+               (!isImageish || p.kind.supportsImageEdit) {
+                return p
+            }
+            if isImageish {
+                // Cheapest-first (Gemini → OpenRouter → OpenAI →
+                // Custom). Same ranking the runtime uses, so the
+                // HUD chrome surfaces the worker that's actually
+                // about to fire instead of a stale registry-order
+                // pick.
+                return AIProviderRegistry.shared.cheapestEnabledImageProvider()
+            }
+            return cfg.providers.first { $0.enabled }
         }()
-        guard let id = resolvedID, !id.isEmpty,
-              let cp = AIProviderRegistry.shared.config.providers.first(where: { $0.id == id })
-        else {
+        guard let cp = cp else {
             return AIInflight(providerLabel: "AI",
                               modelName: "unknown",
                               actionTitle: action.title,
                               startedAt: Date())
         }
+        // For image actions the actual on-the-wire model is the
+        // image endpoint (gpt-image-1 for OpenAI, gemini-2.5-flash-
+        // image-preview for Gemini, etc.) — not the configured chat
+        // model. Surface the actual model so the chrome doesn't lie.
+        let modelLabel: String = isImageish
+            ? (cp.kind == .gemini ? "gemini-2.5-flash-image-preview" : "gpt-image-1")
+            : cp.model
         return AIInflight(providerLabel: cp.displayName,
-                          modelName: cp.model,
+                          modelName: modelLabel,
                           actionTitle: action.title,
                           startedAt: Date())
     }
@@ -1598,14 +1840,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         }
         guard let panel = bigHUDPanel else { return }
         centerOnActiveScreen(panel)
+        bigHUDShowSession &+= 1
+        let session = bigHUDShowSession
         if engine.bigHUDMode == .summon {
             panel.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         } else {
             panel.orderFrontRegardless()
         }
-        // Verify visibility after a short delay and retry the show if needed.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+        // Verify visibility after a short delay and retry the show if
+        // window-server raced our orderFront. Critical: only re-assert
+        // visibility when the show is STILL the active one. Without
+        // the session check, a fast-tap sequence could fire the retry
+        // after commitBigHUD / deferPasteAfterAILoad already
+        // orderOut'd the panel — the retry would resurrect the BigHUD
+        // on top of the deferred-paste MiniHUD, producing the
+        // "2 HUDs at once" the user reports. Session counter bumps on
+        // every show; closeBigHUD / deferPasteAfterAILoad bump it
+        // too via `cancelBigHUDShowRetry()` so any pending retry
+        // sees a stale session and bails.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+            guard let self = self else { return }
+            guard session == self.bigHUDShowSession else { return }
             if let p = self.bigHUDPanel, !p.isVisible {
                 NSLog("DrPaste: HUD did not become visible, retry")
                 if self.engine.bigHUDMode == .summon {
@@ -1615,6 +1871,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                 }
             }
         }
+    }
+
+    /// Bump the session counter so any pending `showBigHUD` retry
+    /// captured before this call sees a stale session and skips its
+    /// re-assert. Called from teardown paths (`closeBigHUD`,
+    /// `deferPasteAfterAILoad`) so a freshly-orderOut'd panel doesn't
+    /// get resurrected by a late retry.
+    private func cancelBigHUDShowRetry() {
+        bigHUDShowSession &+= 1
     }
 
     private func centerOnActiveScreen(_ panel: NSPanel) {
@@ -1662,7 +1927,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             let cmd = event.modifierFlags.contains(.command)
             switch kc {
             case kVK_Return, kVK_ANSI_KeypadEnter:
-                self.commitBigHUD(); return nil
+                // ⌥⌘⏎ — paste the focused outcome into the saved
+                // target app but KEEP the HUD open so the user can
+                // queue up another paste (insert several clipboard
+                // items in a row without re-opening the HUD each
+                // time). Bare ⏎ stays the historical "paste + close".
+                let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                if mods.contains([.command, .option]) {
+                    self.commitBigHUDKeepingOpen()
+                } else {
+                    self.commitBigHUD()
+                }
+                return nil
             case kVK_Escape:
                 self.closeBigHUD(); return nil
             case kVK_Delete:                       // Backspace deletes the focused item in Limited Mode

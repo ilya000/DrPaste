@@ -68,8 +68,12 @@ struct SettingsView: View {
         .frame(minWidth: 760, minHeight: 520)
     }
 
+    /// Single source of truth — `SemanticKind.userVisibleKinds`.
+    /// Keeps the tab list in lock-step with the "Applies to"
+    /// checkbox grid in the Edit Action sheet so the user can
+    /// reliably reason about what each checkbox enables.
     private var visibleContentTypes: [SemanticKind] {
-        [.text, .richText, .url, .json, .table, .markdown, .code, .image, .files]
+        SemanticKind.userVisibleKinds
     }
 }
 
@@ -349,6 +353,25 @@ struct AIProvidersTab: View {
     /// when the last test failed (with the reason in the tooltip).
     @State private var statusByProvider: [String: ConnectionStatus] = [:]
 
+    /// Per-provider live usage snapshot (today's cost / requests /
+    /// tokens). Populated asynchronously on tab appear and on
+    /// manual refresh — see `refreshUsage(for:)`. Providers without
+    /// a public usage API (Anthropic / Gemini / local) never get
+    /// an entry; the row hides the usage line for those.
+    @State private var usageByProvider: [String: UsageSnapshot] = [:]
+    /// Per-provider "fetch in flight" flag — drives the small
+    /// spinner on the usage line so the user knows a refresh is
+    /// happening (rather than thinking the row is stale).
+    @State private var usageLoadingByProvider: [String: Bool] = [:]
+    /// Providers whose probe returned `notSupportedForKey` (401/403
+    /// — key works for inference but lacks the org/billing scope
+    /// the usage endpoint wants). We don't surface this as a
+    /// permanent error in the UI because the user can't fix it
+    /// from inside DrPaste — instead the usage line is hidden
+    /// entirely for these providers, same treatment as Anthropic
+    /// / Gemini / local providers that have no usage API at all.
+    @State private var usageUnsupportedProviders: Set<String> = []
+
     enum ConnectionStatus: Equatable {
         case unknown
         case checking
@@ -411,7 +434,16 @@ struct AIProvidersTab: View {
             keyStorageDisabledNotice
         }
         .padding()
-        .task { await refreshAllStatuses() }
+        .task {
+            // Connection probes and usage probes run in parallel —
+            // independent endpoints, no shared rate-limit budget,
+            // no reason to serialize. Both populate row chrome
+            // (status dot + usage line) as soon as their HTTP
+            // round-trips return.
+            async let statuses: () = refreshAllStatuses()
+            async let usage: () = refreshAllUsage()
+            _ = await (statuses, usage)
+        }
         .sheet(item: $editingProvider) { p in
             ProviderEditor(provider: p) { result in
                 if result.delete {
@@ -558,6 +590,18 @@ struct AIProvidersTab: View {
                      ? "Local · \(p.baseURL ?? "no URL") · \(p.model)"
                      : "\(isReady ? "Configured" : "Not configured") · \(p.model)")
                     .font(.caption).foregroundStyle(.secondary)
+                // Today's usage line — only shown for providers that
+                // (a) expose a public usage API at all (OpenAI /
+                // OpenRouter so far) AND (b) accepted our key for
+                // that endpoint. Hidden entirely otherwise so the
+                // row stays compact for providers we can't probe
+                // OR whose probe came back 401/403 (no fix path
+                // from inside DrPaste — see
+                // `usageUnsupportedProviders` doc).
+                if UsageProbeRegistry.probe(for: p.kind) != nil,
+                   !usageUnsupportedProviders.contains(p.id) {
+                    usageLine(for: p, isReady: isReady)
+                }
             }
             Spacer()
             // Delete moved into the editor footer (matches the Action editor's
@@ -597,6 +641,139 @@ struct AIProvidersTab: View {
         case .checking: return "Testing connection…"
         case .ok: return "Last test passed."
         case .failed(let reason): return "Last test failed: \(reason)"
+        }
+    }
+
+    /// Compact "Today: $0.42 · 14 reqs · 12,345 tokens" line under
+    /// the provider name. Three states:
+    ///   • Loading — small inline spinner + "Today: loading…"
+    ///   • Loaded with error — orange dot + truncated error
+    ///     (missing admin key, 401, etc.) so the user knows
+    ///     what to fix
+    ///   • Loaded OK — formatted numbers, clickable to refresh
+    ///
+    /// The whole line is wrapped in a Button so a click triggers
+    /// `refreshUsage(for:)` — gives the user manual control without
+    /// a separate refresh icon eating row space.
+    @ViewBuilder
+    private func usageLine(for p: ConfiguredProvider, isReady: Bool) -> some View {
+        let loading = usageLoadingByProvider[p.id] == true
+        let snap = usageByProvider[p.id]
+        Button {
+            Task { await refreshUsage(for: p) }
+        } label: {
+            HStack(spacing: 4) {
+                if loading {
+                    ProgressView().controlSize(.mini).scaleEffect(0.55)
+                        .frame(width: 8, height: 8)
+                    Text("Today: loading…")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                } else if let snap = snap, let err = snap.error {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.orange)
+                    Text("Today: \(err)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else if let snap = snap {
+                    Text(formattedUsageLine(snap, providerKind: p.kind))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 8))
+                        .foregroundStyle(.tertiary)
+                } else if isReady {
+                    Text("Today: tap to fetch")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isReady)
+        .help(usageTooltip(snap: snap))
+    }
+
+    /// Compose the numeric line. Cost always shown; requests and
+    /// tokens only when the probe populated them (OpenAI costs API
+    /// doesn't return tokens; OpenRouter doesn't return per-day
+    /// request counts) — we don't print "0 reqs" when we just
+    /// don't know.
+    private func formattedUsageLine(_ snap: UsageSnapshot, providerKind: ProviderKind) -> String {
+        var parts: [String] = []
+        parts.append("Today: $\(String(format: "%.3f", snap.costUSD))")
+        if snap.requestCount > 0 {
+            parts.append("\(snap.requestCount) reqs")
+        }
+        if snap.tokenCount > 0 {
+            // Thousands separator for readability.
+            let f = NumberFormatter()
+            f.numberStyle = .decimal
+            let tk = f.string(from: NSNumber(value: snap.tokenCount)) ?? "\(snap.tokenCount)"
+            parts.append("\(tk) tokens")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func usageTooltip(snap: UsageSnapshot?) -> String {
+        guard let snap = snap else { return "Click to fetch today's usage from the provider." }
+        if let err = snap.error { return "Fetch failed: \(err). Click to retry." }
+        let ago = Int(Date().timeIntervalSince(snap.fetchedAt))
+        let agoText = ago < 60 ? "\(ago)s ago"
+                     : ago < 3600 ? "\(ago/60)m ago"
+                     : "\(ago/3600)h ago"
+        return "Updated \(agoText). Click to refresh."
+    }
+
+    /// Fire one provider's usage probe. Catches all errors and
+    /// stores them on the snapshot so the row renders a single
+    /// orange dot + reason instead of throwing. Special-cases
+    /// `.notSupportedForKey` (401/403): marks the provider as
+    /// permanently unsupported for this session so the row hides
+    /// the usage line entirely — same UX as Anthropic / Gemini /
+    /// local providers that have no usage API to begin with.
+    private func refreshUsage(for p: ConfiguredProvider) async {
+        guard let probe = UsageProbeRegistry.probe(for: p.kind) else { return }
+        await MainActor.run { usageLoadingByProvider[p.id] = true }
+        defer { Task { @MainActor in usageLoadingByProvider[p.id] = false } }
+        do {
+            let snap = try await probe.fetchToday(provider: p)
+            await MainActor.run {
+                usageByProvider[p.id] = snap
+                usageUnsupportedProviders.remove(p.id)
+            }
+        } catch UsageProbeError.notSupportedForKey {
+            await MainActor.run {
+                usageUnsupportedProviders.insert(p.id)
+                usageByProvider.removeValue(forKey: p.id)
+            }
+        } catch {
+            let msg = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            await MainActor.run {
+                usageByProvider[p.id] = UsageSnapshot(costUSD: 0,
+                                                       requestCount: 0,
+                                                       tokenCount: 0,
+                                                       fetchedAt: Date(),
+                                                       error: msg)
+            }
+        }
+    }
+
+    /// Same idea as `refreshAllStatuses` but for usage probes —
+    /// fires every enabled provider's probe in parallel so the
+    /// tab populates quickly even on slow networks.
+    private func refreshAllUsage() async {
+        await withTaskGroup(of: Void.self) { group in
+            for p in providerRegistry.config.providers {
+                guard UsageProbeRegistry.probe(for: p.kind) != nil else { continue }
+                let hasKey = APIKeyStorage.load(for: p.id) != nil
+                let isReady = p.kind.isLocal || hasKey
+                guard isReady else { continue }
+                group.addTask { await refreshUsage(for: p) }
+            }
         }
     }
 
@@ -779,6 +956,18 @@ struct ProviderEditor: View {
                 }
             }
 
+            // Image-capability note. Tells the user upfront what
+            // routing this provider gets when an image action
+            // (AI: Watercolor / AI: Whiteboard sketch / etc.) is
+            // run against it — particularly important for the
+            // `.custom` kind where DrPaste sends OpenAI-shape
+            // `/images/edits` and `/images/generations` requests
+            // and the user's endpoint may or may not implement
+            // them. For Anthropic / Groq / etc. (no image edit)
+            // we explicitly say so to set expectations.
+            imageCapabilityNote
+                .padding(.vertical, 2)
+
             HStack {
                 Button("Test connection") { runTest() }
                     .disabled(testing)
@@ -831,6 +1020,85 @@ struct ProviderEditor: View {
         .onAppear {
             initialKey = APIKeyStorage.load(for: provider.id)
             initialProvider = provider
+        }
+    }
+
+    /// Per-provider note explaining the image-action routing —
+    /// shown above "Test connection" so the user knows ahead of time
+    /// what shape of HTTP request their endpoint will receive when
+    /// an image action targets it. Critical for `.custom` where the
+    /// user picks the URL and we can't probe what it speaks; useful
+    /// for all kinds so the picture is consistent.
+    @ViewBuilder
+    private var imageCapabilityNote: some View {
+        let kind = provider.kind
+        if kind == .custom {
+            HStack(alignment: .top, spacing: 6) {
+                Spacer().frame(width: 110)
+                Image(systemName: "photo.badge.exclamationmark")
+                    .foregroundStyle(.orange)
+                    .font(.caption)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Image actions: OpenAI wire format")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("If you target this provider from an image action (Pencil sketch, Watercolor, Whiteboard sketch, …), DrPaste sends OpenAI-shape requests to `<Base URL>/images/edits` (image→image) and `<Base URL>/images/generations` (text→image). Works against proxies that mirror the OpenAI API. If your endpoint doesn't implement those routes, image actions will fail with an HTTP error — text actions still work normally.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+            }
+        } else if kind.supportsImageEdit {
+            // OpenAI / Gemini / OpenRouter — native routing handled
+            // by AIImageHTTP per-kind dispatch.
+            HStack(alignment: .top, spacing: 6) {
+                Spacer().frame(width: 110)
+                Image(systemName: "photo.fill")
+                    .foregroundStyle(.green)
+                    .font(.caption)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Image actions: supported")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(imageRouteDescription(for: kind))
+                        .font(.caption2).foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+            }
+        } else {
+            // Text-only providers (Anthropic / Ollama / Groq / etc.).
+            // Explicit "won't work" message — sets expectations so
+            // the user doesn't waste time wiring this provider into
+            // an image action and watching it fail.
+            HStack(alignment: .top, spacing: 6) {
+                Spacer().frame(width: 110)
+                Image(systemName: "photo.fill")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Image actions: not supported")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("\(kind.displayName) doesn't have an image-edit / generation API in DrPaste. Use it for text actions (Translate, Summarize, etc.) — image actions need OpenAI, Google Gemini, OpenRouter (with an image-capable model), or a Custom OpenAI-compatible endpoint.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+            }
+        }
+    }
+
+    /// Per-kind short description of the image-route DrPaste uses.
+    /// Surfaced in the green "Image actions: supported" note so the
+    /// user can see which model their image actions actually hit.
+    private func imageRouteDescription(for kind: ProviderKind) -> String {
+        switch kind {
+        case .openai:
+            return "Routes to `gpt-image-1` via `/v1/images/edits` (image→image) and `/v1/images/generations` (text→image). ~$0.04 per 1024×1024 image, standard quality."
+        case .gemini:
+            return "Routes to `gemini-2.5-flash-image-preview` via `:generateContent`. Image returned as inlineData base64 in the response. Cheap (~$0.005-0.01 per image)."
+        case .openrouter:
+            return "Routes to your configured model via `/v1/chat/completions` with multimodal content. Works only if the model supports image output (e.g. `google/gemini-2.5-flash-image-preview`, Flux via `fal-ai/*`). Text-only chat models will fail with “no image returned”."
+        default:
+            return ""
         }
     }
 
@@ -1024,8 +1292,23 @@ struct ContentTypeTab: View {
     let store: ClipboardStore
 
     @State private var sampleText: String = ""
+    /// For image-kind tabs only: the current Sample Input image. Loaded
+    /// on appear from `ActionTestSamples.makeSampleImageItem()` (bundled
+    /// Mandrill if present, else procedural portrait), drag-drop-
+    /// replaceable. nil for non-image tabs.
+    @State private var sampleImageItem: ClipboardItem? = nil
     @State private var result: ApplyOutcome? = nil
     @State private var runningID: String? = nil
+    /// Action title shown in the Result loading panel so the user
+    /// always sees WHAT is currently processing — not just an
+    /// anonymous "processing…" spinner. Cleared on completion.
+    @State private var runningActionTitle: String? = nil
+    /// AI inflight chrome for the Result pane — populated when an AI
+    /// action is running, cleared on completion. nil for local
+    /// transformations (the action-title path covers those instead).
+    @State private var resultInflight: AIInflight? = nil
+    @State private var resultElapsed: TimeInterval = 0
+    @State private var resultTickTimer: Timer? = nil
     @State private var editorContext: ActionEditorContext? = nil
 
     /// Standalone NSWindow that hosts ActionEditor. Replaces the previous
@@ -1049,7 +1332,36 @@ struct ContentTypeTab: View {
                 .frame(minWidth: 340, idealWidth: 400, maxWidth: .infinity)
         }
         .padding()
-        .onAppear { sampleText = SettingsSamples.sample(for: kind).previewText ?? "" }
+        .onAppear {
+            // Load persisted user overrides before falling back to
+            // the curated defaults. Sample input edits and dropped
+            // images now survive app restart (actions.json).
+            if kind == .image {
+                if let rel = registry.playgroundImageRel(forKind: kind),
+                   FileManager.default.fileExists(atPath:
+                        AppStorage.imagesDir.appendingPathComponent(rel).path),
+                   let item = loadPlaygroundImageItem(rel: rel) {
+                    sampleImageItem = item
+                } else {
+                    sampleImageItem = SettingsSamples.sample(for: kind)
+                }
+            } else {
+                if let override = registry.playgroundSample(forKind: kind) {
+                    sampleText = override
+                } else {
+                    sampleText = SettingsSamples.sample(for: kind).previewText ?? ""
+                }
+            }
+        }
+        .onChange(of: sampleText) { newValue in
+            // Persist on every keystroke. Cheap — actions.json is
+            // tiny (~few KB) and JSONEncoder is fast. The registry
+            // helper diffs against the curated default and removes
+            // the override when the text matches, so just hammering
+            // Reset never leaves stale entries behind.
+            guard kind != .image else { return }
+            registry.setPlaygroundSample(newValue, forKind: kind)
+        }
         .onChange(of: editorContextKey) { _ in
             // Whenever editorContext flips from nil → non-nil, open a
             // window for the new context. Going non-nil → nil closes it
@@ -1085,21 +1397,274 @@ struct ContentTypeTab: View {
 
     private var leftColumn: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("Sample input").font(.headline)
+                // Kind-specific affordance hint — tells the user what
+                // they can do here without having to discover it.
+                // Image tab: drop a picture from Finder. Other tabs:
+                // editable text. Keeps the header compact (caption2)
+                // while still being legible.
+                Text(sampleInputHint)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
                 Spacer()
                 Button("Reset") { resetSample() }
                     .controlSize(.small)
             }
-            TextEditor(text: $sampleText)
-                .font(.system(.body, design: .monospaced))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+            // Per-kind Sample input:
+            //   • image    → live image preview + drop target
+            //   • richText → read-only rendered RTF preview. The
+            //                curated sample is a hand-built
+            //                NSAttributedString with headings, bold,
+            //                italic, and hyperlinks; rendering it
+            //                through a plain TextEditor would strip
+            //                the formatting on display, so the user
+            //                needs RichTextPreviewView to actually
+            //                see the sample.
+            //   • all other → standard editable monospaced text
+            //                editor. Markdown stays plain text here
+            //                — its source IS plain text with markers;
+            //                if the user wants to see the rendered
+            //                version they click Run on any markdown
+            //                action (md_to_plain, a custom AI, etc.)
+            //                and the Result pane already renders
+            //                action output. No need for a redundant
+            //                second preview panel.
+            switch kind {
+            case .image:
+                sampleImagePanel
+            case .richText:
+                sampleRichTextPreview
+            default:
+                TextEditor(text: $sampleText)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+            }
 
             Text("Result").font(.headline).padding(.top, 6)
-            ResultPane(outcome: result, kind: kind)
-                .frame(maxHeight: .infinity)
+            // Replace the legacy ResultPane (text-only switch on
+            // ApplyOutcome) with TestOutputPane, the same HUD-style
+            // renderer the Edit Action sheet uses. Gives the
+            // Playground identical chrome: spinner with "Provider ·
+            // Model · 4.2s" for AI actions, failure notices, image /
+            // rich-text / files preview, etc.
+            // Playground Result pane has many actions on the right
+            // — no single "the action to run" mapping for an empty-
+            // state play button. Keep onRun nil so the placeholder
+            // stays text-only ("Click Run next to an action…"); the
+            // user picks which action to fire via the explicit Run
+            // buttons in the actions list. Edit Action sheet (one
+            // action under test) is where the play-button affordance
+            // is meaningful — it passes onRun there.
+            //
+            // `actionTitle` flows into the loading panel so the user
+            // sees WHICH action is currently running (Translate, AI:
+            // Watercolor, Slugify, …) — even local transformations
+            // get a meaningful title above the spinner instead of
+            // an anonymous "processing…".
+            TestOutputPane(
+                outcome: result,
+                isRunning: runningID != nil,
+                inflight: resultInflight,
+                elapsed: resultElapsed,
+                actionTitle: runningActionTitle
+            )
+            .frame(maxHeight: .infinity)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
         }
+    }
+
+    /// Per-kind affordance hint shown next to the "Sample input"
+    /// header — discoverability for drag-drop and "you can edit
+    /// this" semantics. Most users don't think to try a drop until
+    /// you tell them, and the Image tab in particular was looking
+    /// like a static preview before the hint was added.
+    private var sampleInputHint: String {
+        switch kind {
+        case .image:
+            return "— drop an image here to replace the sample"
+        case .richText:
+            return "— read-only rich-text preview"
+        default:
+            return "— edit the text or drag text content in"
+        }
+    }
+
+    /// Rich-text Sample input: read-only rendered preview of the
+    /// curated NSAttributedString sample. We display the actual
+    /// formatted text (headings, bold, italic, hyperlink) through
+    /// the same NSTextView wrapper BigHUD uses — gives the user a
+    /// honest visual of what gets fed into rich_to_md / rich_to_html /
+    /// rich_to_wiki when they click Run. Read-only because the
+    /// curated sample is built programmatically (`richTextSample()`
+    /// in ActionConfig.swift) and a TextEditor would only allow plain-
+    /// text edits, destroying the formatting on first keystroke.
+    @ViewBuilder
+    private var sampleRichTextPreview: some View {
+        let sampleItem = SettingsSamples.sample(for: .richText)
+        ZStack {
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.secondary.opacity(0.3))
+            if let attr = RichTextLoader.attributedString(from: sampleItem) {
+                RichTextPreviewView(attributedString: attr, fontScale: 1.0)
+                    .padding(6)
+            } else {
+                Text("(no rich text sample available)")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Image-kind Sample input: live preview of the current sample
+    /// image with a drop target overlay so the user can replace the
+    /// bundled / procedural default with their own picture by dragging
+    /// it in from Finder or another app.
+    @ViewBuilder
+    private var sampleImagePanel: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.secondary.opacity(0.3))
+            if let item = sampleImageItem {
+                ImagePreview(item: item)
+                    .padding(6)
+            } else {
+                VStack(spacing: 6) {
+                    Image(systemName: "photo")
+                        .font(.system(size: 22))
+                        .foregroundStyle(.secondary)
+                    Text("Drop an image here").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onDrop(of: ["public.file-url", "public.image"], isTargeted: nil) { providers in
+            guard let provider = providers.first else { return false }
+            if provider.hasItemConformingToTypeIdentifier("public.file-url") {
+                provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
+                    var fileURL: URL?
+                    if let data = item as? Data,
+                       let url = URL(dataRepresentation: data, relativeTo: nil) {
+                        fileURL = url
+                    } else if let url = item as? URL {
+                        fileURL = url
+                    }
+                    if let url = fileURL {
+                        DispatchQueue.main.async { handleDroppedSampleImage(at: url) }
+                    }
+                }
+                return true
+            }
+            if provider.hasItemConformingToTypeIdentifier("public.image") {
+                provider.loadDataRepresentation(forTypeIdentifier: "public.image") { data, _ in
+                    guard let data = data else { return }
+                    let tmp = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("drpaste-playground-drop-\(UUID().uuidString).png")
+                    try? data.write(to: tmp)
+                    DispatchQueue.main.async { handleDroppedSampleImage(at: tmp) }
+                }
+                return true
+            }
+            return false
+        }
+    }
+
+    /// Drop handler — copies the dropped image into AppStorage.imagesDir
+    /// under a stable per-tab filename so repeated runs reuse the
+    /// bytes, then refreshes the in-memory sampleImageItem so the
+    /// preview updates immediately.
+    @MainActor
+    private func handleDroppedSampleImage(at sourceURL: URL) {
+        guard let data = try? Data(contentsOf: sourceURL),
+              let img = NSImage(data: data) else { return }
+        let pngData: Data = {
+            if data.count > 8,
+               data[0] == 0x89, data[1] == 0x50, data[2] == 0x4E, data[3] == 0x47 {
+                return data
+            }
+            if let tiff = img.tiffRepresentation,
+               let bmp = NSBitmapImageRep(data: tiff),
+               let png = bmp.representation(using: .png, properties: [:]) {
+                return png
+            }
+            return data
+        }()
+        let rel = "drpaste-playground-image-sample.png"
+        let imagesURL = AppStorage.imagesDir.appendingPathComponent(rel)
+        let blobName = rel + ".bin"
+        let blobURL = AppStorage.blobsDir.appendingPathComponent(blobName)
+        do {
+            try pngData.write(to: imagesURL, options: .atomic)
+            try pngData.write(to: blobURL, options: .atomic)
+        } catch {
+            return
+        }
+        let (w, h): (Int, Int) = {
+            if let rep = img.representations.first {
+                return (rep.pixelsWide, rep.pixelsHigh)
+            }
+            return (Int(img.size.width), Int(img.size.height))
+        }()
+        sampleImageItem = ClipboardItem(
+            id: UUID(),
+            semantic: .image,
+            createdAt: Date(),
+            representations: ["public.png": blobName],
+            typesOrdered: ["public.png"],
+            previewText: "Custom playground image \(pngData.count / 1024) KB",
+            previewImageRel: rel,
+            originalImageWidth: w,
+            originalImageHeight: h,
+            originalImageFileSize: pngData.count,
+            imageFormat: "PNG",
+            sourceBundleID: nil,
+            sourceAppName: "Settings Playground",
+            sourceWindowTitle: nil,
+            tags: []
+        )
+        // Persist the drop so the next Settings open shows the same
+        // custom picture instead of resetting to Mandrill / wallpaper.
+        registry.setPlaygroundImageRel(rel, forKind: kind)
+    }
+
+    /// Reconstruct a ClipboardItem from a persisted image rel for the
+    /// Playground onAppear path. Mirrors handleDroppedSampleImage's
+    /// item shape so the live UI is identical after restart.
+    @MainActor
+    private func loadPlaygroundImageItem(rel: String) -> ClipboardItem? {
+        let url = AppStorage.imagesDir.appendingPathComponent(rel)
+        guard let data = try? Data(contentsOf: url),
+              let img = NSImage(data: data) else { return nil }
+        let blobName = rel + ".bin"
+        let blobURL = AppStorage.blobsDir.appendingPathComponent(blobName)
+        if !FileManager.default.fileExists(atPath: blobURL.path) {
+            try? data.write(to: blobURL)
+        }
+        let (w, h): (Int, Int) = {
+            if let rep = img.representations.first {
+                return (rep.pixelsWide, rep.pixelsHigh)
+            }
+            return (Int(img.size.width), Int(img.size.height))
+        }()
+        return ClipboardItem(
+            id: UUID(),
+            semantic: .image,
+            createdAt: Date(),
+            representations: ["public.png": blobName],
+            typesOrdered: ["public.png"],
+            previewText: "Custom playground image \(data.count / 1024) KB",
+            previewImageRel: rel,
+            originalImageWidth: w,
+            originalImageHeight: h,
+            originalImageFileSize: data.count,
+            imageFormat: "PNG",
+            sourceBundleID: nil,
+            sourceAppName: "Settings Playground",
+            sourceWindowTitle: nil,
+            tags: []
+        )
     }
 
     private var rightColumn: some View {
@@ -1197,11 +1762,30 @@ struct ContentTypeTab: View {
                     .padding(.horizontal, 5).padding(.vertical, 1)
                     .background(Capsule().fill(Color.primary.opacity(0.08)))
             }
-            Button { openEditor(for: action) } label: {
-                Image(systemName: "pencil")
+            // `square.and.pencil` is the canonical macOS edit /
+            // compose glyph (Mail, Notes, Reminders). Pairing it with
+            // the "Edit" text label gives the button a stronger
+            // affordance than text alone — users skimming the row
+            // recognise the icon family even before reading.
+            Button {
+                openEditor(for: action)
+                // Always raise the editor window after setting the
+                // context — handles the "same action re-clicked"
+                // case where editorContext doesn't change so the
+                // SwiftUI `onChange(of: editorContextKey)` handler
+                // never fires and the window stays buried behind
+                // Settings. Dispatched on the next runloop tick so
+                // the onChange-driven show() (if any) has a chance
+                // to build / replace the window first; raise() then
+                // hits whatever window ended up there.
+                DispatchQueue.main.async {
+                    editorWindow.raise()
+                }
+            } label: {
+                Label("Edit", systemImage: "square.and.pencil")
             }
             .controlSize(.small)
-            .buttonStyle(.borderless)
+            .help("Edit this action — title, prompt, provider, hotkey, applicable types")
             if runningID == action.id {
                 ProgressView().controlSize(.small)
             } else {
@@ -1223,7 +1807,9 @@ struct ContentTypeTab: View {
     /// Background tint distinguishes user-defined actions (subtle accent) from
     /// built-ins (neutral) without breaking the unified list visual rhythm.
     private func rowBackground(for action: ClipboardAction) -> Color {
-        if action is AIAction || action is CustomTransformationAction {
+        if action is AIAction
+            || action is AIImageAction
+            || action is CustomTransformationAction {
             return Color.accentColor.opacity(0.06)
         }
         return Color.primary.opacity(0.03)
@@ -1234,10 +1820,34 @@ struct ContentTypeTab: View {
     /// so seeded actions follow whichever provider is currently default.
     @ViewBuilder
     private func leadingIcon(for action: ClipboardAction) -> some View {
-        if let aiAction = action as? AIAction {
-            let badge = providerBadge(for: aiAction)
+        // Both AIAction (text) and AIImageAction (image) deserve the
+        // provider badge — they're both AI calls and the user wants
+        // to know which provider runs them. Bug: image actions used
+        // to fall through to the generic gear-icon BuiltinActionIcons
+        // path because the cast `action as? AIAction` missed
+        // AIImageAction (separate struct, not subclass). Fixed by
+        // checking both casts and feeding the resolved providerID
+        // through the same `providerBadge` helper.
+        if let ai = action as? AIAction {
+            let badge = providerBadge(providerID: ai.providerID, isImage: false)
             ProviderBadgeView(text: badge.label, color: badge.color,
                               fontSize: 11, iconName: badge.icon)
+        } else if let ai = action as? AIImageAction {
+            let badge = providerBadge(providerID: ai.providerID, isImage: true)
+            // Disabled state when the resolved provider can't actually
+            // do image edits — the badge renders grayscale + slash so
+            // the user spots the mismatch without running.
+            ProviderBadgeView(text: badge.label, color: badge.color,
+                              fontSize: 11, iconName: badge.icon,
+                              isAvailable: imageProviderAvailable(forID: ai.providerID))
+        } else if let ai = action as? AITextToImageAction {
+            // Same image-capable provider check as AIImageAction —
+            // text→image generation also requires an image-output
+            // provider, just doesn't take an image as input.
+            let badge = providerBadge(providerID: ai.providerID, isImage: true)
+            ProviderBadgeView(text: badge.label, color: badge.color,
+                              fontSize: 11, iconName: badge.icon,
+                              isAvailable: imageProviderAvailable(forID: ai.providerID))
         } else if let tx = action as? CustomTransformationAction {
             Image(systemName: tx.descriptor.engine?.iconName ?? "function")
                 .font(.system(size: 11))
@@ -1252,9 +1862,16 @@ struct ContentTypeTab: View {
     }
 
     /// Routes the pencil button to the correct editor sheet for the action's type.
+    /// Both `AIAction` (text-in/text-out) and `AIImageAction` (image-in/image-out)
+    /// are materialised from `CustomAIDescriptor` entries with different `kind`
+    /// values, so the editor route is the same `.editAI(desc)` for both — the
+    /// ActionEditor sheet preserves `kind` on save and renders the prompt /
+    /// provider picker / hotkey fields the same way regardless. Checking by
+    /// descriptor membership instead of concrete type also covers any future
+    /// AIAction variants that ship as customAI without us having to update
+    /// this routing arm.
     private func openEditor(for action: ClipboardAction) {
-        if action is AIAction,
-           let desc = registry.config.customAI.first(where: { $0.id == action.id }) {
+        if let desc = registry.config.customAI.first(where: { $0.id == action.id }) {
             editorContext = .editAI(desc)
             return
         }
@@ -1269,31 +1886,71 @@ struct ContentTypeTab: View {
         )
     }
 
-    /// Provider badge for AI action in Settings list (mirrors HUD chip).
-    /// Resolves dynamically: actions with nil or empty providerID follow the current
-    /// default provider — when the user changes the default, every default-bound row
-    /// updates because @ObservedObject on the provider registry republishes.
-    private func providerBadge(for ai: AIAction)
+    /// Provider badge for an AI action in the Settings list (mirrors
+    /// HUD chip). Resolves dynamically: nil/empty providerID means
+    /// "follow whatever is currently default" so seeded actions
+    /// always show the live default provider's brand. When the user
+    /// flips the default in Settings → AI, every default-bound row
+    /// repaints because `@ObservedObject providerRegistry` republishes.
+    ///
+    /// Whether an AI action can actually execute — runs the same
+    /// resolver as the badge and returns true iff a valid worker
+    /// provider exists. Used by the row's leading icon to render
+    /// disabled (greyscale + slash) when nothing in the registry
+    /// can handle the action's capability requirement.
+    private func imageProviderAvailable(forID providerID: String?) -> Bool {
+        resolveExecutorProvider(explicitID: providerID, needsImage: true) != nil
+    }
+
+    /// Single source of truth for "which provider is actually going
+    /// to run this AI action". All Settings-side surfaces (action
+    /// row badge brand + color + icon, leading-icon availability
+    /// slash, future tooltips) route through here so the row never
+    /// disagrees with itself or with the BigHUD / Edit Action chip
+    /// about who's about to fire. Mirrors
+    /// `AIImageAction.resolveProvider` (per-action explicit →
+    /// chat default → cheapest image-capable fallback).
+    private func resolveExecutorProvider(explicitID: String?, needsImage: Bool)
+        -> ConfiguredProvider?
+    {
+        let cfg = AIProviderRegistry.shared.config
+        // 1. Explicit override — only if usable.
+        if let id = explicitID, !id.isEmpty,
+           let cp = cfg.providers.first(where: { $0.id == id }),
+           cp.enabled,
+           (!needsImage || cp.kind.supportsImageEdit) {
+            return cp
+        }
+        // 2. Chat default — only if usable for this operation.
+        if let defaultID = cfg.defaultProviderID,
+           let cp = cfg.providers.first(where: { $0.id == defaultID }),
+           cp.enabled,
+           (!needsImage || cp.kind.supportsImageEdit) {
+            return cp
+        }
+        // 3. Image soft-fallback — cheapest enabled image-capable
+        //    by `imageEditCostRank` (Gemini → OpenRouter → OpenAI →
+        //    Custom). Same ordering as the runtime resolver, so
+        //    badge brand matches worker brand.
+        if needsImage {
+            return AIProviderRegistry.shared.cheapestEnabledImageProvider()
+        }
+        // 4. Text fallback — any enabled provider.
+        return cfg.providers.first { $0.enabled }
+    }
+
+    private func providerBadge(providerID: String?, isImage: Bool)
         -> (label: String, color: Color, icon: String)
     {
-        let resolvedKind: ProviderKind? = {
-            if let id = ai.providerID, !id.isEmpty,
-               let cp = AIProviderRegistry.shared.config.providers.first(where: { $0.id == id }) {
-                return cp.kind
-            }
-            if let defaultID = AIProviderRegistry.shared.config.defaultProviderID,
-               !defaultID.isEmpty,
-               let cp = AIProviderRegistry.shared.config.providers.first(where: { $0.id == defaultID }) {
-                return cp.kind
-            }
-            return nil
-        }()
-        guard let kind = resolvedKind else { return ("AI", .gray, "sparkle") }
+        guard let cp = resolveExecutorProvider(explicitID: providerID,
+                                               needsImage: isImage) else {
+            return ("AI", .gray, "sparkle")
+        }
         // Single source of truth for the brand palette — see
         // `ProviderKind.brandColor`. Used here in the Settings actions
         // list, in HUD chip badges, and in the Settings provider list,
         // so the same brand always paints the same hue.
-        return (kind.badgeLabel, kind.brandColor, kind.iconName)
+        return (cp.kind.badgeLabel, cp.kind.brandColor, cp.kind.iconName)
     }
 
     private func enabledBinding(_ actionID: String) -> Binding<Bool> {
@@ -1304,98 +1961,169 @@ struct ContentTypeTab: View {
     }
 
     private func makeSampleItem() -> ClipboardItem {
+        // Image tab uses the in-memory sampleImageItem (bundled
+        // Mandrill / procedural portrait / user-dropped picture).
+        // Text-based tabs use the text from the editor, wrapped in
+        // the kind-appropriate ClipboardItem shape.
+        if kind == .image, let img = sampleImageItem {
+            return img
+        }
         var item = SettingsSamples.sample(for: kind)
         item.previewText = sampleText
         return item
     }
 
     private func resetSample() {
-        sampleText = SettingsSamples.sample(for: kind).previewText ?? ""
+        // Drop any persisted override BEFORE rebuilding the in-memory
+        // sample — registry.set*(nil, ...) removes the entry from
+        // actions.json so the next Settings open reads the curated
+        // default fresh. The onChange handler would otherwise re-
+        // persist the curated value because the in-memory text just
+        // changed.
+        if kind == .image {
+            registry.setPlaygroundImageRel(nil, forKind: kind)
+        } else {
+            registry.setPlaygroundSample(nil, forKind: kind)
+        }
+        let fresh = SettingsSamples.sample(for: kind)
+        if kind == .image {
+            sampleImageItem = fresh
+        } else {
+            sampleText = fresh.previewText ?? ""
+        }
     }
 
     private func run(_ action: ClipboardAction) {
         let item = makeSampleItem()
         let ctx = ContextDetector.detect(item)
         runningID = action.id
+        runningActionTitle = registry.displayTitle(forActionID: action.id,
+                                                    defaultTitle: action.title)
+        result = nil
+        resultElapsed = 0
+        resultTickTimer?.invalidate()
+        resultTickTimer = nil
+        // Populate AI chrome for the Result pane spinner when the
+        // action talks to a provider — text AIAction, AIImageAction,
+        // and AITextToImageAction all route through here. Reach into
+        // AIProviderRegistry directly so the Playground doesn't
+        // depend on AppDelegate.
+        resultInflight = inflight(for: action)
+        // Always start the tick — even local actions get an
+        // elapsed counter and the action-title chrome via
+        // TestOutputPane. Spinner without context is unhelpful;
+        // spinner with "Trim · 0.1s" tells the user what's running.
+        startResultTick()
         Task {
             let outcome = await action.apply(item: item, context: ctx)
             await MainActor.run {
                 self.result = outcome
                 self.runningID = nil
+                self.runningActionTitle = nil
+                self.stopResultTick()
+                self.resultInflight = nil
             }
         }
     }
 
-}
-
-// MARK: - Result pane
-
-struct ResultPane: View {
-    let outcome: ApplyOutcome?
-    let kind: SemanticKind
-
-    var body: some View {
-        content
-            .frame(maxWidth: .infinity, minHeight: 80, alignment: .topLeading)
-            .padding(8)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.04)))
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        switch outcome {
-        case .none:
-            Text("(click Run to see result)").foregroundStyle(.secondary)
-        case .preview(let item):
-            preview(item)
-        case .failed(_, let reason, _):
-            HStack {
-                Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
-                Text(reason)
-            }
-        case .sideEffect(let desc, _):
-            HStack {
-                Image(systemName: "bolt").foregroundStyle(Color.accentColor)
-                Text(desc)
-            }
-        case .alternativeCommit(let item, let style):
-            VStack(alignment: .leading) {
-                Text("Will commit as \(styleLabel(style))")
-                    .font(.caption).foregroundStyle(Color.accentColor)
-                preview(item)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func preview(_ item: ClipboardItem) -> some View {
-        if item.semantic == .image, let rel = item.previewImageRel,
-           let img = NSImage(contentsOf: AppStorage.imagesDir.appendingPathComponent(rel)) {
-            Image(nsImage: img)
-                .resizable().aspectRatio(contentMode: .fit)
-                .frame(maxHeight: 200)
-        } else if item.semantic == .richText,
-                  let attr = RichTextLoader.attributedString(from: item) {
-            // #7: native NSTextView rendering preserves bold/italic/links/colors.
-            RichTextPreviewView(attributedString: attr)
+    /// Build the loading-panel inflight descriptor for an AI action,
+    /// or return nil for local actions (which still get an action-
+    /// title + elapsed-time chrome via TestOutputPane's title path).
+    ///
+    /// Resolution follows the SAME chain runtime uses (per-action
+    /// override → default → image-capable soft fallback). Without
+    /// this the Result panel lies — showing "Anthropic Claude" for
+    /// an image action whose chat default is Anthropic but whose
+    /// REAL execution rerouted to OpenAI via the soft fallback in
+    /// `AIImageAction.resolveProvider`.
+    private func inflight(for action: ClipboardAction) -> AIInflight? {
+        let explicitID: String?
+        let isImageish: Bool
+        if let ai = action as? AIAction {
+            explicitID = ai.providerID
+            isImageish = false
+        } else if let ai = action as? AIImageAction {
+            explicitID = ai.providerID
+            isImageish = true
+        } else if let ai = action as? AITextToImageAction {
+            explicitID = ai.providerID
+            isImageish = true
         } else {
-            ScrollView {
-                Text(item.previewText ?? "")
-                    .font(.system(.body, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
+            return nil
+        }
+        let cfg = AIProviderRegistry.shared.config
+        // Walk runtime's resolution chain so the label matches what
+        // actually runs.
+        let resolved: ConfiguredProvider? = {
+            // 1. Per-action override if usable.
+            if let id = explicitID, !id.isEmpty,
+               let cp = cfg.providers.first(where: { $0.id == id }),
+               cp.enabled,
+               (!isImageish || cp.kind.supportsImageEdit) {
+                return cp
+            }
+            // 2. Configured default if usable.
+            if let defaultID = cfg.defaultProviderID,
+               let cp = cfg.providers.first(where: { $0.id == defaultID }),
+               cp.enabled,
+               (!isImageish || cp.kind.supportsImageEdit) {
+                return cp
+            }
+            // 3. Image-soft-fallback for image actions only.
+            //    Walk by `imageEditCostRank` (Gemini → OpenRouter →
+            //    OpenAI → Custom) so this stays in sync with both
+            //    `AIImageAction.resolveProvider` and the Edit Action
+            //    provider picker auto-select.
+            if isImageish {
+                return AIProviderRegistry.shared.cheapestEnabledImageProvider()
+            }
+            // 4. Any enabled provider for text actions.
+            return cfg.providers.first { $0.enabled }
+        }()
+        guard let cp = resolved else {
+            return AIInflight(providerLabel: "AI",
+                              modelName: "unknown",
+                              actionTitle: action.title,
+                              startedAt: Date())
+        }
+        let modelLabel: String
+        if isImageish {
+            modelLabel = (cp.kind == .gemini)
+                ? "gemini-2.5-flash-image-preview"
+                : "gpt-image-1"
+        } else {
+            modelLabel = cp.model
+        }
+        return AIInflight(providerLabel: cp.displayName,
+                          modelName: modelLabel,
+                          actionTitle: action.title,
+                          startedAt: Date())
+    }
+
+    @MainActor
+    private func startResultTick() {
+        stopResultTick()
+        let started = resultInflight?.startedAt ?? Date()
+        resultTickTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+            Task { @MainActor in
+                self.resultElapsed = Date().timeIntervalSince(started)
             }
         }
     }
 
-    private func styleLabel(_ style: CommitStyle) -> String {
-        switch style {
-        case .standardPaste: return "standard paste"
-        case .typeSlowly(let d, _): return "Type Slowly (\(Int(d * 1000)) ms/char)"
-        case .typeFast: return "Type Fast"
-        }
+    @MainActor
+    private func stopResultTick() {
+        resultTickTimer?.invalidate()
+        resultTickTimer = nil
     }
 
 }
+
+// Legacy `ResultPane` was replaced by `TestOutputPane` (file
+// TestOutputPane.swift) — the same HUD-style component the Edit
+// Action sheet uses. One renderer for both surfaces guarantees
+// identical chrome (spinner / Provider · Model · 4.2s / failure
+// notice / image-and-rich-text preview) so the user sees the same
+// result presentation everywhere.
 
 // Import/Export controls live in GeneralTab → "Configuration" section.
