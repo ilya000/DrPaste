@@ -32,13 +32,74 @@ struct ActionHotkey: Codable, Equatable, Hashable {
         return s
     }
 
-    /// True if this combination collides with one of DrPaste's reserved main hotkeys (⌥⌘V/C/X).
+    /// True if this combination collides with one of DrPaste's reserved
+    /// main hotkeys (⌥⌘V/C/X/S) or in-HUD chords (⌥⌘⏎). User actions
+    /// must not steal these because they're hard-wired in the engine
+    /// and would never fire if the action were trying to claim them.
     var conflictsWithMainHotkeys: Bool {
-        guard isOptCmdOnly else { return false }
+        drPasteReservedName != nil
+    }
+
+    /// Human-readable name of the DrPaste feature that owns this
+    /// combination, or nil if the combo is free of internal
+    /// conflict. Used by the recorder so the rejection message
+    /// can say WHICH feature owns the chord instead of just
+    /// listing every reserved letter.
+    var drPasteReservedName: String? {
+        guard isOptCmdOnly else { return nil }
         switch Int(keyCode) {
-        case kVK_ANSI_V, kVK_ANSI_C, kVK_ANSI_X: return true
-        default: return false
+        case kVK_ANSI_V:                       return "Open BigHUD"
+        case kVK_ANSI_C:                       return "Quick Copy"
+        case kVK_ANSI_X:                       return "Cut & Replace"
+        case kVK_ANSI_S:                       return "Append Copy"
+        case kVK_Return, kVK_ANSI_KeypadEnter: return "Paste & Keep HUD"
+        default:                               return nil
         }
+    }
+
+    /// Human-readable name of the macOS system shortcut that owns
+    /// this combination, or nil if the combo is free. Used by the
+    /// hotkey recorder to refuse a binding that would silently
+    /// fight the OS for the same chord (e.g. ⌥⌘Q = Log Out User,
+    /// ⌥⌘D = Show/Hide Dock — even though DrPaste's EventTap sits
+    /// in front of Carbon and "wins" the keystroke, the system
+    /// menu / Dock target still flickers because lower layers
+    /// process the event before our nil-return propagates).
+    ///
+    /// Scope is deliberately narrow: only chords that macOS itself
+    /// hard-wires at the OS level. App-specific defaults (⌘S Save,
+    /// ⌘Q Quit, ⌘N New) are NOT here — those are owned by the
+    /// frontmost app and DrPaste can legitimately intercept them
+    /// before the app sees them, so blocking would be too
+    /// paternalistic.
+    var systemHotkeyName: String? {
+        // ⌥⌘ chord — the most common collision space for user
+        // hotkeys (every macOS install ships with several here).
+        // Labels match the Apple menu / Finder menu wording the
+        // user sees natively, so they recognise the conflict
+        // immediately. Verified against Apple's published
+        // keyboard-shortcuts list, not guessed.
+        if isOptCmdOnly {
+            switch Int(keyCode) {
+            case kVK_ANSI_Q:     return "Force Quit"
+            case kVK_ANSI_D:     return "Show or Hide the Dock"
+            case kVK_ANSI_M:     return "Minimize All Windows"
+            case kVK_ANSI_H:     return "Hide Others"
+            case kVK_ANSI_L:     return "Go to Downloads (Finder)"
+            case kVK_ANSI_N:     return "New Smart Folder (Finder)"
+            // ⌥⌘O in Finder: Open the selected item and close the
+            // current Finder window. Was mislabeled "Open With…"
+            // — that's plain ⌘O / right-click → Open With.
+            case kVK_ANSI_O:     return "Open & Close Finder Window"
+            case kVK_ANSI_P:     return "Show or Hide the Path Bar (Finder)"
+            case kVK_ANSI_T:     return "Show or Hide the Toolbar (Finder)"
+            // ⌥⌘Space opens the Finder search window. The plain
+            // Spotlight shortcut is ⌘Space — different chord.
+            case kVK_Space:      return "Show Finder Search Window"
+            default:             break
+            }
+        }
+        return nil
     }
 
     /// True if this combo uses EXACTLY ⌥⌘ with no other modifiers — the
@@ -111,7 +172,6 @@ enum KeyName {
         case kVK_ANSI_Grave: return "`"
         case kVK_Return: return "↩"
         case kVK_Tab: return "⇥"
-        case kVK_Space: return "Space"
         case kVK_Escape: return "⎋"
         case kVK_Delete: return "⌫"
         case kVK_F1: return "F1"

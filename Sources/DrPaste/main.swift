@@ -103,12 +103,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     private var savedFrontmostApp: NSRunningApplication?
     private var currentSummonReason: SummonReason = .paste
 
+    /// Set by `commitBigHUDKeepingOpen()` to suppress the duplicate
+    /// paste that `hotkeyEngineDidRelease` (Gesture Mode ⌥⌘ release)
+    /// would otherwise fire — ⌥⌘⏎ already pasted the row, the
+    /// release should only tear the HUD down. Reset after consumption.
+    private var pasteAndKeepDidFire: Bool = false
+
     // #2: Append Copy session tracking. Each ⌥⌘S press is "subsequent" only if
     // the immediately previous DrPaste hotkey was ⌥⌘S AND ≤5 min ago.
     private var lastAppendCopyTime: Date? = nil
     private enum LastDrPasteAction { case none, appendCopy, other }
     private var lastDrPasteAction: LastDrPasteAction = .none
-    private let appendSessionTimeout: TimeInterval = 300  // 5 minutes
+    /// Session inactivity window for ⌥⌘S Append Copy. After this
+    /// many seconds without an ⌥⌘S press, the NEXT press is
+    /// treated as a fresh session — flush whatever's in the
+    /// clipboard to history and ⌘C the user's current selection
+    /// as the new seed. Applies uniformly regardless of session
+    /// type (files-strict OR rich-text accumulator).
+    private let appendSessionTimeout: TimeInterval = 120
+
+    /// Status-item overlay: small red dot drawn in the corner of
+    /// the menu-bar icon while an Append Copy session is alive.
+    /// Lets the user see "I'm in a merge sequence" at a glance,
+    /// so a stale session 90 seconds in doesn't surprise them.
+    /// Hidden by default; toggled via `armAppendSessionIndicator`
+    /// / `disarmAppendSessionIndicator`.
+    private var sessionDotView: NSView?
+    /// Auto-expiry timer that hides the dot after the same window
+    /// the session timeout uses (`appendSessionTimeout`). Re-fires
+    /// on every ⌥⌘S, so the dot stays lit while the user keeps
+    /// appending and disappears `appendSessionTimeout` seconds
+    /// after the LAST append.
+    private var appendSessionTimer: Timer?
 
     // MARK: lifecycle
 
@@ -466,10 +492,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         }
     }
 
-    nonisolated func hotkeyEngineDidRelease() { Task { @MainActor in self.commitBigHUD() } }
+    nonisolated func hotkeyEngineDidRelease() {
+        Task { @MainActor in
+            // Gesture Mode: ⌥⌘ release normally commits + closes. But
+            // if the user just fired ⌥⌘⏎ (paste-and-keep), the paste
+            // already happened — release should only close, not paste
+            // again. Otherwise the row gets pasted twice (once from
+            // ⌥⌘⏎, once from the release).
+            if self.pasteAndKeepDidFire {
+                self.pasteAndKeepDidFire = false
+                self.savedFrontmostApp = nil
+                self.closeBigHUD()
+                return
+            }
+            self.commitBigHUD()
+        }
+    }
     nonisolated func hotkeyEngineDidCancel() { Task { @MainActor in self.closeBigHUD() } }
     nonisolated func hotkeyEngineDidNavigate(_ direction: NavDirection) {
-        Task { @MainActor in self.navigate(direction) }
+        Task { @MainActor in
+            // Re-arm release-paste: the paste-and-keep latch only
+            // suppresses the IMMEDIATE next ⌥⌘ release after ⌥⌘⏎,
+            // covering the "I already pasted via Enter" case. Once
+            // the user navigates to a different item or action with
+            // arrows, the intent flips back to "I want the new
+            // focused row pasted on release" — so we clear the
+            // latch and let the release path do its job.
+            self.pasteAndKeepDidFire = false
+            self.navigate(direction)
+        }
     }
     nonisolated func hotkeyEngineDidRequestFontChange(_ change: FontChange) {
         Task { @MainActor in self.bigHUDState.adjustFontScale(change) }
@@ -503,16 +554,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         guard focused >= 0, focused < bigHUDState.items.count else { return }
 
         // First press — start carrier on the focused item, no merge yet.
+        // We pull the richest representation we can from the item
+        // (RTFD → RTF → HTML → image attachment → plain text), not
+        // its `previewText`, so subsequent appends preserve rich
+        // formatting and inline images.
         guard var acc = bigHUDState.accumulator else {
-            let text = bigHUDState.items[focused].previewText ?? ""
+            let seed = AppendAccumulator.attributedString(from: bigHUDState.items[focused])
             bigHUDState.accumulator = BigHUDClipAccumulator(
                 consumed: [],
                 anchorIndex: focused,
-                text: text
+                attr: seed
             )
-            // Preview = the (single-clip) accumulator content so it reflects
-            // exactly what would be pasted on commit.
-            bigHUDState.outcome = .preview(accumulatorItem(text: text))
+            bigHUDState.outcome = .preview(accumulatorItem(attr: seed))
             return
         }
 
@@ -530,22 +583,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // guard anyway to keep the model consistent.
         if acc.consumed.contains(focused) { return }
 
-        // Fold the previous carrier into consumed, absorb its text into the
-        // merge, and adopt the focused row as the new carrier.
-        let appended = bigHUDState.items[focused].previewText ?? ""
+        // Fold the previous carrier into consumed, absorb the focused
+        // clip's full rich content into the merge, and adopt the
+        // focused row as the new carrier. AppendAccumulator.append
+        // handles the newline separator and attribute preservation.
+        let appendedAttr = AppendAccumulator.attributedString(from: bigHUDState.items[focused])
         acc.consumed.insert(acc.anchorIndex)
-        acc.text = acc.text + "\n" + appended
+        acc.attr = AppendAccumulator.append(appendedAttr, to: acc.attr)
         acc.anchorIndex = focused
         bigHUDState.accumulator = acc
-        bigHUDState.outcome = .preview(accumulatorItem(text: acc.text))
+        bigHUDState.outcome = .preview(accumulatorItem(attr: acc.attr))
     }
 
-    /// ⌥⌘Space inside the HUD — promote the current action preview into a
-    /// new history clip placed just above the focused row, so the user can
-    /// immediately apply additional actions to the transformed content
-    /// without closing and reopening the HUD.
+    /// ⌥⌘C inside the HUD — promote the current action preview into a
+    /// new history clip at the TOP of history (where a real Copy would
+    /// land) AND copy it back to the system pasteboard, then refocus
+    /// the HUD onto the new clip. Semantically "take what I'm
+    /// looking at back into the clipboard so I can keep working on
+    /// it". Previously this chord was ⌥⌘Space and inserted above
+    /// the focused row — that placement was technically correct but
+    /// semantically wrong (a Copy belongs at top of history) and the
+    /// ⌥⌘Space chord didn't read as "copy" to anyone.
     nonisolated func hotkeyEngineDidRequestPromotePreview() {
         Task { @MainActor in self.promotePreviewToHistory() }
+    }
+
+    /// EventTap/Monitor engines route ⌥⌘⏎ here when the HUD is
+    /// active. We can't rely on the local NSEvent monitor for this
+    /// chord because EventTapEngine sits in front of the runloop's
+    /// event distribution and swallows every keyDown while the HUD
+    /// is up — Return would never make it to the monitor without
+    /// this explicit callback.
+    nonisolated func hotkeyEngineDidRequestPasteAndKeep() {
+        Task { @MainActor in self.commitBigHUDKeepingOpen() }
     }
 
     @MainActor
@@ -567,14 +637,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
               case .preview(let previewItem) = outcome else {
             return
         }
-        // NOTE: makeTextItem() reuses the source ClipboardItem's UUID, so we
-        // CANNOT gate on previewItem.id == focusedItem.id (that gate rejected
-        // every transformation, leaving only the no-op "Paste as is" path,
-        // which itself was rejected). The promoted clip's freshness is
-        // guaranteed by the UUID() below.
-        let insertionIdx = max(0, bigHUDState.itemIndex)
         // Re-stamp with a fresh UUID and createdAt so duplicates in history
-        // remain individually addressable and ordered.
+        // remain individually addressable and ordered. The promoted clip
+        // ALWAYS lands at index 0 — top of history — to match the
+        // semantics of "this is a fresh copy, just like ⌘C would
+        // produce" rather than "an extra row threaded above where I
+        // happened to be standing".
         let promoted = ClipboardItem(
             id: UUID(),
             semantic: previewItem.semantic,
@@ -588,15 +656,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             originalImageFileSize: previewItem.originalImageFileSize,
             imageFormat: previewItem.imageFormat,
             sourceBundleID: previewItem.sourceBundleID,
-            sourceAppName: "DrPaste · chain",
+            sourceAppName: "DrPaste · copied from preview",
             sourceWindowTitle: previewItem.sourceWindowTitle,
             tags: previewItem.tags
         )
-        store.insertSnapshot(promoted, at: insertionIdx)
+        store.insertSnapshot(promoted, at: 0)
+        // Also write the promoted item to the system pasteboard so
+        // it behaves like a real Copy — the user can immediately
+        // ⌘V it into any app outside DrPaste, not just paste it
+        // back through the HUD. `ignoreNextChange` prevents the
+        // pasteboard watcher from observing this synthetic write
+        // and inserting ANOTHER copy of the same content right
+        // after the one we just added.
+        watcher.ignoreNextChange = true
+        PasteboardWriter.write(promoted, store: store)
         bigHUDState.items = store.items
-        // Focus the newly inserted clip — the old focused row has shifted
-        // down by one, so insertionIdx is the new clip's position.
-        bigHUDState.itemIndex = insertionIdx
+        // Refocus on the new top-of-history clip so the user
+        // immediately sees what they just "copied" and can chain
+        // further actions on it without arrow-key navigation.
+        bigHUDState.itemIndex = 0
         bigHUDState.actionIndex = 0
         // Promote breaks the merge model — any in-flight accumulator must
         // be dropped because its indices are now off by one.
@@ -611,15 +689,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     /// existing preview-rendering machinery (which expects a ClipboardItem)
     /// can render it without special-casing. Item is never written to history
     /// or store — purely transient for the preview pane.
+    /// Wrap the accumulator's NSAttributedString in a transient
+    /// ClipboardItem so the existing preview / commit pipeline
+    /// (which expects a `ClipboardItem`) can render and paste it
+    /// without special-casing.
+    ///
+    /// Strategy: serialize the attributed string into
+    /// `com.apple.flat-rtfd`, `public.rtf`, `public.html` and
+    /// `public.utf8-plain-text` blobs in the store's blob
+    /// directory, populate `representations` / `typesOrdered`
+    /// accordingly, and tag the semantic kind as `.richText`
+    /// (or `.text` if the content is plain). `PasteboardWriter`
+    /// will then push every representation onto the pasteboard
+    /// on commit, so apps that understand RTFD (Mail, Notes,
+    /// Pages) get the inline images while plain-text-only targets
+    /// (Terminal, Slack) fall back to text.
     @MainActor
-    private func accumulatorItem(text: String) -> ClipboardItem {
-        ClipboardItem(
+    private func accumulatorItem(attr: NSAttributedString) -> ClipboardItem {
+        var reps: [String: String] = [:]
+        var ordered: [String] = []
+        let range = NSRange(location: 0, length: attr.length)
+        // RTFD — preserves attachments (inline images).
+        if let rtfd = attr.rtfd(from: range, documentAttributes: [
+            .documentType: NSAttributedString.DocumentType.rtfd
+        ]) {
+            let rel = store.writeRawBlob(rtfd, type: "com.apple.flat-rtfd")
+            reps["com.apple.flat-rtfd"] = rel
+            ordered.append("com.apple.flat-rtfd")
+        }
+        // RTF — formatting only, no attachments.
+        if let rtf = attr.rtf(from: range, documentAttributes: [
+            .documentType: NSAttributedString.DocumentType.rtf
+        ]) {
+            let rel = store.writeRawBlob(rtf, type: "public.rtf")
+            reps["public.rtf"] = rel
+            ordered.append("public.rtf")
+        }
+        // HTML — best-effort for web-app targets.
+        if let html = try? attr.data(from: range, documentAttributes: [
+            .documentType: NSAttributedString.DocumentType.html
+        ]) {
+            let rel = store.writeRawBlob(html, type: "public.html")
+            reps["public.html"] = rel
+            ordered.append("public.html")
+        }
+        // Plain text — last-resort fallback. Strip ￼ attachment
+        // placeholders so plain-text targets don't see garbage chars.
+        let plain = attr.string.replacingOccurrences(of: "\u{FFFC}", with: "")
+        if let data = plain.data(using: .utf8) {
+            let rel = store.writeRawBlob(data, type: "public.utf8-plain-text")
+            reps["public.utf8-plain-text"] = rel
+            ordered.append("public.utf8-plain-text")
+        }
+        // Semantic: richText if anything beyond plain text made it
+        // through (RTFD/RTF/HTML), otherwise text. Used by the HUD
+        // preview's per-semantic renderer to pick the right view.
+        let semantic: SemanticKind = (reps["com.apple.flat-rtfd"] != nil
+                                       || reps["public.rtf"] != nil
+                                       || reps["public.html"] != nil)
+            ? .richText : .text
+        return ClipboardItem(
             id: UUID(),
-            semantic: .text,
+            semantic: semantic,
             createdAt: Date(),
-            representations: [:],
-            typesOrdered: [],
-            previewText: text,
+            representations: reps,
+            typesOrdered: ordered,
+            previewText: plain.isEmpty ? nil : plain,
             previewImageRel: nil,
             sourceBundleID: nil,
             sourceAppName: "DrPaste · accumulator",
@@ -639,6 +774,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     ///      rows so the cursor never lands on something invisible.
     nonisolated func hotkeyEngineDidDeleteFocused() {
         Task { @MainActor in
+            // Delete moves focus to a different row — same reasoning
+            // as navigate: clear the paste-and-keep latch so the
+            // next ⌥⌘ release pastes the newly-focused item.
+            self.pasteAndKeepDidFire = false
             guard let item = self.bigHUDState.currentItem else { return }
             let position = self.bigHUDState.itemIndex
             self.store.remove(item.id)
@@ -819,17 +958,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         return item
     }
 
-    /// ⌥⌘S — Sum/Append Copy with session-based reset (#2):
-    /// • First press in a session (>5 min gap OR previous DrPaste action was not ⌥⌘S):
-    ///   pushes current clipboard to history, clears it, captures selection as fresh start.
-    /// • Subsequent presses in same session: append to accumulator with separator.
-    /// Files: append URL list. Other types: text concatenation with \n.
+    /// ⌥⌘S — Sum/Append Copy. Session-scoped accumulator that
+    /// merges back-to-back clips into a single composite payload
+    /// on the system pasteboard:
+    ///
+    ///   • First press in a session (no prior ⌥⌘S, or >5 min gap):
+    ///     flush whatever's currently in the clipboard to history,
+    ///     then ⌘C the user's current selection — that becomes the
+    ///     seed for the accumulator.
+    ///
+    ///   • Subsequent presses: snapshot the current pasteboard
+    ///     (that's the accumulator state from the previous press),
+    ///     ⌘C the new selection, then merge.
+    ///
+    /// Two merge tracks:
+    ///
+    ///   • **Files-strict**. If the previous snapshot was a URL
+    ///     list, the session is locked to file-mode. New snapshot
+    ///     must also be files; otherwise we play failure sound and
+    ///     restore the original file list to the pasteboard. Mixing
+    ///     files with text/images doesn't have a clean semantic so
+    ///     we refuse rather than guess.
+    ///
+    ///   • **Rich text**. Everything else (plain text, rich text,
+    ///     images, mixed) is read as `NSAttributedString` and
+    ///     appended. Images become inline `NSTextAttachment`s
+    ///     downscaled to 1920px on the longer side. The composite
+    ///     is written back to the pasteboard in four
+    ///     representations (RTFD → RTF → HTML → plain text) so the
+    ///     receiving app picks whichever it understands.
     nonisolated func hotkeyEngineDidAppendCopy() {
         Task { @MainActor in
             let pb = NSPasteboard.general
-            let separator = "\n"
 
-            // Determine session state
             let isNewSession: Bool = {
                 if self.lastDrPasteAction != .appendCopy { return true }
                 if let last = self.lastAppendCopyTime,
@@ -838,15 +999,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             }()
 
             if isNewSession {
-                // Push existing clipboard to history (watcher will pick it up if changed)
+                // Flush whatever's currently in the clipboard to
+                // history before we overwrite it with the seed.
                 self.watcher.forceTick()
                 pb.clearContents()
             }
 
-            // Capture previous accumulator (only relevant for subsequent presses)
-            let previousText = isNewSession ? nil : pb.string(forType: .string)
-            let previousFiles = isNewSession ? nil :
-                pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL]
+            // Snapshot what the pasteboard holds RIGHT NOW — that's
+            // either the previous accumulator state (subsequent
+            // press) or empty (new session).
+            let prevFiles: [URL]? = isNewSession ? nil :
+                (pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL])
+            let prevAttr: NSAttributedString? = isNewSession ? nil :
+                AppendAccumulator.readAttributed(from: pb)
 
             let captured = await PasteSimulator.simulateCopyAndAwaitChange()
             self.lastAppendCopyTime = Date()
@@ -857,50 +1022,139 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                 return
             }
 
-            // For new session — clipboard already holds the just-copied selection. Done.
+            // New session — clipboard now holds the just-copied
+            // selection unchanged. Nothing to merge yet. Determine
+            // the session's track (files-strict vs rich-text) by
+            // probing the freshly captured selection: if it's a
+            // URL list, light the indicator cyan; otherwise red.
             if isNewSession {
                 self.watcher.ignoreNextChange = false
                 self.watcher.forceTick()
+                let seedFiles = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL]
+                let filesMode = (seedFiles?.isEmpty == false)
                 SoundFeedback.play(.appendCopy)
+                self.flashStatusItem()
+                self.armAppendSessionIndicator(filesMode: filesMode)
+                return
+            }
+
+            // --- Subsequent press: merge prev × new ---
+
+            // Files-strict path: previous was a URL list, so the
+            // session is locked to files. Reject anything else.
+            if let prevFiles = prevFiles, !prevFiles.isEmpty {
+                if let combined = AppendAccumulator.mergeFiles(previous: prevFiles, pasteboard: pb) {
+                    pb.clearContents()
+                    pb.writeObjects(combined as [NSPasteboardWriting])
+                    self.watcher.ignoreNextChange = false
+                    self.watcher.forceTick()
+                    SoundFeedback.play(.appendCopy)
+                    self.flashStatusItem()
+                    self.armAppendSessionIndicator(filesMode: true)
+                    return
+                }
+                // New clip isn't files. Before giving up, check if
+                // the previous files are ALL images — if so, this
+                // is a legitimate cross-track bridge: convert the
+                // image files to inline attachments, append the
+                // new rich/text/image clip on top, and switch the
+                // session into rich-text mode (cyan dot → red dot).
+                // Same image-file means same content regardless of
+                // whether the user copied it from Finder or from
+                // Preview/Photos.
+                let allImages = prevFiles.allSatisfy { AppendAccumulator.isImageURL($0) }
+                if allImages,
+                   let prevAsRich = AppendAccumulator.attributedString(forImageFiles: prevFiles),
+                   let newAttr = AppendAccumulator.readAttributed(from: pb) {
+                    let combined = AppendAccumulator.append(newAttr, to: prevAsRich)
+                    AppendAccumulator.write(combined, to: pb)
+                    self.watcher.ignoreNextChange = false
+                    self.watcher.forceTick()
+                    SoundFeedback.play(.appendCopy)
+                    self.flashStatusItem()
+                    self.armAppendSessionIndicator(filesMode: false)
+                    return
+                }
+                // Genuinely incompatible — restore the original
+                // URL list (⌘C clobbered it) and fail loudly.
+                pb.clearContents()
+                pb.writeObjects(prevFiles as [NSPasteboardWriting])
+                self.watcher.ignoreNextChange = false
+                SoundFeedback.play(.copyFailure)
                 self.flashStatusItem()
                 return
             }
 
-            // Subsequent press — merge previous with newly captured
-            let newText = pb.string(forType: .string)
-            let newFiles = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL]
-
-            if let prev = previousText, let new = newText, !prev.isEmpty {
-                let combined = prev + separator + new
+            // Rich-text path: previous was text / rich text / image
+            // / mixed. Append everything as NSAttributedString.
+            // Reject the reverse-direction mismatch — files cannot
+            // be appended to a rich-text accumulator either.
+            // Without this guard the file URL leaks through
+            // `readAttributed` as plain text (the URL string), so
+            // the user would silently get "file:///path/to/foo.pdf"
+            // pasted into their accumulating note instead of a
+            // proper file attachment.
+            let newAsFiles = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL]
+            if let nf = newAsFiles, !nf.isEmpty {
+                // Try the same bridge as the files-side path: if
+                // every URL is an image, convert them to inline
+                // attachments and append to the rich-text
+                // accumulator. Mode stays red.
+                let allImages = nf.allSatisfy { AppendAccumulator.isImageURL($0) }
+                if allImages,
+                   let asAttr = AppendAccumulator.attributedString(forImageFiles: nf) {
+                    let prev = prevAttr ?? NSAttributedString()
+                    let combined = AppendAccumulator.append(asAttr, to: prev)
+                    AppendAccumulator.write(combined, to: pb)
+                    self.watcher.ignoreNextChange = false
+                    self.watcher.forceTick()
+                    SoundFeedback.play(.appendCopy)
+                    self.flashStatusItem()
+                    self.armAppendSessionIndicator(filesMode: false)
+                    return
+                }
+                // Not images — genuinely incompatible. Restore the
+                // rich accumulator (⌘C clobbered it) and fail.
                 pb.clearContents()
-                pb.setString(combined, forType: .string)
+                if let prev = prevAttr {
+                    AppendAccumulator.write(prev, to: pb)
+                }
                 self.watcher.ignoreNextChange = false
-                self.watcher.forceTick()
-                SoundFeedback.play(.appendCopy)
+                SoundFeedback.play(.copyFailure)
                 self.flashStatusItem()
                 return
             }
-            if let prev = previousFiles, let new = newFiles, !prev.isEmpty {
-                let combined = prev + new
-                pb.clearContents()
-                pb.writeObjects(combined as [NSPasteboardWriting])
+            guard let prevAttr = prevAttr,
+                  let newAttr = AppendAccumulator.readAttributed(from: pb) else {
+                // Either side unreadable as attributed string —
+                // shouldn't happen since readAttributed has plain-
+                // text and image fallbacks, but if it does we
+                // surface failure rather than corrupt the clipboard.
                 self.watcher.ignoreNextChange = false
-                self.watcher.forceTick()
-                SoundFeedback.play(.appendCopy)
+                SoundFeedback.play(.copyFailure)
                 self.flashStatusItem()
                 return
             }
+            let combined = AppendAccumulator.append(newAttr, to: prevAttr)
+            AppendAccumulator.write(combined, to: pb)
+            self.watcher.ignoreNextChange = false
+            self.watcher.forceTick()
             SoundFeedback.play(.appendCopy)
             self.flashStatusItem()
+            self.armAppendSessionIndicator(filesMode: false)
         }
     }
 
     /// Mark that some DrPaste hotkey other than ⌥⌘S was used.
     /// Causes next ⌥⌘S to be treated as a new session (#2).
+    /// Also tears down the menu-bar session indicator immediately,
+    /// even before its timer would have expired — the explicit
+    /// non-⌥⌘S action is the user's signal that they've moved on.
     @MainActor
     private func markOtherDrPasteAction() {
         lastDrPasteAction = .other
         lastAppendCopyTime = Date()
+        disarmAppendSessionIndicator()
     }
 
     // MARK: - #A10 hold-preview wiring
@@ -1283,6 +1537,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         }
     }
 
+    /// Lazy-create the 6-pt red dot overlay used as the Append
+    /// Copy session indicator. Added as a subview of the status
+    /// item's button so the template tinting on the underlying
+    /// icon stays untouched (the dot itself is intentionally
+    /// not a template — it must read as red in both light and
+    /// dark menu bars).
+    @MainActor
+    private func ensureSessionDotView() {
+        guard let btn = statusItem?.button, sessionDotView == nil else { return }
+        let dot = NSView()
+        dot.wantsLayer = true
+        // Initial colour doesn't matter — `armAppendSessionIndicator`
+        // sets red/cyan based on the session track before unhiding.
+        dot.layer?.cornerRadius = 3   // half of 6pt = a circle
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        dot.isHidden = true
+        btn.addSubview(dot)
+        // Pin to the upper-right corner with a 1-pt inset so the
+        // dot sits comfortably inside the clipboard glyph without
+        // touching the icon's outline.
+        NSLayoutConstraint.activate([
+            dot.widthAnchor.constraint(equalToConstant: 6),
+            dot.heightAnchor.constraint(equalToConstant: 6),
+            dot.topAnchor.constraint(equalTo: btn.topAnchor, constant: 1),
+            dot.trailingAnchor.constraint(equalTo: btn.trailingAnchor, constant: -1)
+        ])
+        sessionDotView = dot
+    }
+
+    /// Show the session-indicator dot and (re)arm the auto-hide
+    /// timer. `filesMode = true` paints the dot bright cyan to
+    /// signal a files-strict session; `false` paints red for the
+    /// rich-text accumulator. The two tracks never mix at runtime,
+    /// so the colour is a quick at-a-glance reminder which kind
+    /// the next ⌥⌘S will demand (file URLs vs anything else). The
+    /// timer's interval matches `appendSessionTimeout` so the dot
+    /// vanishes the moment the session would no longer extend the
+    /// existing accumulator.
+    @MainActor
+    private func armAppendSessionIndicator(filesMode: Bool) {
+        ensureSessionDotView()
+        let color: NSColor = filesMode ? .systemCyan : .systemRed
+        sessionDotView?.layer?.backgroundColor = color.cgColor
+        sessionDotView?.isHidden = false
+        appendSessionTimer?.invalidate()
+        appendSessionTimer = Timer.scheduledTimer(withTimeInterval: appendSessionTimeout,
+                                                  repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.disarmAppendSessionIndicator() }
+        }
+    }
+
+    /// Hide the dot and cancel the auto-hide timer. Called when
+    /// the user explicitly ends the session by invoking another
+    /// DrPaste hotkey, or implicitly via timeout.
+    @MainActor
+    private func disarmAppendSessionIndicator() {
+        appendSessionTimer?.invalidate()
+        appendSessionTimer = nil
+        sessionDotView?.isHidden = true
+    }
+
     // MARK: HUD lifecycle
 
     private func openHUD() {
@@ -1400,17 +1715,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             return
         }
         guard let outcome = bigHUDState.outcome else { return }
-        commitOutcome(outcome, savedApp: savedApp)
-        // Re-front the HUD after the synthesized ⌘V has had a
-        // chance to land in the target app. Without this the
-        // first ⌥⌘⏎ would steal focus into the target app and
-        // subsequent arrow keys would type into the target's
-        // document instead of navigating the HUD.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
-            guard let self = self, let panel = self.bigHUDPanel else { return }
-            NSApp.activate(ignoringOtherApps: true)
-            panel.makeKeyAndOrderFront(nil)
+        // Only `.preview` and `.alternativeCommit(_, .standardPaste)`
+        // make sense to paste-and-keep. Side-effects (Reveal in
+        // Finder), Type Slowly, Type Fast, and failure recovery
+        // all have non-paste commit semantics that would be
+        // confusing to fire silently while the HUD is up — for
+        // those, fall through to the normal commit path which
+        // closes the HUD and plays the usual outcome chrome.
+        let item: ClipboardItem
+        switch outcome {
+        case .preview(let i):                            item = i
+        case .alternativeCommit(let i, .standardPaste):  item = i
+        default:
+            commitBigHUD()
+            return
         }
+        // Mark so the Gesture-Mode release handler doesn't double-
+        // paste when the user lets go of ⌥⌘ after this chord.
+        // Limited Mode never calls didRelease, so this flag is a
+        // no-op there.
+        pasteAndKeepDidFire = true
+        // Write the item to the pasteboard, then synthesize ⌘V
+        // through the SESSION event tap — NOT the HID tap that
+        // PasteSimulator.simulatePaste() uses. The user is still
+        // physically holding ⌥⌘ for this chord; if we posted ⌘V
+        // through cghidEventTap, HID would merge the held Option
+        // into our event and the target app would receive ⌥⌘V —
+        // which is DrPaste's own summon-HUD hotkey, so focus
+        // would bounce back to DrPaste with nothing pasted.
+        PasteboardWriter.write(item, store: store)
+        watcher.ignoreNextChange = true
+        // Make sure target app is frontmost so it receives ⌘V.
+        // Safe to call even in Gesture Mode where the HUD is a
+        // nonactivating overlay and target is already frontmost —
+        // activate becomes a no-op there. Critical in Limited Mode
+        // where the HUD's key window made DrPaste frontmost.
+        savedApp?.activate(options: [])
+        // ~30 ms for the activation to settle before posting.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
+            if AXIsProcessTrusted() {
+                PasteSimulator.simulatePasteKeepingHeldModifiers()
+            }
+            SoundFeedback.play(.pasteSuccess)
+        }
+        // Deliberately DO NOT re-front DrPaste / the HUD panel
+        // after the paste. The HUD is a nonactivating overlay
+        // panel (`hidesOnDeactivate = false`) so it stays visible
+        // on top of the target app without holding focus, and the
+        // EventTap engine listens for ⌥⌘<key> chords globally —
+        // so the next ⌥⌘⏎ works regardless of which app owns the
+        // keyboard focus. Calling NSApp.activate here would steal
+        // focus from the target app, blur its text caret, and
+        // (most visibly) make the user's window switcher show
+        // DrPaste — exactly the "переключает окно" behaviour the
+        // user reported.
     }
 
     /// Single-place ApplyOutcome → side-effect mapping. Called by both the
@@ -1518,6 +1876,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     }
 
     private func closeBigHUD() {
+        // Reset paste-and-keep latch — next HUD open starts fresh.
+        // Guards against the case where the latch was set by ⌥⌘⏎
+        // but the HUD closes via some other path (Esc, AI cancel,
+        // another summon stomping this one) before the deferred
+        // release fires.
+        pasteAndKeepDidFire = false
         removeLocalKeyMonitor()
         stopAITickTimer()
         // Cancel any in-flight AI streaming. Cancellation cascades through
@@ -1629,7 +1993,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // because the user is in "merge clips" mode, not "transform clip" mode.
         if let acc = bigHUDState.accumulator {
             bigHUDState.isPreviewLoading = false
-            bigHUDState.outcome = .preview(accumulatorItem(text: acc.text))
+            bigHUDState.outcome = .preview(accumulatorItem(attr: acc.attr))
             return
         }
 
@@ -1927,17 +2291,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             let cmd = event.modifierFlags.contains(.command)
             switch kc {
             case kVK_Return, kVK_ANSI_KeypadEnter:
-                // ⌥⌘⏎ — paste the focused outcome into the saved
-                // target app but KEEP the HUD open so the user can
-                // queue up another paste (insert several clipboard
-                // items in a row without re-opening the HUD each
-                // time). Bare ⏎ stays the historical "paste + close".
-                let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                if mods.contains([.command, .option]) {
-                    self.commitBigHUDKeepingOpen()
-                } else {
-                    self.commitBigHUD()
-                }
+                // Limited Mode: ⏎ pastes the focused outcome and
+                // closes the HUD. Paste-and-keep is intentionally a
+                // Gesture-Mode-only chord — in Limited Mode the
+                // user is already in HUD-key-window-with-no-held-
+                // modifiers, so chaining pastes works fine via the
+                // normal re-summon flow (and exposes a simpler
+                // mental model for the legend).
+                self.commitBigHUD()
                 return nil
             case kVK_Escape:
                 self.closeBigHUD(); return nil
@@ -1972,13 +2333,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                 self.hotkeyEngineDidRequestHUDAccumulate()
                 return nil
             }
-            // Space / ⌥⌘Space in HUD — promote the current preview to a
-            // new history clip above the focused row, enabling chained
-            // transformations without exiting the HUD.
-            if kc == kVK_Space, (isBare || isOptCmd) {
+            // C / ⌥⌘C in HUD — promote the current preview to a new
+            // top-of-history clip + copy to system pasteboard. Bare C
+            // works in Limited Mode (no held modifiers, HUD is key
+            // window) so the legend can read just "C copy"; ⌥⌘C
+            // works too for muscle-memory continuity with the
+            // Gesture-Mode flow and for keyboards where the bare
+            // letter would type into a text field overlay.
+            if kc == kVK_ANSI_C, (isBare || isOptCmd) {
                 self.hotkeyEngineDidRequestPromotePreview()
                 return nil
             }
+            // (No bare / ⌥⌘ Space handler — was the original
+            // promote-preview chord during the v0.32 series, replaced
+            // by C in v0.35. Alpha hasn't shipped, no need to keep
+            // the legacy binding.)
             return event
         }
     }

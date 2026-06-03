@@ -132,6 +132,10 @@ struct GeneralTab: View {
                        isOn: cursorOnSecondBinding)
                 Text("When you ⌥⌘X, cursor jumps over the freshly cut content to the previous item in history. Default off matches native cut+paste behavior.")
                     .font(.caption).foregroundStyle(.secondary)
+                Toggle("Show keyboard cheat sheet on ⌥⌘ hold",
+                       isOn: cheatSheetEnabledBinding)
+                Text("The small corner panel that appears when you hold ⌥⌘ alone — lists global hotkeys and your custom action bindings. Disable if you find it distracting; the hotkeys themselves keep working.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("Sound feedback") {
@@ -218,6 +222,18 @@ struct GeneralTab: View {
         Binding(
             get: { UserDefaults.standard.bool(forKey: "drpaste.hud.cursorOnSecondOnCut") },
             set: { UserDefaults.standard.set($0, forKey: "drpaste.hud.cursorOnSecondOnCut") }
+        )
+    }
+
+    /// Default-on toggle for the ⌥⌘-hold corner cheat sheet. Stored
+    /// inverted (`disabled` flag) so the cheat sheet keeps appearing
+    /// for users who haven't touched the setting — only an explicit
+    /// disable persists. `RegionCaptureCheatSheetController.show()`
+    /// reads the same key and bails early when disabled.
+    private var cheatSheetEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { !UserDefaults.standard.bool(forKey: "drpaste.cheatSheet.disabled") },
+            set: { UserDefaults.standard.set(!$0, forKey: "drpaste.cheatSheet.disabled") }
         )
     }
 

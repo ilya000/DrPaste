@@ -1464,7 +1464,20 @@ enum DefaultAISeed {
     ///     generates a clean black-and-white marker-on-whiteboard
     ///     illustration. Universal — works for meeting notes,
     ///     document figures, brainstorm visualisation.
-    static let currentSeedVersion: Int = 4
+    /// v5 — append `Quality: low` directive to every image / text→image
+    ///     seed prompt. Parsed out by `AIImageHTTP.extractQualityDirective`
+    ///     and forwarded as the `quality` field on OpenAI's
+    ///     /v1/images/* endpoints (gpt-image-1: low ~$0.011, medium
+    ///     ~$0.042, high ~$0.167 per 1024×1024 — 4× cheaper at low).
+    ///     Lives in the prompt so the user controls cost/fidelity in
+    ///     the same field they edit the rest of the instructions.
+    /// v6 — re-runs the v5 prompt mutation (append-only loop in v5
+    ///     bumped seedAIVersion to 5 WITHOUT touching existing
+    ///     prompts, so alpha installs that came up under 0.35.18
+    ///     never got the Quality: low line). Migration in
+    ///     `Actions.swift:seedAI` now keys on `< 6` so those
+    ///     installs run the prompt-append step on their next launch.
+    static let currentSeedVersion: Int = 6
 
     /// Sentinel for `providerID`: empty string means "use whatever provider is currently default".
     /// Action follows the user's default selection — change the default in Settings → AI and
@@ -1524,6 +1537,16 @@ enum DefaultAISeed {
             // dispatch to); users can clone any of these into their
             // own styles by editing the prompt and giving the
             // descriptor a new id.
+            // Quality directive — the trailing `Quality: low` line
+            // is parsed out by `AIImageHTTP.extractQualityDirective`
+            // and forwarded to OpenAI as the `quality` field
+            // (gpt-image-1: low ~$0.011, medium ~$0.042, high
+            // ~$0.167 per 1024×1024 — 4× saving at low). It lives in
+            // the prompt template so the user controls the
+            // cost/fidelity tradeoff in the same place they edit
+            // the rest of the instructions — delete the line to
+            // take OpenAI's default (medium), or change to `Quality:
+            // high` for gallery-grade output.
             CustomAIDescriptor(
                 id: "user.ai_image_sketch",
                 title: "AI: Pencil sketch",
@@ -1535,6 +1558,8 @@ enum DefaultAISeed {
                 subject's recognizable outline and proportions \
                 exactly. Output as if drawn on plain white paper \
                 with a graphite pencil.
+
+                Quality: low
                 """,
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["image"],
@@ -1551,6 +1576,8 @@ enum DefaultAISeed {
                 palette but render it as if painted with wet \
                 pigments on cold-press watercolor paper. Slight \
                 paper texture is welcome.
+
+                Quality: low
                 """,
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["image"],
@@ -1567,6 +1594,8 @@ enum DefaultAISeed {
                 Vibrant but limited color palette — think modern \
                 animation production style. Preserve subject \
                 recognizability.
+
+                Quality: low
                 """,
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["image"],
@@ -1597,6 +1626,8 @@ enum DefaultAISeed {
                 rendering, no colour, no gradients, no text outside \
                 short callout labels. Aim for the feel of a quick \
                 explainer sketch you'd see on a meeting whiteboard.
+
+                Quality: low
                 """,
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "markdown", "richText", "code"],

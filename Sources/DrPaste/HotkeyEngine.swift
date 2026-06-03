@@ -71,6 +71,16 @@ protocol HotkeyEngineDelegate: AnyObject {
     /// the focused row, so the user can chain further transformations
     /// without leaving the HUD.
     func hotkeyEngineDidRequestPromotePreview()
+
+    /// Fired when ⌥⌘⏎ is pressed while the HUD is active. Caller pastes
+    /// the focused outcome into the saved target app but keeps the HUD
+    /// up so the user can queue another paste. Must be a separate
+    /// callback from `hotkeyEngineDidRelease` (the regular commit-and-
+    /// close path) because EventTapEngine sits in front of the local
+    /// NSEvent monitor — without an explicit case here, the Return
+    /// keyDown gets swallowed by the catch-all `default: return nil`
+    /// branch and the local monitor in AppDelegate never sees it.
+    func hotkeyEngineDidRequestPasteAndKeep()
     /// Fired by EventTapEngine (Full Gesture Mode only) for per-action
     /// hotkeys with the ⌥⌘ modifier set. `holdPreview` is true when the
     /// user kept ⌥⌘ held past the 250 ms grace period after pressing
@@ -451,11 +461,29 @@ final class EventTapEngine: HotkeyEngine {
                     // path, distinct from the outside-HUD Append Copy flow.
                     DispatchQueue.main.async { self.delegate?.hotkeyEngineDidRequestHUDAccumulate() }
                     return nil
-                case kVK_Space where modsPresent:
-                    // ⌥⌘Space — promote the current preview to a new clip in
-                    // history (above the focused row) so the user can chain
-                    // additional actions on the transformed content.
+                case Int(config.copyKeyCode) where modsPresent:
+                    // ⌥⌘C in HUD — semantically "take what I'm looking
+                    // at back into the clipboard": promote the current
+                    // preview into a new clipboard entry at the TOP of
+                    // history (where a real Copy would land) AND
+                    // refocus the HUD onto that new entry. Distinct
+                    // from the outside-HUD Quick Copy flow on the
+                    // same chord — there's no preview to promote when
+                    // the HUD isn't open, so the no-HUD branch below
+                    // routes to hotkeyEngineDidQuickCopy instead.
                     DispatchQueue.main.async { self.delegate?.hotkeyEngineDidRequestPromotePreview() }
+                    return nil
+                case kVK_Return where modsPresent,
+                     kVK_ANSI_KeypadEnter where modsPresent:
+                    // ⌥⌘⏎ — paste the focused row into the saved target
+                    // app but DON'T close the HUD. Lets the user queue
+                    // several pastes in a row without re-opening the
+                    // HUD between each. EventTap engine has to handle
+                    // this explicitly — otherwise the catch-all
+                    // `default: return nil` below would swallow Return
+                    // and the local NSEvent monitor in AppDelegate
+                    // would never see it.
+                    DispatchQueue.main.async { self.delegate?.hotkeyEngineDidRequestPasteAndKeep() }
                     return nil
                 default:
                     return nil
@@ -908,6 +936,14 @@ final class GlobalMonitorEngine: HotkeyEngine {
                 DispatchQueue.main.async { self.delegate?.hotkeyEngineDidRequestFontChange(.smaller) }
             case kVK_ANSI_0, kVK_ANSI_Keypad0:
                 DispatchQueue.main.async { self.delegate?.hotkeyEngineDidRequestFontChange(.reset) }
+            case kVK_Return, kVK_ANSI_KeypadEnter:
+                // ⌥⌘⏎ in HUD — paste focused row, keep HUD open. Same
+                // semantic as EventTapEngine; gate on modifier presence
+                // so a bare ⏎ in this engine is left to the local
+                // NSEvent monitor (paste-and-close).
+                if modsPresent(event) {
+                    DispatchQueue.main.async { self.delegate?.hotkeyEngineDidRequestPasteAndKeep() }
+                }
             default: break
             }
             return

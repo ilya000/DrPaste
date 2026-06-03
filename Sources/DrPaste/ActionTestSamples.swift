@@ -245,6 +245,25 @@ enum ActionTestSamples {
              "user.ai_image_cartoon":
             return "(Image action — Run test will use a generated sample image)"
 
+        // MARK: AI text → image (Whiteboard sketch) — testInput IS
+        // the prompt content here. Need a sample that lends itself
+        // to whiteboard-style explanatory diagramming: a short
+        // process / flow / cause-and-effect that someone would
+        // naturally sketch on a meeting whiteboard with arrows and
+        // labels. Picked the classic feedback loop because the
+        // shape is recognizable, it's domain-neutral, and the
+        // result is visually obviously "a whiteboard sketch" not
+        // "a generic illustration".
+        case "user.ai_text_to_image_whiteboard":
+            return """
+            Build → measure → learn loop:
+            1. Build a small experiment
+            2. Measure user behaviour
+            3. Learn what worked
+            4. Feed insights back into the next build
+            Arrows close the loop. Label each step.
+            """
+
         // MARK: Built-in image actions — Run test generates a sample
         // PNG and feeds it to the action. The Input field text is
         // informational; the user can keep these placeholders or

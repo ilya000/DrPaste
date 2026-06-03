@@ -216,29 +216,72 @@ struct OpenRouterUsageProbe: UsageProbe {
             throw UsageProbeError.parse("unexpected credits payload")
         }
         // Compute today's delta from a locally-persisted anchor.
-        let todayKey = OpenRouterUsageProbe.todayKey(providerID: provider.id)
-        let anchorUSD = UserDefaults.standard.double(forKey: todayKey + ".anchorUSD")
-        let anchorDateTS = UserDefaults.standard.double(forKey: todayKey + ".anchorDate")
-        let cal = Calendar(identifier: .gregorian)
-        let startOfDay = cal.startOfDay(for: Date()).timeIntervalSince1970
-        // If the anchor is from before today, reset it to the
-        // current lifetime reading minus zero — i.e. assume today
-        // started at the current reading. Loses early-day usage on
-        // first launch of the day but recovers from there.
-        let validAnchor = anchorDateTS >= startOfDay && anchorUSD > 0
-        let todayUSD: Double
-        if validAnchor {
-            todayUSD = max(0, lifetimeUsage - anchorUSD)
-        } else {
-            UserDefaults.standard.set(lifetimeUsage, forKey: todayKey + ".anchorUSD")
-            UserDefaults.standard.set(startOfDay, forKey: todayKey + ".anchorDate")
-            todayUSD = 0
-        }
+        // OpenRouter exposes only the LIFETIME total_usage value
+        // on /credits — to surface "today's spend" we cache the
+        // reading at first-fetch-of-the-day as an anchor and
+        // report `current − anchor` on subsequent reads.
+        let todayUSD = computeTodayDelta(providerID: provider.id,
+                                         lifetimeUsage: lifetimeUsage)
         return UsageSnapshot(costUSD: todayUSD,
                              requestCount: 0,
                              tokenCount: 0,
                              fetchedAt: Date(),
                              error: nil)
+    }
+
+    /// Anchor-management for the OpenRouter "today" delta. Three
+    /// resets, in priority order:
+    ///
+    ///   1. **New day** — `anchorDate < startOfDay(now)`. Expected
+    ///      daily rollover. Reset anchor to current lifetime, today =
+    ///      0 (we lose pre-launch in-day usage but recover from now).
+    ///
+    ///   2. **Backwards jump** — `lifetimeUsage < anchorUSD`. The
+    ///      lifetime counter can only grow under normal operation;
+    ///      a smaller reading means OpenRouter reset the account
+    ///      (extremely rare), the user re-keyed to a different
+    ///      account (common — pasting a coworker's key into the same
+    ///      provider slot), or our anchor was corrupted. Reset.
+    ///
+    ///   3. **Implausible jump** — current is huge compared to the
+    ///      anchor (`current − anchor > $50` in a single tick). The
+    ///      user almost certainly switched machines: an anchor from
+    ///      machine A doesn't capture what they spent on machine B,
+    ///      so the delta is fake. Reset to current and surface a
+    ///      fresh "today = 0" until the local machine has its own
+    ///      history. $50 chosen empirically — heavy real usage in
+    ///      one session rarely exceeds a few dollars, while a
+    ///      machine-switch easily looks like tens-to-hundreds of
+    ///      dollars of "growth" since the stale anchor.
+    private func computeTodayDelta(providerID: String,
+                                    lifetimeUsage: Double) -> Double {
+        let prefix = OpenRouterUsageProbe.todayKey(providerID: providerID)
+        let defaults = UserDefaults.standard
+        let anchorUSD = defaults.double(forKey: prefix + ".anchorUSD")
+        let anchorDateTS = defaults.double(forKey: prefix + ".anchorDate")
+        let cal = Calendar(identifier: .gregorian)
+        let startOfDay = cal.startOfDay(for: Date()).timeIntervalSince1970
+
+        let needsReset: Bool = {
+            // 1. New day or no anchor yet.
+            if anchorDateTS < startOfDay || anchorUSD <= 0 { return true }
+            // 2. Lifetime went backwards (account reset / re-keyed).
+            if lifetimeUsage < anchorUSD { return true }
+            // 3. Implausibly large jump (machine switch / extended
+            //    offline activity on another device). $50 threshold
+            //    catches the "I worked yesterday on the laptop with
+            //    a different DrPaste install" pattern without
+            //    triggering on legitimate within-day spend.
+            if lifetimeUsage - anchorUSD > 50.0 { return true }
+            return false
+        }()
+
+        if needsReset {
+            defaults.set(lifetimeUsage, forKey: prefix + ".anchorUSD")
+            defaults.set(startOfDay, forKey: prefix + ".anchorDate")
+            return 0
+        }
+        return max(0, lifetimeUsage - anchorUSD)
     }
 
     private static func todayKey(providerID: String) -> String {

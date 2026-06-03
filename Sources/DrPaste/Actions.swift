@@ -326,6 +326,35 @@ final class ActionRegistry: ObservableObject {
                 }
             }
         }
+        // v6 migration: image / text→image seeds gained a `Quality: low`
+        // directive line (parsed by AIImageHTTP.extractQualityDirective
+        // to set OpenAI's quality field; low is ~4× cheaper than the
+        // medium default). The keying is `< 6` — not `< 5` — because
+        // 0.35.18 bumped seedAIVersion to 5 WITHOUT shipping this
+        // block, so a guard on `< 5` would skip the mutation for
+        // anyone who already launched under that build. User-
+        // customised prompts that already contain a `Quality:` line
+        // (whatever tier) are left alone so we don't overwrite an
+        // explicit choice.
+        if copy.seedAIVersion < 6 {
+            let imageSeedIDs: Set<String> = [
+                "user.ai_image_sketch",
+                "user.ai_image_watercolor",
+                "user.ai_image_cartoon",
+                "user.ai_text_to_image_whiteboard"
+            ]
+            for idx in copy.customAI.indices {
+                let entry = copy.customAI[idx]
+                guard imageSeedIDs.contains(entry.id) else { continue }
+                // Already has a Quality directive? Respect it.
+                let pattern = #"(?im)^\s*quality\s*:\s*(low|medium|high|auto)\s*$"#
+                if entry.promptTemplate.range(of: pattern, options: .regularExpression) != nil {
+                    continue
+                }
+                let trimmed = entry.promptTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
+                copy.customAI[idx].promptTemplate = trimmed + "\n\nQuality: low"
+            }
+        }
         copy.seedAIVersion = DefaultAISeed.currentSeedVersion
         return true
     }
@@ -705,14 +734,45 @@ final class ActionRegistry: ObservableObject {
     }
 
     /// Adds or updates a custom AI descriptor.
-    func upsertCustomAI(_ descriptor: CustomAIDescriptor) {
+    ///
+    /// When `after` is non-nil and the descriptor is brand-new
+    /// (no existing row with that id), the new entry is inserted
+    /// directly after the row with id == `after` in `customAI`
+    /// AND in every per-kind `actionOrder` array that mentions
+    /// `after`. This is the Duplicate-button path: a clone lands
+    /// right next to its origin in the Settings list, in the HUD
+    /// chip strip, and in any pinned ordering — wherever the
+    /// original lives, the duplicate lives one step to the right.
+    /// `after` is ignored for updates (we don't relocate an
+    /// existing row when its descriptor changes).
+    func upsertCustomAI(_ descriptor: CustomAIDescriptor, after: String? = nil) {
         var copy = config
         if let idx = copy.customAI.firstIndex(where: { $0.id == descriptor.id }) {
             copy.customAI[idx] = descriptor
+        } else if let after = after,
+                  let anchorIdx = copy.customAI.firstIndex(where: { $0.id == after }) {
+            copy.customAI.insert(descriptor, at: anchorIdx + 1)
+            insertIntoActionOrder(&copy, newID: descriptor.id, after: after)
         } else {
             copy.customAI.append(descriptor)
         }
         config = copy  // triggers save + rebuildCustomAI
+    }
+
+    /// Place `newID` immediately after `after` in every
+    /// `actionOrder[kind]` entry that mentions `after`. Idempotent —
+    /// skips kinds where `newID` is already present (re-running the
+    /// duplicate flow shouldn't double-insert).
+    private func insertIntoActionOrder(_ copy: inout ActionConfig,
+                                        newID: String,
+                                        after: String) {
+        for (kind, ids) in copy.actionOrder {
+            guard let pos = ids.firstIndex(of: after) else { continue }
+            guard !ids.contains(newID) else { continue }
+            var newIDs = ids
+            newIDs.insert(newID, at: pos + 1)
+            copy.actionOrder[kind] = newIDs
+        }
     }
 
     func removeCustomAI(id: String) {
@@ -744,10 +804,17 @@ final class ActionRegistry: ObservableObject {
         }
     }
 
-    func upsertCustomTransformation(_ descriptor: CustomTransformationDescriptor) {
+    /// Same Duplicate-button neighbour-insert behaviour as
+    /// `upsertCustomAI(after:)` — see that comment for the rationale.
+    func upsertCustomTransformation(_ descriptor: CustomTransformationDescriptor,
+                                     after: String? = nil) {
         var copy = config
         if let idx = copy.customTransformations.firstIndex(where: { $0.id == descriptor.id }) {
             copy.customTransformations[idx] = descriptor
+        } else if let after = after,
+                  let anchorIdx = copy.customTransformations.firstIndex(where: { $0.id == after }) {
+            copy.customTransformations.insert(descriptor, at: anchorIdx + 1)
+            insertIntoActionOrder(&copy, newID: descriptor.id, after: after)
         } else {
             copy.customTransformations.append(descriptor)
         }

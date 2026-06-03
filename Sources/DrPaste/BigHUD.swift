@@ -105,13 +105,31 @@ final class BigHUDState: ObservableObject {
 ///   • `text`       — concatenated text (joined with "\n"), in absorption
 ///     order: the original anchor, then each subsequent target in the order
 ///     the user pressed ⌥⌘S on them.
-struct BigHUDClipAccumulator: Equatable {
+struct BigHUDClipAccumulator {
     var consumed: Set<Int>
     var anchorIndex: Int
-    var text: String
+    /// Composite content built up by ⌥⌘S inside the HUD. Stored
+    /// as `NSAttributedString` (not `String`) so rich text spans
+    /// and inline images survive the merge — flattening to plain
+    /// text would drop images and formatting, which is what the
+    /// 0.35-series HUD accumulator regression was about.
+    var attr: NSAttributedString
 }
 
 // MARK: - AI inflight descriptor
+
+/// Required for Equatable on BigHUDClipAccumulator — NSAttributedString
+/// is reference-typed and Equatable, but the synthesised Equatable on
+/// the surrounding struct needs an explicit comparator. We compare by
+/// length + raw RTFD blob bytes; both attributes and attachments survive
+/// the round-trip.
+extension BigHUDClipAccumulator {
+    static func == (lhs: BigHUDClipAccumulator, rhs: BigHUDClipAccumulator) -> Bool {
+        lhs.consumed == rhs.consumed
+            && lhs.anchorIndex == rhs.anchorIndex
+            && lhs.attr.isEqual(to: rhs.attr)
+    }
+}
 
 /// Snapshot of an in-progress AI action. Surfaced in the HUD preview pane
 /// while the network call is outstanding so the user sees which provider is
@@ -461,11 +479,17 @@ struct BigHUDView: View {
         let isAnchor = state.accumulator?.anchorIndex == absoluteIdx
         let displayedText: String = {
             if isAnchor, let acc = state.accumulator {
-                // Show merged content directly in the row so the user sees
-                // the accumulator literally "live" at this position.
-                return acc.text
-                    .prefix(80)
-                    .replacingOccurrences(of: "\n", with: " ⏎ ")
+                // Show merged content directly in the row so the user
+                // sees the accumulator literally "live" at this
+                // position. The accumulator stores NSAttributedString
+                // now (for rich/image preservation), but the in-row
+                // snippet stays single-line plain — strip Object
+                // Replacement Characters (image attachments) so the
+                // user doesn't see ￼ litter in the list.
+                return String(acc.attr.string
+                                .replacingOccurrences(of: "\u{FFFC}", with: "🖼")
+                                .replacingOccurrences(of: "\n", with: " ⏎ ")
+                                .prefix(80))
             }
             return snippet(item)
         }()
@@ -910,31 +934,48 @@ struct BigHUDView: View {
         // expected macOS convention.
         let gesture = state.mode == .gesture
         let zoomKey = gesture ? "+/-" : "⌘+/-"
-        return HStack(spacing: 12) {
-            keyHint("↑↓", "history")
-            keyHint("←→", "actions")
-            keyHint("⌫", "delete")
+        // Mode-specific legend:
+        //
+        //   Gesture Mode — ⌥⌘ are physically held the whole time
+        //   the HUD is up, so every key the user can press is
+        //   implicitly ⌥⌘+key. Putting "⌥⌘" in front of each chip
+        //   is just noise — strip it. "Release pastes" isn't
+        //   spelled out either; the user will discover it the
+        //   first time they let go of ⌥⌘.
+        //
+        //   Limited Mode — no modifiers are held. ⏎ on its own
+        //   pastes; the ⌥⌘ prefix is meaningful and stays on
+        //   chords that need it.
+        //
+        // Either way the row stays one line at the HUD's default
+        // width (the previous "⌥⌘C copy preview" / "⌥⌘⏎ paste &
+        // keep" / "release paste" wording was wrapping). Spacing
+        // tightened from 12 to 10 for the same reason.
+        return HStack(spacing: 10) {
+            keyHint("↑↓", "hist")
+            keyHint("←→", "act")
+            keyHint("⌫", "del")
             keyHint("S", "merge")
-            keyHint("␣", "chain")
             if gesture {
-                keyHint("release", "paste")
+                // ⌥⌘ implicitly held — bare letters fire as chords.
+                keyHint("C", "copy")
+                keyHint("⏎", "keep")
             } else {
+                // Limited Mode — HUD is the key window, no modifiers
+                // held. Local key monitor accepts both bare C and
+                // ⌥⌘C for copy (S the same way) so the legend can
+                // stay bare-key. ⏎ pastes-and-closes; paste-and-keep
+                // is intentionally Gesture-Mode-only.
+                keyHint("C", "copy")
                 keyHint("⏎", "paste")
-                // ⌥⌘⏎ pastes the focused row but leaves the HUD up
-                // so the user can queue another paste — bare ⏎
-                // still does the historical paste-and-close. The
-                // hint is Limited-Mode-only because Gesture Mode
-                // has ⌥⌘ implicitly held, which would make every
-                // ⏎ a paste-and-keep, breaking the release-paste
-                // contract.
-                keyHint("⌥⌘⏎", "paste & keep")
             }
-            keyHint("esc", "cancel")
+            keyHint("esc", "close")
             Spacer()
-            keyHint(zoomKey, "zoom \(Int(state.fontScale * 100))%")
+            keyHint(zoomKey, "\(Int(state.fontScale * 100))%")
         }
         .font(.system(size: sz(10), design: .monospaced))
         .foregroundStyle(.secondary)
+        .lineLimit(1)
     }
 
     private func keyHint(_ key: String, _ label: String) -> some View {

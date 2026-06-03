@@ -22,14 +22,68 @@ enum PasteSimulator {
     static func simulateCopy()  { postShortcut(keyCode: kVK_ANSI_C) }
     static func simulateCut()   { postShortcut(keyCode: kVK_ANSI_X) }
 
-    private static func postShortcut(keyCode: Int) {
+    /// Paste-and-keep variant for ⌥⌘⏎ in BigHUD. The user is still
+    /// physically holding ⌥⌘ during this chord — we need the target
+    /// app to see a clean ⌘V, not ⌥⌘V (which is DrPaste's summon
+    /// hotkey and would bounce focus right back to DrPaste).
+    ///
+    /// Three differences from the normal `simulatePaste()` recipe:
+    ///
+    ///   1. Source stateID is `.privateState`, NOT
+    ///      `.combinedSessionState`. CombinedSessionState makes the
+    ///      OS bake the current HID modifier flags into every event
+    ///      the source produces — so even after we set
+    ///      `event.flags = .maskCommand`, the source's snapshot of
+    ///      "Option is held right now" leaks back in and the target
+    ///      sees ⌥⌘V. PrivateState produces events with no implicit
+    ///      modifier state; our explicit `.maskCommand` is then the
+    ///      only flag set.
+    ///
+    ///   2. Post location is `.cgAnnotatedSessionEventTap`, NOT
+    ///      `.cghidEventTap`. HID re-applies real-keyboard modifier
+    ///      state to every event passing through it, defeating step
+    ///      1. The annotated session tap is far enough up the stack
+    ///      that HID has nothing more to add.
+    ///
+    ///   3. No Option lift/restore. It's unreliable against
+    ///      hardware-held modifiers (the OS reads modifier state
+    ///      from HID hardware, not from our synthetic flagsChanged
+    ///      events), and the synthetic Option keyUp would otherwise
+    ///      look like a real release to the gesture engine and tear
+    ///      down the HUD — defeating the whole point of "keep open".
+    static func simulatePasteKeepingHeldModifiers() {
+        guard let src = CGEventSource(stateID: .privateState) else {
+            // Source allocation should never fail, but fall back to
+            // the regular path so the user at least gets something.
+            postShortcut(keyCode: kVK_ANSI_V)
+            return
+        }
+        let loc = CGEventTapLocation.cgAnnotatedSessionEventTap
+        let keyCode = CGKeyCode(kVK_ANSI_V)
+        let keyDown = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: true)
+        keyDown?.flags = .maskCommand
+        let keyUp = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: false)
+        keyUp?.flags = .maskCommand
+
+        // Mark both events so our own EventTap engine doesn't
+        // re-interpret them as a user-initiated ⌥⌘V summon — even
+        // though we sanitized flags, the marker is belt-and-braces.
+        for ev in [keyDown, keyUp] {
+            ev?.setIntegerValueField(.eventSourceUserData, value: DrPasteSyntheticMarker)
+        }
+        keyDown?.post(tap: loc)
+        keyUp?.post(tap: loc)
+    }
+
+    private static func postShortcut(keyCode: Int,
+                                     via loc: CGEventTapLocation = .cghidEventTap,
+                                     liftOption: Bool = true) {
         let src = CGEventSource(stateID: .combinedSessionState)
-        let loc = CGEventTapLocation.cghidEventTap
 
         // Check the physical Option modifier — if it is held, lift it
         // programmatically before posting the synthetic shortcut so the target
         // app sees a clean ⌘X / ⌘C rather than ⌥⌘X / ⌥⌘C.
-        let optionHeld = NSEvent.modifierFlags.contains(.option)
+        let optionHeld = liftOption && NSEvent.modifierFlags.contains(.option)
         if optionHeld {
             let optUp = CGEvent(keyboardEventSource: src,
                                 virtualKey: CGKeyCode(kVK_Option),

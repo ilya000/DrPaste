@@ -82,6 +82,27 @@ enum SemanticKind: String, Codable, CaseIterable {
 // MARK: - Clipboard item (Universal Semantic, Backlog #1)
 
 struct ClipboardItem: Identifiable, Codable, Equatable {
+    /// True when the item has no payload worth storing — no
+    /// previewText, no image thumbnail, no pasteboard representations.
+    /// Cheap purely-in-memory check (does NOT stat the on-disk blob
+    /// files; if representations declares a UTType we trust the
+    /// declaration). Used to filter out clipboard junk:
+    ///   • Pasteboards that briefly publish a typesOrdered list but
+    ///     never write payload bytes (some apps do this on focus
+    ///     change to advertise their capabilities).
+    ///   • Whitespace-only copies (accidental ⌘C on a blank line).
+    ///   • Stale items already migrated where blob storage was
+    ///     pruned but the index entry stuck around.
+    var isEffectivelyEmpty: Bool {
+        if let rel = previewImageRel, !rel.isEmpty { return false }
+        if !representations.isEmpty { return false }
+        if let text = previewText,
+           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return false
+        }
+        return true
+    }
+
     let id: UUID
     var semantic: SemanticKind          // human-readable classification
     let createdAt: Date
@@ -169,6 +190,11 @@ final class ClipboardStore: ObservableObject {
     }
 
     func add(_ item: ClipboardItem) {
+        // Drop empty clips at the source — no point recording a
+        // pasteboard change that didn't carry any actual payload
+        // (apps that advertise types on focus change but never
+        // write bytes, accidental ⌘C on a blank selection, etc.).
+        if item.isEffectivelyEmpty { return }
         if let last = items.first, sameContent(last, item) { return }
         items.insert(item, at: 0)
         trim()
@@ -176,11 +202,15 @@ final class ClipboardStore: ObservableObject {
     }
 
     /// Inserts a synthetic clip at the given index without de-duplication.
-    /// Used by the ⌥⌘Space "promote preview to history" flow so the user can
+    /// Used by the ⌥⌘C "promote preview to history" flow so the user can
     /// chain further transformations on a freshly-computed preview without
     /// it being silently dropped if its content happens to match the
     /// top-of-history clip.
     func insertSnapshot(_ item: ClipboardItem, at index: Int) {
+        // Same empty-clip guard as `add`: a promoted preview that
+        // resolved to empty text / no image isn't worth a history
+        // row either.
+        if item.isEffectivelyEmpty { return }
         let clamped = max(0, min(index, items.count))
         items.insert(item, at: clamped)
         trim()
@@ -305,7 +335,16 @@ final class ClipboardStore: ObservableObject {
               let decoded = try? JSONDecoder().decode([ClipboardItem].self, from: data) else {
             return
         }
-        self.items = decoded
+        // Curative cleanup on launch — drop any empty clips that
+        // slipped into earlier index versions before `add()` /
+        // `insertSnapshot()` learned to filter them. Save only if
+        // we actually pruned something so quiet starts don't
+        // re-write the index on every launch.
+        let filtered = decoded.filter { !$0.isEffectivelyEmpty }
+        self.items = filtered
+        if filtered.count != decoded.count {
+            save()
+        }
     }
 
     private func trim() {

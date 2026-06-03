@@ -500,10 +500,57 @@ enum AIImageHTTP {
         }
     }
 
+    /// Pull a `Quality: low|medium|high|auto` directive line out of
+    /// the user's prompt template. Returns the cleaned prompt (with
+    /// the directive stripped) and the extracted value if present.
+    ///
+    /// Why this lives in the prompt rather than as a hidden code
+    /// constant: the user gets to decide how cheap-vs-pretty each
+    /// action is. The seed prompts ship with `Quality: low` (4×
+    /// cheaper per gpt-image-1 call) but anyone who wants gallery-
+    /// grade output edits the prompt and removes the directive (or
+    /// changes it to `Quality: high`) — no setting to hunt for, no
+    /// hidden state, the contract is right there in the template
+    /// the user is already editing.
+    ///
+    /// Matches any line of the form `Quality: <value>` (case-
+    /// insensitive, surrounding whitespace tolerated). One directive
+    /// per prompt; if the user writes several, the LAST one wins
+    /// (regex global match keeps semantics predictable — the line
+    /// closest to the end is the one we honour). Removed lines
+    /// don't leak into the model call, so the prompt the model
+    /// sees reads naturally.
+    static func extractQualityDirective(from prompt: String) -> (cleaned: String, quality: String?) {
+        let pattern = #"(?im)^\s*quality\s*:\s*(low|medium|high|auto)\s*$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return (prompt, nil)
+        }
+        let ns = prompt as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        let matches = regex.matches(in: prompt, range: range)
+        guard let last = matches.last else { return (prompt, nil) }
+        let value = ns.substring(with: last.range(at: 1)).lowercased()
+        // Strip ALL Quality: lines (not just the last) so the model
+        // doesn't see directive noise. Walk matches in reverse so
+        // earlier ranges stay valid after each removal.
+        var cleaned = ns
+        for m in matches.reversed() {
+            cleaned = cleaned.replacingCharacters(in: m.range, with: "") as NSString
+        }
+        // Collapse any blank lines the removal left behind.
+        let collapsed = (cleaned as String)
+            .replacingOccurrences(of: #"\n{3,}"#,
+                                  with: "\n\n",
+                                  options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (collapsed, value)
+    }
+
     /// OpenAI-shape text-to-image — POST to `<baseURL>/images/generations`.
-    /// Body: JSON `{ model, prompt, n, size }`. Response same as edits:
-    /// `{ data: [ { b64_json } ] }`. Single function reused for both
-    /// `.openai` (api.openai.com) and `.custom` (user-supplied baseURL).
+    /// Body: JSON `{ model, prompt, n, size, [quality] }`. Response
+    /// same as edits: `{ data: [ { b64_json } ] }`. Single function
+    /// reused for both `.openai` (api.openai.com) and `.custom`
+    /// (user-supplied baseURL).
     private static func runOpenAIGenerate(prompt: String,
                                            apiKey: String,
                                            baseURL: String) async throws -> Data {
@@ -517,13 +564,30 @@ enum AIImageHTTP {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.timeoutInterval = 90
 
+        // Pull `Quality: <tier>` directive out of the prompt
+        // template so the user controls cost via the same field
+        // they edit the prompt in. nil = omit the parameter (let
+        // OpenAI default = medium).
+        let (cleanedPrompt, qualityFromPrompt) = Self.extractQualityDirective(from: prompt)
+
         struct GenReq: Encodable {
             let model: String
             let prompt: String
             let n: Int
             let size: String
+            /// Per-request tier. gpt-image-1 prices per 1024×1024:
+            /// `low` ~$0.011, `medium` ~$0.042, `high` ~$0.167,
+            /// `auto` lets OpenAI pick. Sourced from the prompt
+            /// `Quality:` line; nil means we omit the field and
+            /// take OpenAI's default. gpt-image-1 doesn't accept
+            /// 512×512 (DALL-E only); 1024×1024 is the smallest
+            /// valid size.
+            let quality: String?
         }
-        let body = GenReq(model: "gpt-image-1", prompt: prompt, n: 1, size: "1024x1024")
+        let body = GenReq(model: "gpt-image-1", prompt: cleanedPrompt,
+                          n: 1, size: "1024x1024", quality: qualityFromPrompt)
+        // JSONEncoder skips nil optionals by default, so a missing
+        // Quality: directive cleanly omits the field on the wire.
         req.httpBody = try JSONEncoder().encode(body)
 
         let (data, _) = try await execute(req, providerName: "OpenAI")
@@ -733,11 +797,21 @@ enum AIImageHTTP {
             body.append("Content-Disposition: form-data; name=\"\(name)\"\(nl)\(nl)".data(using: .utf8)!)
             body.append("\(value)\(nl)".data(using: .utf8)!)
         }
+        // Same `Quality: <tier>` extraction as the generate path —
+        // user controls the cost/fidelity tradeoff via a directive
+        // line in the prompt template instead of a hidden code
+        // constant.
+        let (cleanedPrompt, qualityFromPrompt) = Self.extractQualityDirective(from: prompt)
         appendField("model", "gpt-image-1")
-        appendField("prompt", prompt)
+        appendField("prompt", cleanedPrompt)
         appendField("n", "1")
-        // 1024×1024 is the cheapest tier (~$0.04 standard quality).
+        // gpt-image-1 minimum size; 512×512 is DALL-E-only.
         appendField("size", "1024x1024")
+        // Quality from the prompt directive if present; otherwise
+        // omit the field and take OpenAI's default (medium).
+        if let q = qualityFromPrompt {
+            appendField("quality", q)
+        }
 
         // Image file part
         body.append("--\(boundary)\(nl)".data(using: .utf8)!)

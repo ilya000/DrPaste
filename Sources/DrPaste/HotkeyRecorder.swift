@@ -131,10 +131,22 @@ struct HotkeyRecorderField: View {
         guard mods != 0 else { return }
 
         let candidate = ActionHotkey(keyCode: kc, modifiers: mods)
-        // Hard block: combinations reserved for DrPaste's main hotkeys (⌥⌘V/C/X)
-        // cannot be claimed by per-action bindings — they'd never fire anyway.
-        if candidate.conflictsWithMainHotkeys {
-            onStatus("This combination is reserved for the main DrPaste hotkey (⌥⌘V/C/X).")
+        // Hard block: combinations reserved for DrPaste's main hotkeys.
+        // Per-action bindings would never fire here — the main hotkey
+        // (or in-HUD chord) intercepts the keystroke first. Name the
+        // specific feature so the user knows exactly what conflicts.
+        if let drFeature = candidate.drPasteReservedName {
+            onStatus("⚠︎ \(candidate.displayString) is already used by DrPaste for “\(drFeature)”. Pick a different combination.")
+            return
+        }
+        // Hard block: combinations owned by macOS itself. Even if the
+        // EventTap nominally wins the keystroke, lower OS layers still
+        // briefly process it (Log Out dialog flicker, Dock animation,
+        // etc.) — a noisy user experience that we head off here. Tell
+        // the user WHO owns the chord so they know what to avoid; the
+        // recorder cancels without committing the binding.
+        if let systemName = candidate.systemHotkeyName {
+            onStatus("⚠︎ \(candidate.displayString) is a macOS system shortcut for “\(systemName)”. Pick a different combination.")
             return
         }
         // Auto-steal: always accept the recording. If another action holds it,

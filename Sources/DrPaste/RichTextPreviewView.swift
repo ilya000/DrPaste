@@ -94,9 +94,31 @@ struct RichTextPreviewView: NSViewRepresentable {
     }
 }
 
-/// Helper to load NSAttributedString from a ClipboardItem's RTF / HTML representation.
+/// Helper to load NSAttributedString from a ClipboardItem's
+/// richest available representation. Priority order:
+///
+///   1. `com.apple.flat-rtfd` — RTFD with inline FileWrapper
+///      attachments. Required to render the ⌥⌘S accumulator's
+///      image+text composites correctly (RTF strips attachments,
+///      HTML loses them when they were written as data: URIs but
+///      the receiving end couldn't resolve them).
+///   2. `public.rtf` — plain RTF, no attachments. Used when the
+///      source app didn't produce RTFD (typical web copy).
+///   3. `public.html` — HTML rich text. Images may be lost if the
+///      source kept them external; that's the producer's fault,
+///      we render whatever made it through.
 enum RichTextLoader {
     static func attributedString(from item: ClipboardItem) -> NSAttributedString? {
+        // 1. Flat-RTFD with attachments. `NSAttributedString(rtfd:)`
+        //    accepts the flat-package Data form pasteboards use,
+        //    rehydrating embedded image FileWrappers into live
+        //    NSTextAttachment instances.
+        if let rel = item.representations["com.apple.flat-rtfd"],
+           let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
+           let attr = NSAttributedString(rtfd: data, documentAttributes: nil) {
+            return attr
+        }
+        // 2. Plain RTF (no attachments).
         if let rel = item.representations["public.rtf"],
            let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
            let attr = try? NSAttributedString(
@@ -105,6 +127,7 @@ enum RichTextLoader {
                 documentAttributes: nil) {
             return attr
         }
+        // 3. HTML.
         if let rel = item.representations["public.html"],
            let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
            let attr = try? NSAttributedString(

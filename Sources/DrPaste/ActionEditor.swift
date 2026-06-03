@@ -34,17 +34,30 @@ import AppKit
 /// upward if `.center()` would put the bottom edge underneath the Dock.
 @MainActor
 final class ActionEditorWindowController {
-    private var window: NSWindow?
+    /// Multiple editor windows can be open simultaneously — opened
+    /// either from the Settings list (one per Edit click on a
+    /// different action) or from a Duplicate-button click inside an
+    /// existing editor (which spawns a sibling window for the
+    /// freshly-cloned action without closing the original). Keyed
+    /// by `contextKey` so a second Edit click on the same action
+    /// raises the existing window instead of stacking duplicates.
+    private var windowsByKey: [String: NSWindow] = [:]
+    private var delegatesByKey: [String: ActionEditorWindowDelegate] = [:]
 
-    /// Open a new editor window for `context`. Any previously-opened
-    /// editor is closed first — the editor is intended to be modal-ish
-    /// (only one at a time). `onClose` is invoked once the user clicks
-    /// Cancel / Save / closes the window via the red traffic-light
-    /// button so the caller can reset its `editorContext` state.
+    /// Open an editor window for `context`. If a window for the
+    /// SAME context is already open, raise it instead of opening
+    /// a second one (covers the "user clicked Edit twice" case).
+    /// Distinct contexts open in their own windows.
     func show(context: ActionEditorContext,
               registry: ActionRegistry,
               onClose: @escaping () -> Void) {
-        close()
+        let key = Self.contextKey(for: context)
+        if let existing = windowsByKey[key] {
+            existing.orderFrontRegardless()
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
 
         // Title reflects whether we're creating or editing — small UX
         // touch, the title bar is the first thing the user reads.
@@ -57,13 +70,25 @@ final class ActionEditorWindowController {
             }
         }()
 
-        // Wrap the SwiftUI editor so closing always tears down the
-        // window before invoking the caller's onClose — otherwise the
-        // SwiftUI state would race with our window teardown.
-        let view = ActionEditor(context: context, registry: registry) { [weak self] in
-            self?.close()
-            onClose()
-        }
+        // Wrap the SwiftUI editor so closing the editor tears down
+        // ITS OWN window (not all of them) before invoking the
+        // caller's onClose — siblings stay open.
+        let view = ActionEditor(
+            context: context,
+            registry: registry,
+            onClose: { [weak self] in
+                self?.closeWindow(forKey: key)
+                onClose()
+            },
+            onOpenSibling: { [weak self] siblingContext in
+                // Spawn a sibling editor window for the duplicated
+                // descriptor. No onClose hand-back to the original
+                // caller — siblings are independent.
+                self?.show(context: siblingContext,
+                           registry: registry,
+                           onClose: {})
+            }
+        )
         let host = NSHostingController(rootView: view)
 
         let w = NSWindow(contentViewController: host)
@@ -79,6 +104,15 @@ final class ActionEditorWindowController {
         w.setContentSize(NSSize(width: 620, height: 720))
         w.isReleasedWhenClosed = false
         w.center()
+        // Stagger sibling windows so they don't land exactly on top
+        // of each other — easier to see both at once.
+        if windowsByKey.count > 0 {
+            let offset = CGFloat(windowsByKey.count) * 24
+            var f = w.frame
+            f.origin.x += offset
+            f.origin.y -= offset
+            w.setFrame(f, display: false)
+        }
         // Belt-and-braces against `.center()` placing the bottom edge
         // behind the Dock / menu bar on small displays — clamp into
         // `visibleFrame` (which excludes both).
@@ -86,12 +120,13 @@ final class ActionEditorWindowController {
         // Wire the red traffic-light: dismissing the window with the
         // close button should fire onClose so the caller resets state.
         let delegate = ActionEditorWindowDelegate(onClose: { [weak self] in
-            self?.window = nil
+            self?.windowsByKey.removeValue(forKey: key)
+            self?.delegatesByKey.removeValue(forKey: key)
             onClose()
         })
         w.delegate = delegate
-        retainDelegate = delegate
-        window = w
+        delegatesByKey[key] = delegate
+        windowsByKey[key] = w
         // Triple-layer focus assertion — accessory-app activation
         // is sometimes blocked by macOS focus-stealing protection,
         // so we cover all three handles (orderFrontRegardless,
@@ -102,38 +137,48 @@ final class ActionEditorWindowController {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// Close every open editor window. Used by Settings teardown.
     func close() {
-        window?.orderOut(nil)
-        window = nil
-        retainDelegate = nil
+        for w in windowsByKey.values { w.orderOut(nil) }
+        windowsByKey.removeAll()
+        delegatesByKey.removeAll()
     }
 
-    /// Bring the existing editor window to the front. No-op if no
-    /// window is open. Used by the Settings list's Edit button to
-    /// handle the re-click case: user already has the editor open,
-    /// switches back to Settings, clicks Edit on the SAME action —
-    /// the SwiftUI `onChange(of: editorContextKey)` doesn't fire
-    /// (string key unchanged) so `show()` never runs and the
-    /// window stays buried behind Settings. `raise()` is called
-    /// unconditionally on every Edit click so the window comes
-    /// forward whether the key changed or not.
-    ///
-    /// Belt-and-braces focus stack — accessory apps can have
-    /// `NSApp.activate(ignoringOtherApps:)` ignored by macOS focus-
-    /// stealing protection, so we layer `orderFrontRegardless` +
-    /// `makeKeyAndOrderFront` + `activate` so at least one
-    /// reliably wins.
+    /// Close the single window identified by `key`. Used by the
+    /// per-editor Cancel / Save paths so closing one sibling
+    /// doesn't drop the rest.
+    private func closeWindow(forKey key: String) {
+        windowsByKey.removeValue(forKey: key)?.orderOut(nil)
+        delegatesByKey.removeValue(forKey: key)
+    }
+
+    /// Bring the most recently-shown editor window to the front.
+    /// Used by the Settings list's Edit button to handle the re-
+    /// click case: clicking Edit on the SAME action a second time
+    /// finds the existing window via the contextKey path in
+    /// `show()` and raises it there; `raise()` is the catch-all
+    /// for any other "ensure something is on top" trigger.
     func raise() {
-        guard let w = window else { return }
+        guard let w = windowsByKey.values.first(where: { $0.isKeyWindow })
+              ?? windowsByKey.values.first else { return }
         w.orderFrontRegardless()
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    /// Retain the delegate alongside the window — NSWindow.delegate is
-    /// weak. Without this the delegate would deallocate as soon as the
-    /// outer scope returned.
-    private var retainDelegate: ActionEditorWindowDelegate?
+    /// Stable string identifier for a context — same descriptor
+    /// produces the same key, so reopening the same action lands
+    /// on the existing window rather than spawning a duplicate.
+    /// `createNew` always opens a fresh window because every
+    /// "Add" click is intentionally a new draft.
+    private static func contextKey(for context: ActionEditorContext) -> String {
+        switch context {
+        case .createNew:                    return "new.\(UUID().uuidString)"
+        case .editBuiltin(let id, _, _):    return "builtin.\(id)"
+        case .editTransformation(let d):    return "transform.\(d.id)"
+        case .editAI(let d):                return "ai.\(d.id)"
+        }
+    }
 
     /// Move the window so its frame fits inside the active screen's
     /// `visibleFrame` (which excludes the menu bar and the Dock). Pure
@@ -206,6 +251,15 @@ struct ActionEditor: View {
     let context: ActionEditorContext
     @ObservedObject var registry: ActionRegistry
     let onClose: () -> Void
+    /// Called by Duplicate to spawn a sibling editor window for
+    /// the freshly-cloned descriptor. The original window stays
+    /// open so the user can keep editing the source action; the
+    /// sibling opens with the clone's context. Nil-safe — callers
+    /// that don't support sibling windows pass `nil` and the
+    /// Duplicate button falls back to its older "save + close +
+    /// reopen for new id" behaviour (effectively closing the
+    /// current editor).
+    var onOpenSibling: ((ActionEditorContext) -> Void)? = nil
 
     // Mode (segmented picker) — locked when editing existing
     @State private var kind: ActionEditorKind = .builtin
@@ -1417,19 +1471,28 @@ struct ActionEditor: View {
 
     private var footerButtons: some View {
         HStack {
-            // Delete is available only for user-created actions (transformation / AI).
+            // Delete + Duplicate available only when editing a user-
+            // created action (transformation / AI). Built-ins are
+            // immutable — duplicating them would clone something
+            // that's already implicitly available to every user.
             if case .editTransformation(let desc) = context {
                 Button(role: .destructive) {
                     registry.removeCustomTransformation(id: desc.id)
                     registry.setHotkey(nil, for: desc.id)
                     onClose()
                 } label: { Label("Delete", systemImage: "trash") }
+                Button { duplicateTransformation(from: desc) } label: {
+                    Label("Duplicate", systemImage: "plus.square.on.square")
+                }
             } else if case .editAI(let desc) = context {
                 Button(role: .destructive) {
                     registry.removeCustomAI(id: desc.id)
                     registry.setHotkey(nil, for: desc.id)
                     onClose()
                 } label: { Label("Delete", systemImage: "trash") }
+                Button { duplicateAI(from: desc) } label: {
+                    Label("Duplicate", systemImage: "plus.square.on.square")
+                }
             }
             Spacer()
             Button("Cancel") { onClose() }
@@ -1438,6 +1501,110 @@ struct ActionEditor: View {
                 .disabled(!canSave)
         }
         .padding(.horizontal, 20).padding(.vertical, 14)
+    }
+
+    /// Clone the action currently being edited into a new entry
+    /// with a fresh UUID and a numbered title (`Title 2`, `Title 3`,
+    /// …). The clone takes the CURRENT live editor state (title,
+    /// prompt, applicable types, provider, kind) rather than the
+    /// `desc` snapshot we opened with — so unsaved tweaks the user
+    /// just made carry into the copy, matching the "duplicate
+    /// what I'm looking at" expectation.
+    ///
+    /// Behaviour:
+    ///   • Original window STAYS OPEN — user might want to keep
+    ///     editing the source action separately.
+    ///   • Sibling editor window OPENS for the freshly-created
+    ///     clone (via `onOpenSibling`), so the user can adjust
+    ///     the copy immediately.
+    ///   • Hotkey is NOT copied — two actions can't share a
+    ///     chord, and silently stealing the user's hotkey for
+    ///     the clone would be surprising. Clone starts hotkey-less.
+    @MainActor
+    private func duplicateTransformation(from original: CustomTransformationDescriptor) {
+        let newID = "user.transform.\(UUID().uuidString.prefix(8))"
+        let newTitle = nextDuplicateTitle(base: title)
+        let appliesArray = applicableTypes.map { $0.rawValue }.sorted()
+        let descriptor = CustomTransformationDescriptor(
+            id: newID,
+            title: newTitle,
+            engineID: transformationEngine.rawValue,
+            parameters: transformationParams,
+            applicableTypes: appliesArray,
+            enabled: true
+        )
+        // Insert directly after the original so the clone shows up
+        // as the original's right-hand neighbour in the Settings
+        // list, in the HUD chips, and in any pinned per-kind order —
+        // matches the "here's the source, here are its derivatives"
+        // mental model.
+        registry.upsertCustomTransformation(descriptor, after: original.id)
+        if let onOpenSibling = onOpenSibling {
+            onOpenSibling(.editTransformation(descriptor))
+        } else {
+            // Caller didn't wire sibling-spawn — fall back to the
+            // simpler close behaviour so the user at least sees
+            // the registry list refresh with the new entry.
+            onClose()
+        }
+    }
+
+    @MainActor
+    private func duplicateAI(from original: CustomAIDescriptor) {
+        let newID = "user.\(UUID().uuidString.prefix(8))"
+        let newTitle = nextDuplicateTitle(base: title)
+        let appliesArray = applicableTypes.map { $0.rawValue }.sorted()
+        let resolvedApplicableTypes: [String] =
+            aiKind == .image ? ["image"] : appliesArray
+        let descriptor = CustomAIDescriptor(
+            id: newID,
+            title: newTitle,
+            promptTemplate: aiPrompt,
+            providerID: aiProviderID,
+            applicableTypes: resolvedApplicableTypes,
+            enabled: true,
+            kind: aiKind
+        )
+        // Insert directly after the original — see duplicate-
+        // Transformation comment above for rationale.
+        registry.upsertCustomAI(descriptor, after: original.id)
+        if let onOpenSibling = onOpenSibling {
+            onOpenSibling(.editAI(descriptor))
+        } else {
+            onClose()
+        }
+    }
+
+    /// Produce a fresh "Foo 2" / "Foo 3" style title that doesn't
+    /// collide with any existing action in the registry. Two
+    /// twists worth spelling out:
+    ///
+    ///   • If the input already ends in " N" (a trailing space-
+    ///     and-integer), we increment N instead of appending a
+    ///     fresh " 2" — duplicating "Translate 2" gives
+    ///     "Translate 3", not "Translate 2 2".
+    ///   • The collision check walks every action title in the
+    ///     registry (built-ins + customs + AI), case-sensitive,
+    ///     and keeps bumping the suffix until the name is unique.
+    @MainActor
+    private func nextDuplicateTitle(base: String) -> String {
+        let trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
+        var root = trimmed
+        var n = 2
+        // Detect trailing " N" so a second duplicate of "Foo 2"
+        // produces "Foo 3" rather than "Foo 2 2".
+        if let regex = try? NSRegularExpression(pattern: #"\s+(\d+)$"#),
+           let m = regex.firstMatch(in: trimmed,
+                                    range: NSRange(trimmed.startIndex..., in: trimmed)),
+           let numRange = Range(m.range(at: 1), in: trimmed),
+           let parsed = Int(trimmed[numRange]),
+           let fullRange = Range(m.range, in: trimmed) {
+            root = String(trimmed[trimmed.startIndex..<fullRange.lowerBound])
+            n = parsed + 1
+        }
+        let existingTitles = Set(registry.actions.map { $0.title })
+        while existingTitles.contains("\(root) \(n)") { n += 1 }
+        return "\(root) \(n)"
     }
 
     private var canSave: Bool {

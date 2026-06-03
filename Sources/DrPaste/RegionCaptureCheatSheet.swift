@@ -71,7 +71,16 @@ final class RegionCaptureCheatSheetController {
     /// Show the cheat sheet anchored to the bottom-right of the
     /// screen containing the mouse cursor. Idempotent — calling
     /// while visible rebuilds the content (cheap) and re-positions.
+    ///
+    /// Honours the Settings → General "Show keyboard cheat sheet
+    /// on ⌥⌘ hold" toggle: when the user has disabled it (key
+    /// `drpaste.cheatSheet.disabled = true`), this is a no-op.
+    /// Region-capture itself still works — only the corner panel
+    /// is suppressed.
     func show() {
+        if UserDefaults.standard.bool(forKey: "drpaste.cheatSheet.disabled") {
+            return
+        }
         let hotkeys = hotkeysProvider?() ?? []
         let view = RegionCaptureCheatSheetView(userHotkeys: hotkeys)
         if panel == nil {
@@ -221,6 +230,7 @@ struct RegionCaptureCheatSheetView: View {
                 cheatRow(combo: "⌥⌘C", title: "quick copy")
                 cheatRow(combo: "⌥⌘X", title: "cut & replace")
                 cheatRow(combo: "⌥⌘S", title: "append copy")
+                cheatRow(combo: "⌥⌘⏎", title: "paste & keep HUD")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -306,7 +316,11 @@ private struct KeyboardCanvas: View {
             letterRow(letters: ["A","S","D","F","G","H","J","K","L"], xStart: 114, y: 70)
             keyOutline(x: 384, y: 70, w: 26, h: 22, label: ";", thick: false, fontSize: 10)
             keyOutline(x: 414, y: 70, w: 26, h: 22, label: "'", thick: false, fontSize: 10)
-            keyOutline(x: 444, y: 70, w: 66, h: 22, label: "return", thick: false, fontSize: 9)
+            // Return is a working key once BigHUD opens (paste +
+            // close in Limited Mode; paste-and-keep with ⌥⌘ held
+            // in Gesture Mode) — draw it highlighted so the user
+            // doesn't read it as inert chrome.
+            keyOutline(x: 444, y: 70, w: 66, h: 22, label: "⏎", thick: true, fontSize: 12, bold: true)
 
             // Row 4 — Shift + Z row + Shift
             keyOutline(x: 60, y: 96, w: 64, h: 22, label: "shift", thick: false, fontSize: 9)
