@@ -864,7 +864,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // · elapsed seconds, matching the main HUD preview pane treatment.
         let actionTitle = registry.displayTitle(forActionID: action.id, defaultTitle: action.title)
         let aiInflight = makeAIInflight(for: action)
-        let hudToken = MiniHUDController.shared.show(label: actionTitle, inflight: aiInflight)
+        // Wire the MiniHUD's X button to cancel the in-flight task.
+        // Without this the user has no escape hatch from a hung AI
+        // call (provider takes forever, network stuck, etc.) — they
+        // were stuck staring at a spinner with no way out short of
+        // force-quitting DrPaste. Cancellation cascades into the
+        // streaming task via Task.cancel(), which tears down the
+        // URLSession bytes stream through onTermination.
+        let hudToken = MiniHUDController.shared.show(
+            label: actionTitle,
+            inflight: aiInflight,
+            onCancel: { [weak self] in
+                self?.actionHotkeyTask?.cancel()
+                self?.actionHotkeyTask = nil
+            }
+        )
 
         // Selection-first semantics — the whole point of a per-action
         // hotkey is "do X to what I'm looking at". Operating on stale
@@ -905,7 +919,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             let pb = NSPasteboard.general
             let item = self.snapshotPasteboardAsItem(pb: pb, sourceApp: frontmost)
             let ctx = ContextDetector.detect(item)
-            let outcome = await action.apply(item: item, context: ctx)
+            // AI actions go through the streaming path even in the
+            // direct-trigger flow — same code BigHUD's preview uses.
+            // The non-streaming `run()` method has different timeout
+            // semantics (URLSession's default 60 s, no heartbeat) and
+            // for some provider+model combinations was hanging
+            // indefinitely while the same prompt streamed fine. Using
+            // applyStreaming everywhere keeps the timeout behaviour
+            // uniform and lets the user see partial output if the
+            // connection drops mid-stream. onPartial is no-op here
+            // (MiniHUD has no preview pane) — we only care about the
+            // final outcome.
+            let outcome: ApplyOutcome
+            if let aiAction = action as? AIAction {
+                outcome = await aiAction.applyStreaming(item: item, context: ctx) { _ in }
+            } else {
+                outcome = await action.apply(item: item, context: ctx)
+            }
             if Task.isCancelled {
                 MiniHUDController.shared.hideIfOwner(hudToken)
                 return

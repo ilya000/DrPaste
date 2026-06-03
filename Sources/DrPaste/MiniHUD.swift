@@ -161,6 +161,15 @@ final class MiniHUDController {
         p.titleVisibility = .hidden
         p.titlebarAppearsTransparent = true
         p.hidesOnDeactivate = false
+        // Allow the user to drag the panel out of the way when a
+        // long-running action is covering something they need to
+        // see. Borderless NSPanels don't move by default — but
+        // setting `isMovableByWindowBackground = true` lets them
+        // pick up the panel anywhere on its content view and drag
+        // it like a regular window. The X (cancel) button and any
+        // future interactive controls stop the drag automatically
+        // because hitTest on those subviews resolves first.
+        p.isMovableByWindowBackground = true
         // Subscribe to Settings → Appearance so the MiniHUD re-skins
         // when the user switches themes, same as BigHUDPanel.
         p.subscribeToAppTheme()
