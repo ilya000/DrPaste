@@ -904,6 +904,7 @@ final class AnthropicProvider: AIProvider {
                         throw AIProviderError.http(status: http.statusCode, body: errBody)
                     }
 
+                    var sawStop = false
                     for try await line in bytes.lines {
                         try Task.checkCancellation()
                         // Skip blank lines and `event: ...` framing — only
@@ -915,12 +916,30 @@ final class AnthropicProvider: AIProvider {
                         else { continue }
                         // Expected: {"type":"content_block_delta","index":0,
                         //            "delta":{"type":"text_delta","text":"..."}}
-                        if let type = json["type"] as? String,
-                           type == "content_block_delta",
-                           let delta = json["delta"] as? [String: Any],
-                           let text = delta["text"] as? String,
-                           !text.isEmpty {
-                            continuation.yield(text)
+                        if let type = json["type"] as? String {
+                            switch type {
+                            case "content_block_delta":
+                                if let delta = json["delta"] as? [String: Any],
+                                   let text = delta["text"] as? String,
+                                   !text.isEmpty {
+                                    continuation.yield(text)
+                                }
+                            case "message_stop":
+                                // Anthropic's explicit "I'm done" marker.
+                                // Some server paths leave the TCP socket
+                                // half-open past this point — `bytes.lines`
+                                // would then sit forever waiting for the
+                                // next ping. Break out as soon as we see
+                                // it so the AsyncThrowingStream closes
+                                // promptly. Without this guard the
+                                // MiniHUD elapsed counter ticks
+                                // indefinitely even though the response
+                                // is already complete.
+                                sawStop = true
+                            default:
+                                break
+                            }
+                            if sawStop { break }
                         }
                     }
                     continuation.finish()
@@ -1186,16 +1205,31 @@ final class GeminiProvider: AIProvider {
                               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
                         else { continue }
                         // Expected: {"candidates":[{"content":{"parts":[{"text":"..."}],"role":"model"},...}]}
+                        var finished = false
                         if let candidates = json["candidates"] as? [[String: Any]],
-                           let first = candidates.first,
-                           let content = first["content"] as? [String: Any],
-                           let parts = content["parts"] as? [[String: Any]] {
-                            for part in parts {
-                                if let text = part["text"] as? String, !text.isEmpty {
-                                    continuation.yield(text)
+                           let first = candidates.first {
+                            if let content = first["content"] as? [String: Any],
+                               let parts = content["parts"] as? [[String: Any]] {
+                                for part in parts {
+                                    if let text = part["text"] as? String, !text.isEmpty {
+                                        continuation.yield(text)
+                                    }
                                 }
                             }
+                            // Gemini signals completion via finishReason
+                            // (STOP, MAX_TOKENS, SAFETY, RECITATION,
+                            // OTHER). Any non-empty finishReason means
+                            // this is the last chunk we should expect.
+                            // Without breaking, the for-await stays
+                            // open while the server keeps the TCP
+                            // half-open, ticking the elapsed counter
+                            // long after the response is complete.
+                            if let reason = first["finishReason"] as? String,
+                               !reason.isEmpty {
+                                finished = true
+                            }
                         }
+                        if finished { break }
                     }
                     continuation.finish()
                 } catch is CancellationError {

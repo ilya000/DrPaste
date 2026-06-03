@@ -31,6 +31,14 @@ final class MiniHUDState: ObservableObject {
     @Published var label: String = ""
     @Published var inflight: AIInflight? = nil
     @Published var elapsed: TimeInterval = 0
+    /// True once the underlying task has completed. The View
+    /// switches the spinner row for a "✓ Done · X.Xs" green
+    /// confirmation so the user knows the call finished BEFORE
+    /// the panel disappears + the result lands in their target
+    /// app. Without this the elapsed counter just ticks until
+    /// hide() and the user can't tell whether 5 s in is "still
+    /// waiting" or "almost there".
+    @Published var completed: Bool = false
 }
 
 @MainActor
@@ -81,6 +89,7 @@ final class MiniHUDController {
         state.label = label
         state.inflight = inflight
         state.elapsed = 0
+        state.completed = false
         onCancelHandler = onCancel
         startTickIfNeeded(inflight: inflight)
         if panel == nil { buildPanel() }
@@ -114,8 +123,23 @@ final class MiniHUDController {
     func hide() {
         stopTick()
         state.inflight = nil
+        state.completed = false
         onCancelHandler = nil
         panel?.orderOut(nil)
+    }
+
+    /// Mark the underlying task as complete WITHOUT closing the
+    /// panel. The View shows a green "✓ Done · X.Xs" pill in
+    /// place of the spinner so the user sees the response landed
+    /// before the panel disappears. Tick timer stops here so the
+    /// final elapsed value is frozen at "actual completion time"
+    /// rather than continuing to count until the caller's
+    /// post-completion delay finishes. No-op when `token` is
+    /// stale (later `show()` already replaced this HUD).
+    func markCompleteIfOwner(_ token: ShowToken) {
+        guard token == generation else { return }
+        stopTick()
+        state.completed = true
     }
 
     /// User clicked the X button. Fire the cancel handler first (so the
@@ -219,9 +243,18 @@ struct MiniHUDView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Top row: spinner + action title + close button.
+            // Top row: spinner OR completion check + action title +
+            // close button. The spinner ↔ checkmark swap is the
+            // primary "your AI call landed" signal — paired with the
+            // green tint on the elapsed pill below.
             HStack(spacing: 10) {
-                ProgressView().controlSize(.small)
+                if state.completed {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .font(.system(size: 13, weight: .semibold))
+                } else {
+                    ProgressView().controlSize(.small)
+                }
                 Text(state.label)
                     .font(.system(size: 13, weight: .medium))
                     .lineLimit(1)
@@ -235,7 +268,11 @@ struct MiniHUDView: View {
                 .buttonStyle(.plain)
                 .help("Dismiss")
             }
-            // AI inflight row — provider / model + ticking elapsed counter.
+            // AI inflight row — provider / model + ticking elapsed
+            // counter. On completion the elapsed capsule turns
+            // green and prefixes the value with "Done · " so the
+            // final wall time is visibly framed as the completed
+            // duration, not "still ticking".
             if let inflight = state.inflight {
                 HStack(spacing: 8) {
                     Text("\(inflight.providerLabel) · \(inflight.modelName)")
@@ -244,11 +281,19 @@ struct MiniHUDView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 0)
-                    Text(String(format: "%.1fs", state.elapsed))
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Capsule().fill(Color.primary.opacity(0.08)))
+                    if state.completed {
+                        Text(String(format: "Done · %.1fs", state.elapsed))
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.green)
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.green.opacity(0.15)))
+                    } else {
+                        Text(String(format: "%.1fs", state.elapsed))
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.primary.opacity(0.08)))
+                    }
                 }
             }
         }

@@ -893,6 +893,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // show() (rapid-fire same-hotkey case where task N+1 replaced
         // task N's MiniHUD before task N's cancellation point ran).
         actionHotkeyTask = Task { @MainActor in
+            // Watchdog — auto-cancel the whole task after 90 s.
+            // Some providers/models leak the HTTP stream past
+            // `message_stop` (server forgets to FIN; or sends
+            // keep-alive pings forever) and our 15 s idle timeout
+            // never trips because each ping ticks the byte clock.
+            //
+            // MUST be `Task.detached`, NOT `Task { @MainActor ... }`.
+            // The parent task here is @MainActor-isolated; if the
+            // watchdog inherits that isolation, its `Task.sleep`
+            // also runs on the main actor, and if the main actor
+            // is congested (parent task holding it through some
+            // sync work inside applyStreaming, SwiftUI tick updates
+            // from the MiniHUD elapsed counter, etc.) the watchdog
+            // never gets its turn and the 90 s deadline silently
+            // passes. Detached runs on a global executor — its
+            // sleep wakes up regardless of main-actor pressure.
+            // The cancel itself hops back to MainActor since
+            // `actionHotkeyTask` is main-actor-bound state.
+            let watchdog = Task.detached(priority: .background) { [weak self] in
+                try? await Task.sleep(nanoseconds: 90_000_000_000)
+                guard !Task.isCancelled else { return }
+                // Inner `[weak self]` is required (not just inherited
+                // from the outer detached task) because `MainActor.run`
+                // takes a @Sendable closure, and Swift 6 forbids those
+                // from referencing a `var` capture (weak captures are
+                // semantically `var`). The inner re-capture creates a
+                // fresh, Sendable-compatible binding.
+                await MainActor.run { [weak self] in
+                    self?.actionHotkeyTask?.cancel()
+                }
+            }
+            defer { watchdog.cancel() }
+
             guard await PasteSimulator.simulateCopyAndAwaitChange() else {
                 MiniHUDController.shared.hideIfOwner(hudToken)
                 SoundFeedback.play(.pasteFailure)
@@ -921,24 +954,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             let ctx = ContextDetector.detect(item)
             // AI actions go through the streaming path even in the
             // direct-trigger flow — same code BigHUD's preview uses.
-            // The non-streaming `run()` method has different timeout
-            // semantics (URLSession's default 60 s, no heartbeat) and
-            // for some provider+model combinations was hanging
-            // indefinitely while the same prompt streamed fine. Using
-            // applyStreaming everywhere keeps the timeout behaviour
-            // uniform and lets the user see partial output if the
-            // connection drops mid-stream. onPartial is no-op here
-            // (MiniHUD has no preview pane) — we only care about the
+            // Direct polymorphic dispatch via the ClipboardAction
+            // protocol (NOT a `as? AIAction` cast) because the
+            // protocol has a default `applyStreaming` extension that
+            // forwards to `apply()` for non-AI actions, so this one
+            // call covers every action type uniformly. The cast-based
+            // version was rejecting subtle AIAction variants and
+            // falling through to `apply()` — which uses
+            // URLSession.shared (no idle timeout, no SSE-finish
+            // sentinel) and would hang indefinitely when the provider
+            // leaked the stream past message_stop. onPartial is no-op
+            // here (MiniHUD has no preview pane) — we only need the
             // final outcome.
-            let outcome: ApplyOutcome
-            if let aiAction = action as? AIAction {
-                outcome = await aiAction.applyStreaming(item: item, context: ctx) { _ in }
-            } else {
-                outcome = await action.apply(item: item, context: ctx)
-            }
+            let outcome = await action.applyStreaming(
+                item: item,
+                context: ctx
+            ) { _ in }
             if Task.isCancelled {
+                // Either the user clicked the MiniHUD's X button or
+                // the 90 s watchdog fired. Either way, we drop the
+                // (possibly partial) outcome rather than pasting
+                // garbage into the user's app, and surface a failure
+                // chime so the user understands their hotkey didn't
+                // produce a result.
                 MiniHUDController.shared.hideIfOwner(hudToken)
+                SoundFeedback.play(.pasteFailure)
                 return
+            }
+            // Flash the "Done · X.Xs" green pill in the MiniHUD
+            // before tearing it down. Gives the user a beat to
+            // notice "yes, that finished, that's how long it took"
+            // instead of the spinner just vanishing — important
+            // when AI calls take meaningful time and the user
+            // wonders "did it actually run?". Only relevant for
+            // AI; local actions don't paint the inflight row.
+            if action is AIAction {
+                MiniHUDController.shared.markCompleteIfOwner(hudToken)
+                try? await Task.sleep(nanoseconds: 600_000_000)
             }
             MiniHUDController.shared.hideIfOwner(hudToken)
             switch outcome {
@@ -2069,6 +2121,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             // against stale chunks landing after the user navigated to
             // a different action.
             aiStreamingTask = Task {
+                // 90 s watchdog — same defense as the direct-trigger
+                // path. Provider keep-alive pings can defeat the
+                // 15 s byte-idle timeout indefinitely; without this,
+                // a leaked stream past message_stop would keep the
+                // BigHUD's "thinking…" spinner ticking forever even
+                // after the response was complete and the user was
+                // just staring at a stale loading state. Cancellation
+                // cascades into applyStreaming's catch block which
+                // returns the accumulated partial as .preview, so the
+                // user still gets whatever arrived.
+                //
+                // Detached (background priority) so the watchdog's
+                // sleep can wake regardless of main-actor pressure
+                // — same reasoning as actionHotkeyDidFire above.
+                let watchdog = Task.detached(priority: .background) { [weak self] in
+                    try? await Task.sleep(nanoseconds: 90_000_000_000)
+                    guard !Task.isCancelled else { return }
+                    // Inner `[weak self]` for Swift 6 Sendable
+                    // capture rules — see actionHotkeyDidFire above.
+                    await MainActor.run { [weak self] in
+                        self?.aiStreamingTask?.cancel()
+                    }
+                }
+                defer { watchdog.cancel() }
+
                 let outcome = await action.applyStreaming(
                     item: item,
                     context: ctx,
