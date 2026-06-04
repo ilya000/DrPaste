@@ -15,6 +15,14 @@ import Vision
 import CoreImage
 import CoreImage.CIFilterBuiltins
 
+/// Shared Core Image rendering context for every image action.
+/// `CIContext()` is expensive to construct (allocates GPU/Metal resources,
+/// loads shader caches) — building one per filter call costs measurable
+/// CPU and GPU on a typical user gesture like "navigate through three
+/// image actions in the HUD with arrow keys". Single static instance,
+/// thread-safe per Apple's CIContext contract.
+private let sharedCIContext: CIContext = CIContext(options: [.useSoftwareRenderer: false])
+
 /// Shared applicability check used by every image action: matches both
 /// genuine image items and rich-text items that carry at least one embedded
 /// image attachment, so an OCR / decode-QR / strip-metadata flow can pull
@@ -260,7 +268,7 @@ private func applyFilter(_ filter: CIFilter, on image: NSImage) -> NSImage? {
 
     // Render explicitly via CIContext so the filter actually applies to pixels.
     // NSCIImageRep is lazy and can drop effects at some backing scale factors.
-    let context = CIContext(options: [.useSoftwareRenderer: false])
+    let context = sharedCIContext
     guard let outputCG = context.createCGImage(output, from: output.extent) else { return nil }
     let outRep = NSBitmapImageRep(cgImage: outputCG)
     let result = NSImage(size: NSSize(width: outRep.pixelsWide, height: outRep.pixelsHigh))
@@ -324,7 +332,7 @@ private func rotateImage(_ item: ClipboardItem, radians: CGFloat) -> ClipboardIt
         by: CGAffineTransform(translationX: -rotated.extent.origin.x,
                               y: -rotated.extent.origin.y)
     )
-    let context = CIContext(options: [.useSoftwareRenderer: false])
+    let context = sharedCIContext
     guard let outputCG = context.createCGImage(normalized, from: normalized.extent) else {
         return nil
     }
@@ -484,10 +492,12 @@ struct ImageToASCIIArtAction: ClipboardAction {
     let title = "ASCII art"
     let isLocal = true
 
-    // Wider character → cell aspect compensates for the fact that monospace
-    // characters are roughly twice as tall as they are wide; using a 2:1
-    // sampling ratio keeps the rendered art visually proportional.
-    private static let outWidth: Int = 100
+    // Default column count. 40 fits comfortably in standard text fields
+    // (chat messages, code comments, Twitter/X posts) where ASCII art
+    // is most useful. Previously 100 — fine for terminal pastes but
+    // unwieldy for inline contexts. A `maxWidth` parameter will surface
+    // in #A16 (Built-in editor redesign) so users can dial it up.
+    static let defaultOutWidth: Int = 40
     private static let charAspect: Double = 0.5
 
     // Gradient from "transparent" (whitespace) → "fully filled". Order
@@ -501,14 +511,24 @@ struct ImageToASCIIArtAction: ClipboardAction {
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
         let result: String = await runOffMain {
             guard let img = loadImage(item) else { return "" }
-            return Self.render(image: img)
+            return Self.render(image: img, outWidth: Self.defaultOutWidth)
         }
         guard !result.isEmpty else {
             return .failed(original: item,
                            reason: "ASCII conversion produced empty output",
                            recovery: nil)
         }
-        return .preview(makeTextItem(result, from: item))
+        // Wrap in a monospaced NSAttributedString so the result pastes
+        // into rich-text targets (Mail, Notes, Pages, Slack rich text,
+        // Word) with the column alignment preserved. Plain-text targets
+        // still receive the bare string via the .string representation.
+        // Without the explicit monospaced font the receiving app would
+        // apply its default proportional font and turn straight-edged
+        // line art into wavy spaghetti.
+        let attr = NSAttributedString(string: result, attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        ])
+        return .preview(makeRichTextItem(attr, from: item))
     }
 
     /// Pure renderer — split out so it's testable.
@@ -525,7 +545,7 @@ struct ImageToASCIIArtAction: ClipboardAction {
     ///      tightly frames the subject and doesn't waste rows on empty
     ///      borders. Critical for cartoon / logo / icon source images,
     ///      which are typically padded with whitespace.
-    static func render(image: NSImage) -> String {
+    static func render(image: NSImage, outWidth: Int = ImageToASCIIArtAction.defaultOutWidth) -> String {
         guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
               cg.width > 0, cg.height > 0 else {
             return ""
@@ -533,7 +553,7 @@ struct ImageToASCIIArtAction: ClipboardAction {
         let srcW = cg.width
         let srcH = cg.height
         let aspect = Double(srcH) / Double(srcW)
-        let cols = outWidth
+        let cols = max(8, outWidth)
         let rows = max(1, Int(Double(cols) * aspect * charAspect))
 
         // Render scaled grayscale image into an 8-bit single-channel buffer

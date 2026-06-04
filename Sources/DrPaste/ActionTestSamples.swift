@@ -128,6 +128,9 @@ enum ActionTestSamples {
         case "builtin.md_to_plain":
             return "# Title\n\nSome **bold** and *italic* text with a [link](https://example.com).\n\n- bullet one\n- bullet two"
 
+        case "builtin.md_to_rich":
+            return "A line with **bold**, *italic*, and `inline code`.\n\nFollowed by a [linked phrase](https://example.com)."
+
         case "builtin.md_headings", "builtin.md_extract_headings":
             return "# Introduction\n\nSome intro text.\n\n## Background\n\nMore text.\n\n## Goals\n\n### Short-term\n\nDetail.\n\n## Conclusion"
 
@@ -173,6 +176,11 @@ enum ActionTestSamples {
         case "builtin.font_plain":
             // Stylized input that the action collapses back to plain ASCII.
             return "𝐓𝐡𝐞 𝐪𝐮𝐢𝐜𝐤 𝐛𝐫𝐨𝐰𝐧 𝐟𝐨𝐱 𝟏𝟐𝟑"
+
+        case "builtin.font_markdown":
+            // Markdown markup that the action converts span-by-span into
+            // Unicode pseudo-fonts. Plain text outside markup stays as-is.
+            return "Today's update: **important news** in *italic* with `inline code` and ~~struck text~~. Use ***this***  for bold-italic."
 
         // MARK: Tables
         case "builtin.table_to_json", "builtin.table_to_md":

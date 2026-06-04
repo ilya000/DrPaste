@@ -322,7 +322,32 @@ struct CustomTransformationAction: ClipboardAction {
         }
         // Plain-text path — original behaviour. Engines that don't
         // preserve formatting always come through here.
-        let input = item.previewText ?? ""
+        //
+        // Rich-text input special-case for markdown-extract engines.
+        // mdExtractHeadings / mdExtractLinks scan their input for
+        // markdown markup (`## …`, `[label](url)`). For a `.richText`
+        // clip, `previewText` is the rendered string with markup
+        // stripped — so the extractors find nothing. Recover the
+        // markdown source by converting the RTF/RTFD attributed string
+        // back to markdown via `RichTextHelpers`, then feed THAT to
+        // the engine. Without this, a Rich-text email with hyperlinks
+        // returns "no links found" even though the formatting clearly
+        // showed several. Same logic for headings.
+        var input = item.previewText ?? ""
+        if item.semantic == .richText,
+           engine == .mdExtractHeadings || engine == .mdExtractLinks,
+           let rel = item.representations["public.rtf"] ?? item.representations["com.apple.flat-rtfd"],
+           let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
+           let attr = try? NSAttributedString(
+                data: data,
+                options: [.documentType: rel.hasSuffix(".rtfd") || rel.contains("rtfd")
+                    ? NSAttributedString.DocumentType.rtfd
+                    : NSAttributedString.DocumentType.rtf],
+                documentAttributes: nil
+           ),
+           let md = RichTextHelpers.attributedStringToMarkdown(attr) {
+            input = md
+        }
         do {
             let result = try TransformationRuntime.apply(engine: engine,
                                                           input: input,

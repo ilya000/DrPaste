@@ -1755,13 +1755,22 @@ struct ContentTypeTab: View {
             Toggle("", isOn: enabledBinding(action.id))
                 .labelsHidden()
             leadingIcon(for: action)
-            VStack(alignment: .leading, spacing: 1) {
+            // Title row. When the user has renamed the action, the
+            // factory default appears inline to the right of the
+            // custom title in tertiary colour. Earlier this lived on
+            // its own second line ("default: <title>"), which doubled
+            // the row's vertical footprint just to remind the user
+            // what they overrode. Inline + colour difference is
+            // enough — no "default:" prefix needed, the dimmer text
+            // already reads as "the original".
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(displayTitle)
                     .lineLimit(1)
                 if isCustomized {
-                    Text("default: \(action.title)")
-                        .font(.caption2)
+                    Text(action.title)
+                        .font(.caption)
                         .foregroundStyle(.tertiary)
+                        .lineLimit(1)
                 }
             }
             Spacer()

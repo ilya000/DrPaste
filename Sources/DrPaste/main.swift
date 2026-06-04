@@ -310,8 +310,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let b = statusItem.button {
             b.image = AppBrand.menuBarIcon
+            b.toolTip = "DrPaste — clipboard history"
         }
         rebuildStatusMenu()
+    }
+
+    /// Sync the status-bar tooltip with the current accumulator state.
+    /// The colored dot on the icon signals "session active" visually;
+    /// the tooltip spells out *which* session is active and *what* the
+    /// next ⌥⌘S will do. Users hovering the menu-bar icon for a beat
+    /// get an explicit explanation without having to dig into HELP.md.
+    @MainActor
+    private func updateStatusTooltip(appendActive: Bool, filesTrack: Bool) {
+        guard let b = statusItem?.button else { return }
+        if appendActive {
+            if filesTrack {
+                b.toolTip = "Append Copy: files accumulator active (cyan). "
+                          + "Select more files and press ⌥⌘S to add."
+            } else {
+                b.toolTip = "Append Copy: rich-text accumulator active (red). "
+                          + "Press ⌥⌘S to add more, ⌥⌘V to paste."
+            }
+        } else {
+            b.toolTip = "DrPaste — clipboard history"
+        }
     }
 
     private func rebuildStatusMenu() {
@@ -986,16 +1008,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             // notice "yes, that finished, that's how long it took"
             // instead of the spinner just vanishing — important
             // when AI calls take meaningful time and the user
-            // wonders "did it actually run?". Only relevant for
-            // AI; local actions don't paint the inflight row.
-            if action is AIAction {
+            // wonders "did it actually run?". Applies to ALL
+            // AI-flavoured actions: text-AI (AIAction), image-AI
+            // (AIImageAction), and text-to-image (AITextToImageAction).
+            // Earlier the gate was `action is AIAction` only, which
+            // meant image-AI direct-triggers (e.g. ⌥⌘W for
+            // Watercolor) lost the completion pill — the spinner
+            // would just vanish after a 10–20 s call without the
+            // user knowing it finished on the wire. Local actions
+            // still skip the pill because they're fast enough that
+            // a "Done" beat would feel pointless.
+            let isAI = (action is AIAction) || (action is AIImageAction) || (action is AITextToImageAction)
+            if isAI {
                 MiniHUDController.shared.markCompleteIfOwner(hudToken)
                 try? await Task.sleep(nanoseconds: 600_000_000)
             }
             MiniHUDController.shared.hideIfOwner(hudToken)
             switch outcome {
-            case .preview(let result), .alternativeCommit(let result, _):
+            case .preview(let result):
                 self.performStandardPaste(result, savedApp: frontmost)
+            case .alternativeCommit(let result, .standardPaste):
+                self.performStandardPaste(result, savedApp: frontmost)
+            case .alternativeCommit(let result, .typeSlowly(let delay, let jitter)):
+                // Respect the action's chosen commit style. Earlier this
+                // case fell through into `performStandardPaste`, which
+                // meant a per-action hotkey bound to Type Slowly would
+                // ⌘V-paste the whole text instead of typing it
+                // character-by-character — defeating the action's
+                // entire purpose. Direct-trigger and HUD commit paths
+                // must agree on what "commit" means for each style.
+                self.performTypeSlowly(result, savedApp: frontmost,
+                                       delay: delay, jitter: jitter)
+            case .alternativeCommit(let result, .typeFast):
+                self.performTypeSlowly(result, savedApp: frontmost,
+                                       delay: 0.05, jitter: 0)
             case .sideEffect(_, let perform):
                 perform()
                 SoundFeedback.play(.pasteSuccess)
@@ -1663,6 +1709,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         let color: NSColor = filesMode ? .systemCyan : .systemRed
         sessionDotView?.layer?.backgroundColor = color.cgColor
         sessionDotView?.isHidden = false
+        updateStatusTooltip(appendActive: true, filesTrack: filesMode)
         appendSessionTimer?.invalidate()
         appendSessionTimer = Timer.scheduledTimer(withTimeInterval: appendSessionTimeout,
                                                   repeats: false) { [weak self] _ in
@@ -1678,6 +1725,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         appendSessionTimer?.invalidate()
         appendSessionTimer = nil
         sessionDotView?.isHidden = true
+        updateStatusTooltip(appendActive: false, filesTrack: false)
     }
 
     // MARK: HUD lifecycle

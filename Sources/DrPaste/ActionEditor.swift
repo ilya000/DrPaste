@@ -622,16 +622,24 @@ struct ActionEditor: View {
     }
 
     private var availableBuiltins: [ClipboardAction] {
-        let descriptorBackedIDs = Set(registry.config.customTransformations.map(\.id))
         return registry.actions.filter { action in
-            // Genuine hardcoded built-ins only. Identity is the pinned anchor
-            // (cannot be re-created via this dialog). Descriptor-backed ones
-            // (`DefaultTransformationSeed` entries) are edited through the
-            // Transformation mode pencil in the Actions list; surfacing them
-            // here too just clutters the menu.
+            // Every `builtin.*` action is pickable here EXCEPT the identity
+            // anchor (`builtin.identity`), which can't be re-created via
+            // this dialog. Descriptor-backed bundled handlers
+            // (`DefaultTransformationSeed` entries like `builtin.md_to_plain`,
+            // `builtin.md_headings`, `builtin.md_links`,
+            // `builtin.cyrillic_translit`, the Unicode pseudo-font family,
+            // etc.) used to be filtered out of this picker because they
+            // already appear as Transformation rows in the Settings list,
+            // but that produced an inconsistency: a user adding a NEW
+            // Built-in action through "+ New" couldn't see "Markdown →
+            // plain" or "Extract links" as options, even though those
+            // showed up in Settings. The user asked for a single source
+            // of truth — pickers in every surface (Settings list, "+ New"
+            // Built-in picker, Playground) draw from the SAME list of
+            // bundled handlers.
             guard action.id.hasPrefix("builtin.") else { return false }
             guard action.id != "builtin.identity" else { return false }
-            guard !descriptorBackedIDs.contains(action.id) else { return false }
             return true
         }
         .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
@@ -1860,6 +1868,16 @@ struct ActionEditor: View {
                 registry.setCustomTitle(trimmedTitle, forActionID: targetID)
             }
             registry.setHotkey(hotkey, for: targetID)
+            // Picking a built-in handler in "+ New" mode is an explicit
+            // gesture that the user wants this action in their list —
+            // even if it was disabled by curated defaults. Without this,
+            // Save would silently no-op on disabled handlers and feel
+            // broken ("I picked Save and nothing happened"). Edit-mode
+            // saves leave the enabled flag alone — the user can still
+            // disable a built-in via the action row toggle afterwards.
+            if case .createNew = context {
+                registry.setEnabled(true, for: targetID)
+            }
 
         case .transformation:
             let descriptor = CustomTransformationDescriptor(

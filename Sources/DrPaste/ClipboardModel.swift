@@ -396,9 +396,18 @@ enum SourceResolver {
         let result = AXUIElementCopyAttributeValue(appElement,
                                                    kAXFocusedWindowAttribute as CFString,
                                                    &focusedWindow)
-        guard result == .success else { return nil }
+        guard result == .success, let focused = focusedWindow else { return nil }
+        // AX returns a CFTypeRef whose dynamic type is documented to be
+        // AXUIElement when the attribute is kAXFocusedWindowAttribute,
+        // but `as!` is still a foot-gun if the platform ever returns
+        // something else (private-frameworks, third-party AX shims,
+        // future macOS). Verify via CFGetTypeID before the bridge cast
+        // — that way an unexpected dynamic type silently returns nil
+        // instead of crashing.
+        guard CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
+        let window = focused as! AXUIElement
         var titleRef: CFTypeRef?
-        AXUIElementCopyAttributeValue(focusedWindow as! AXUIElement,
+        AXUIElementCopyAttributeValue(window,
                                       kAXTitleAttribute as CFString,
                                       &titleRef)
         return titleRef as? String

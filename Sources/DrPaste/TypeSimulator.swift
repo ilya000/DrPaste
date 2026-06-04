@@ -39,9 +39,18 @@ enum TypeSimulator {
     ///   - clicks any mouse button
     ///   - changes frontmost application
     ///   - switches workspace / space
+    ///
+    /// Default delay was 0.2 s/char which felt too slow on long inputs.
+    /// Bumped to 0.133 s/char (~1.5× faster) per #A27 — still slow
+    /// enough to defeat input fields that throttle on rapid keystrokes,
+    /// but noticeably more responsive on a 100-character paragraph
+    /// (13 s instead of 20 s).
+    static let defaultBaseDelay: TimeInterval = 0.133
+    static let defaultJitter: Double = 0.2
+
     static func typeSlowly(_ text: String,
-                           baseDelay: TimeInterval = 0.2,
-                           jitter: Double = 0.2,
+                           baseDelay: TimeInterval = TypeSimulator.defaultBaseDelay,
+                           jitter: Double = TypeSimulator.defaultJitter,
                            cancellation: @escaping () -> Bool = { false },
                            onProgress: @escaping (Int, Int) -> Void = { _, _ in },
                            completion: @escaping () -> Void = {}) {
@@ -187,6 +196,7 @@ struct TypeSlowlyAction: ClipboardAction {
                           recovery: .openAccessibilitySettings)
         }
         let plain = makePlainText(item)
-        return .alternativeCommit(plain, style: .typeSlowly(delay: 0.2, jitter: 0.2))
+        return .alternativeCommit(plain, style: .typeSlowly(delay: TypeSimulator.defaultBaseDelay,
+                                                             jitter: TypeSimulator.defaultJitter))
     }
 }

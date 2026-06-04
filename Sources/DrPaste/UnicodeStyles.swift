@@ -54,6 +54,7 @@ enum UnicodeFontStyle: String, CaseIterable, Codable, Identifiable {
     case squared           = "squared"
     case filledSquared     = "filled_squared"
     case upsideDown        = "upside_down"
+    case markdownAware     = "markdown_aware"    // parses **bold** / *italic* / `code` etc.
     case plain             = "plain"             // reverse pass — strip styling
 
     var id: String { rawValue }
@@ -81,6 +82,7 @@ enum UnicodeFontStyle: String, CaseIterable, Codable, Identifiable {
         case .squared:           return "Squared"
         case .filledSquared:     return "Filled Squared"
         case .upsideDown:        return "Upside Down"
+        case .markdownAware:     return "Markdown styles → Unicode"
         case .plain:             return "Plain (strip styling)"
         }
     }
@@ -98,10 +100,99 @@ enum UnicodeStylizer {
     /// Apply a style transformation to the input. Pure function; thread-safe.
     static func apply(to input: String, style: UnicodeFontStyle) -> String {
         switch style {
-        case .plain:        return normalize(input)
-        case .upsideDown:   return upsideDown(input)
-        default:            return mapped(input, table: table(for: style))
+        case .plain:          return normalize(input)
+        case .upsideDown:     return upsideDown(input)
+        case .markdownAware:  return applyMarkdown(to: input)
+        default:              return mapped(input, table: table(for: style))
         }
+    }
+
+    /// Markdown-aware stylization. Parses inline markdown markup
+    /// (`**bold**`, `*italic*`, `***bold-italic***`, `__bold__`,
+    /// `_italic_`, `` `code` ``, `~~strike~~`) and applies the matching
+    /// Unicode pseudo-font style to each span. Markup characters are
+    /// dropped — the output is plain Unicode-styled text suitable for
+    /// platforms that don't render Markdown (Twitter / X, Telegram bios,
+    /// Discord profiles, LinkedIn headlines).
+    ///
+    /// Plain text outside any markup span stays unstyled. Spans are
+    /// matched greedily, longest-token-first, so `***x***` correctly
+    /// resolves as bold-italic rather than italic-wrapping-bold.
+    static func applyMarkdown(to input: String) -> String {
+        // Tokens sorted longest-first so `***` is matched before `**` /
+        // `*`, `___` before `__` / `_`, etc.
+        struct MarkdownToken {
+            let delimiter: String
+            let style: UnicodeFontStyle
+        }
+        let tokens: [MarkdownToken] = [
+            MarkdownToken(delimiter: "***", style: .boldItalic),
+            MarkdownToken(delimiter: "___", style: .boldItalic),
+            MarkdownToken(delimiter: "**",  style: .bold),
+            MarkdownToken(delimiter: "__",  style: .bold),
+            MarkdownToken(delimiter: "*",   style: .italic),
+            MarkdownToken(delimiter: "_",   style: .italic),
+            MarkdownToken(delimiter: "`",   style: .monospace),
+            MarkdownToken(delimiter: "~~",  style: .plain)
+            // ~~strike~~ uses .plain as a sentinel — the output adds
+            // combining longstroke per character below.
+        ]
+
+        var out = ""
+        out.reserveCapacity(input.count)
+        var idx = input.startIndex
+
+        while idx < input.endIndex {
+            // Find the next opening delimiter at the current position.
+            // We test in longest-first order to avoid greedy-tokenization
+            // bugs (** before *, *** before **).
+            var matched: MarkdownToken? = nil
+            for token in tokens {
+                if input[idx...].hasPrefix(token.delimiter) {
+                    matched = token
+                    break
+                }
+            }
+            guard let token = matched else {
+                out.append(input[idx])
+                idx = input.index(after: idx)
+                continue
+            }
+
+            // Scan forward for the matching closing delimiter on the
+            // same line. If we can't find one, treat the opening
+            // delimiter as literal text and move on (matches Markdown
+            // tolerance for unclosed emphasis).
+            let contentStart = input.index(idx, offsetBy: token.delimiter.count)
+            var closeRange: Range<String.Index>? = nil
+            var scan = contentStart
+            while scan < input.endIndex {
+                if input[scan] == "\n" { break }
+                if input[scan...].hasPrefix(token.delimiter) {
+                    closeRange = scan..<input.index(scan, offsetBy: token.delimiter.count)
+                    break
+                }
+                scan = input.index(after: scan)
+            }
+            guard let close = closeRange else {
+                out.append(input[idx])
+                idx = input.index(after: idx)
+                continue
+            }
+
+            let span = String(input[contentStart..<close.lowerBound])
+            if token.delimiter == "~~" {
+                // Strike: append plain text with combining longstroke.
+                for ch in span {
+                    out.append(ch)
+                    out.append("\u{0336}")
+                }
+            } else {
+                out.append(apply(to: span, style: token.style))
+            }
+            idx = close.upperBound
+        }
+        return out
     }
 
     // MARK: Forward — table-driven mapping
@@ -136,7 +227,7 @@ enum UnicodeStylizer {
         case .filledCircled:     return .filledCircled
         case .squared:           return .squared
         case .filledSquared:     return .filledSquared
-        case .upsideDown, .plain:
+        case .upsideDown, .markdownAware, .plain:
             // Handled by direct functions; these tables are never queried.
             return .bold
         }
@@ -474,12 +565,24 @@ private let upsideDownMap: [Character: Character] = [
 
 /// Reverse map used by `UnicodeStylizer.normalize` after NFKC. Built once
 /// from upside-down + small-caps exceptions (NFKC doesn't collapse these).
+///
+/// Critical invariant: keys MUST be non-ASCII glyphs. Some upside-down
+/// pairs use plain ASCII letters as the "fancy" form (e.g. `b: q` plus
+/// `q: b`, where both forward mappings happen to swap two normal
+/// ASCII letters). Adding such an entry to the reverse map would corrupt
+/// every plain `q` / `b` / `d` / `p` / `n` / `u` that NFKC produced from
+/// a Math Bold / Script / etc. character — turning "the quick" into
+/// "the bnick", "and" into "auq", and so on. The `fancy.isASCII` guard
+/// below filters those self-swapping pairs out of the reverse map.
 private let customReverse: [Character: Character] = {
     var map: [Character: Character] = [:]
     for (plain, fancy) in upsideDownMap {
-        // Multiple plain chars can share an upside-down glyph (e.g. b↔q both
-        // map to each other). Keep the first encountered to avoid clobbering
-        // the canonical direction.
+        // Skip entries whose fancy form is itself a plain ASCII letter /
+        // digit. NFKC of Math Bold etc. produces plain ASCII, and we must
+        // not re-rewrite those plain characters during the reverse pass.
+        if fancy.isASCII { continue }
+        // Multiple plain chars can share an upside-down glyph; keep the
+        // first encountered to avoid clobbering the canonical direction.
         if map[fancy] == nil { map[fancy] = plain }
     }
     // Small caps lowercase glyphs.

@@ -4,6 +4,14 @@ Active work, structured roadmap, and a condensed changelog. Historical
 free-form notes were collapsed into this document; the long-form discussion
 that preceded each shipped item lives in git history.
 
+Current version: **0.50.0** (alpha). `AppBrand.version` is the live
+source of truth — bump there per release. The version string in this
+file's header and in `SKILL.md` / `README.md` / `HELP.md` is updated
+alongside. See [SKILL.md](SKILL.md) for
+the project's full architectural memory, file-by-file responsibilities,
+and a "resume work from cold start" guide. See [HELP.md](HELP.md) for
+the end-user feature documentation.
+
 ## Entry conventions
 
 Every active entry uses the same template:
@@ -422,6 +430,28 @@ notarizes. Future contributors should not need Xcode.
 
 **Release-day checklist (do not skip):**
 
+- **Replace `try!` in `AppStorage.dataDir` with a boot-phase fatal-UI
+  panel.** Today the line force-creates `~/Library/Application
+  Support/DrPaste/` and crashes the process if it can't. In the
+  unsigned alpha that's defensible — there's no recovery surface
+  for a user. In a signed, sandboxed MAS build the failure modes
+  are richer (denied container migration, full disk during iCloud
+  hydration, temporary path unavailability during sandbox
+  bootstrap) and at least some are user-recoverable. Replacement:
+  a tiny pre-init `NSAlert`-style panel with three buttons:
+  - **"Open Application Support folder"** — Finder reveals the
+    parent so the user can free disk or fix permissions.
+  - **"Reset storage"** — wipes `~/Library/Application Support/DrPaste/`
+    and retries directory creation.
+  - **"Quit"** — graceful exit.
+
+  Implementation note: do NOT thread `dataDir` through the codebase
+  as `URL?`. The directory must exist by the time `ActionRegistry.init`
+  runs. The boot-phase panel either succeeds (sets a permanent
+  `URL` and continues) or terminates the process via the Quit
+  button. The `try!` stays defensible *only* if the boot-phase UI
+  is the recovery path; without it, sandboxed-build crashes are
+  silent for the user. Surfaced by the adversarial review pass.
 - **Re-enable Keychain code paths in `APIKeyStorage.swift`.** In 0.14.0
   every call to `save`, `load`, `remove` was hardwired to route through
   the plain-JSON fallback file because unsigned builds were prompting
@@ -769,9 +799,16 @@ toolkit") would give users an easy way to enrich their setup.
 
 ### #A10 — Per-action hotkey: late-binding preview when ⌥⌘ stays held
 
-**Status:** planned. Bridges the gap between direct-trigger speed and HUD
-inspection. Builds on the existing per-action hotkey infrastructure and the
-Full Gesture Mode press-and-hold semantics already used by ⌥⌘V.
+**Status:** ✅ Shipped in 0.18.0 (C1 — per-action hotkey hold-preview
+wire-up). Entry kept for historical context; the rationale captures
+*why* this UX is critical. Implementation details live in
+ActionHotkey.swift / HotkeyEngine.swift / main.swift
+`actionHotkeyDidFire(actionID:)`.
+
+**Touches:** `ActionHotkeyManager.swift` (release detection + grace-period
+timer), `HotkeyEngine.swift` (release-vs-still-holding-modifiers tracking),
+`main.swift` (`hudPanel` show / preselect path that points at the just-fired
+action instead of the default focused row).
 **Touches:** `ActionHotkeyManager.swift` (release detection + grace-period
 timer), `HotkeyEngine.swift` (release-vs-still-holding-modifiers tracking),
 `main.swift` (`hudPanel` show / preselect path that points at the just-fired
@@ -892,9 +929,17 @@ same opt-in preview behaviour as ⌥⌘V:
 
 ### #A11 — Screen-region capture into clipboard history via ⌥⌘ + mouse drag
 
-**Status:** planned. New input modality for the clipboard tool — currently
-all clips arrive via copy or drag-in (#A6), this adds "carve a region out
-of the visible screen". macOS native equivalent is ⌘⇧⌃4 (region → clipboard),
+**Status:** ✅ Shipped in 0.22.0 (C1 + C2 — ScreenRegionCapture + EventTap
+wiring + crosshair overlay). The corner cheat sheet and ⌥⌘ hold-toggle
+followed in 0.23.x / 0.24.x. Entry kept for historical context. Files:
+`ScreenRegionCapture.swift`, `RegionCaptureCheatSheet.swift`.
+
+**Touches:** new `ScreenRegionCapture.swift` (overlay window, drag-rectangle
+rendering, capture API call), `HotkeyEngine.swift` (mouse-down with ⌥⌘
+detection inside the EventTap session loop), `ClipboardStore`
+(new `addImage(_ data: Data, sourceApp: NSRunningApplication?) -> ClipboardItem`
+helper). Possibly a new entitlement / `Info.plist` key for Screen Recording
+permission (#A1 will sort that out together with codesigning). macOS native equivalent is ⌘⇧⌃4 (region → clipboard),
 but the native version is decoupled from DrPaste's history, source-metadata
 capture, action surface, and ⌥⌘Space chain — so dropping in a DrPaste-native
 trigger that lands the result directly in the HUD action pipeline is the
@@ -1155,6 +1200,1638 @@ giving up the modifier.
 
 ---
 
+### #A12 — Unified hotkey contract: tap-vs-hold semantics for ⌥⌘C/S/X with content preview
+
+**Status:** planned. Biggest single UX upgrade after streaming + accumulator
+landed.
+**Touches:** `HotkeyEngine.swift` (hold-detection for C/S/X, currently only V
+has it), `MiniHUD.swift` (multi-mode content preview: text / image / files),
+`main.swift` (release-vs-still-held action dispatch).
+**Context:** Currently only ⌥⌘V has the dual-mode hold gesture (quick =
+nothing, hold = open BigHUD). ⌥⌘C / ⌥⌘S / ⌥⌘X always trigger their action
+on press, with no preview. Users want symmetric semantics: a quick chord
+performs the action silently (current behaviour), a held chord shows a
+small MiniHUD with the actual content that was captured / about to be
+performed, and Esc cancels.
+**Requirements:**
+- ⌥⌘C quick → copy + sound + flash (current behaviour, unchanged).
+- ⌥⌘C hold (release-grace 250 ms, same as #A10) → MiniHUD with rendered
+  content preview (text excerpt, image thumbnail, file list). Release ⌥⌘
+  → close MiniHUD with no extra action (item already at top of history).
+  Esc → revert: pop the just-added item back off the history stack.
+- ⌥⌘S quick → append (red/cyan dot, current behaviour).
+- ⌥⌘S hold → MiniHUD showing the accumulated composite + a "just added"
+  highlight on the latest fragment. Release → leave accumulator as-is.
+  Esc → revert the latest fragment from the accumulator.
+- ⌥⌘X quick → cut + replace (current behaviour).
+- ⌥⌘X hold → MiniHUD showing what was cut. Release → no extra. Esc →
+  revert cut (paste original back into source field — best-effort via
+  saved selection range).
+- ⌥⌘V hold continues to open BigHUD (current behaviour).
+- Modifier transition rule: if user releases C then presses V while
+  ⌥⌘ still down, **close MiniHUD first, then open BigHUD** (cleaner
+  state machine). Backlog follow-up: investigate transparent in-place
+  promotion MiniHUD → BigHUD once base flow is stable in users' hands.
+- All MiniHUDs in hold-mode are non-draggable, decorative-only, no X
+  button — gesture is the only commit / cancel surface.
+
+**Implementation notes:**
+- Reuse `MiniHUDState.attr` rendering for text+image composites.
+- For files-only payload, render a vertical stack of file rows (icon +
+  name) similar to Append-Copy session indicator.
+- Hold-detection: extend the existing #A10-style 250 ms grace timer
+  inside `HotkeyEngine.detectHold(for chord:)`.
+
+---
+
+### #A13 — Search inside HUD with date / source-app filter
+
+**Status:** planned. Revisits #A7 with a different gesture.
+**Touches:** `BigHUD.swift` (inline search bar above history strip),
+`ClipboardModel.swift` (search index over previewText + sourceAppName +
+date), `HudState.swift` (filter state).
+**Context:** When history grows past 20–30 items the strip is hard to
+scan. macOS Spotlight pattern: a contains-search field that shows results
+inline.
+**Requirements:**
+- Press `F` (or `⌘F`) inside BigHUD → animated inline search bar slides in
+  above history strip.
+- Live filter: contains-match across `previewText`, `sourceAppName`,
+  formatted `createdAt`. Case-insensitive.
+- Search history is **time-history only** (does not search across content
+  types / actions — those have their own surfaces).
+- Empty-result state: "No matches" inline label, no sound.
+- Esc clears the filter and closes the search bar without closing HUD.
+- Filter persists across modifier release inside the same HUD session;
+  cleared on HUD close.
+
+---
+
+### #A14 — Resize Images universal transformation
+
+**Status:** planned. Most-requested missing image action.
+**Touches:** new `ImageResizeTransformation.swift` (or extension to
+`ImageActions.swift`), `DefaultTransformationSeed.swift` (registry entry),
+applicableTypes wiring on three input kinds.
+**Context:** Today users have to round-trip through Preview / Pixelmator
+to resize. Native action would close the loop for screenshot-and-share
+workflows.
+**Requirements:**
+- Single transformation, applies to three input kinds:
+  - `.image` (in-history image) → resize the image.
+  - `.files` (list of image files) → resize all, batch.
+  - `.richText` (NSAttributedString with image attachments) → resize each
+    embedded image, preserve text layout.
+- Param: target longer-side in pixels, default **1920**. User can edit
+  in action settings.
+- Resize logic: longer side scales to target, shorter side scales
+  proportionally. Never enlarge — if image's longer side ≤ target, leave
+  untouched.
+- High-quality resampling: `NSImageInterpolation.high` /
+  `CIFilter.lanczosScaleTransform` for ≥ 2× downscales.
+- Output preserves format (PNG → PNG, JPEG → JPEG with quality 0.92).
+- Files variant writes resized copies to temp dir with `-resized` suffix,
+  promotes URL list to clipboard.
+
+---
+
+### #A15 — CSV → Wiki table and CSV → Rich (RTFD) table
+
+**Status:** planned. Closes a gap in tabular output formats.
+**Touches:** `TableActions.swift` (new file or add to `TextActions.swift`),
+two action seeds, `RichTextHelpers.swift` (NSTextTable builder).
+**Context:** Already have CSV-passing-through actions and the wiki engine
+exists for other transformations. Two outputs:
+1. CSV → MediaWiki / DokuWiki table markup (text output).
+2. CSV → NSTextTable RTFD (rich output, best-effort — renders perfectly in
+   Mail / Notes / Pages, falls back to plain text in Slack / Notion).
+**Requirements:**
+- Parser handles standard CSV quoting + escaped quotes + trailing comma
+  + CRLF / LF line endings.
+- Wiki table: `{| class="wikitable"` header + `! col1 !! col2` row +
+  `|-` separators + `| cell |` rows + `|}` footer.
+- RTFD table: `NSTextTable` with `numberOfColumns` from CSV header,
+  one row per CSV row, NSTextTableBlock cells, written as RTFD to pasteboard.
+- Both actions accept the same input (CSV string), produce different
+  semantic outputs.
+- Documentation note: RTFD tables don't survive Slack / Notion paste —
+  this is acceptable (user's call confirmed in design discussion).
+
+---
+
+### #A16 — Built-in action editor redesign: handler-picker like Transformation
+
+**Status:** planned. UX consistency fix.
+**Touches:** `BuiltinActionEditor.swift`, `ActionEditor.swift` (router),
+`Actions.swift` (`upsertBuiltinHandler` symmetric helper).
+**Context:** Today Built-in actions are second-class: no Duplicate, no
+proper Edit dialog. They're hardwired to a fixed handler. User wants
+parity with Transformation actions: open a sheet, see a dropdown of all
+built-in handlers (grouped by category, current dropdown design), pick
+one, save. Duplicate copies the handler + adds suffix + opens sibling
+sheet.
+**Requirements:**
+- BuiltinActionEditor sheet shows:
+  - Title field (editable).
+  - Handler dropdown (categorised, current trim from
+    `trimBuiltinHandlerPicker`).
+  - Applicable types grid (already exists, kept).
+  - Hotkey recorder (already exists, kept).
+  - NO parameters — handler is fixed by category.
+- Duplicate button creates a clone with handler unchanged, new title,
+  inserts after original via existing `upsertBuiltinAction(_:after:)`
+  pattern (mirror Transformation flow).
+- Built-in handler structure stays grouped + extensible: new handlers
+  migrating from Transformations (per #A19, #A20) drop into the category
+  layout without manual UI changes.
+
+---
+
+### #A17 — Paste-as-is: text sample + file icons rendering
+
+**Status:** planned. Small UX gap.
+**Touches:** `ActionTestSamples.swift` (replace Mandrill bias for non-image
+sample), `BigHUD.swift` row rendering for `.files`, `RichTextHelpers.swift`
+(NSWorkspace icon → NSAttributedString attachment).
+**Context:** Two issues currently:
+1. The "Paste as is" action's test sample defaults to Mandrill image,
+   which is misleading for plain-text use. Show a representative text
+   sample instead.
+2. When a `.files` clip is rendered in the HUD or pasted as rich text,
+   file rows have no icon. Should show NSWorkspace icon (blue folder for
+   directories, arrow overlay for symlinks).
+**Requirements:**
+- Action test sample for "Paste as is" → short text sample (not Mandrill).
+  Mandrill stays for image-mode actions only.
+- File row rendering across HUD + accumulator:
+  - Regular file → `NSWorkspace.shared.icon(forFile: path)`.
+  - Folder → standard blue folder icon (system).
+  - Symlink → icon with arrow overlay (system already provides).
+- Icon size: 16 pt in HUD row, 24 pt in accumulator preview.
+
+---
+
+### #A18 — Latin → Cyrillic: deterministic + AI parallel actions
+
+**Status:** planned. Mirrors Cyrillic → Latin which already exists.
+**Touches:** new `TransliterationLatinToCyrillic.swift`,
+`AIPromptTemplates.swift` (seed), `DefaultTransformationSeed.swift`.
+**Context:** Have Cyrillic → Latin transliteration with variant detection.
+Reverse direction is missing. Two implementations in parallel because
+context-aware transliteration is genuinely AI territory but the
+deterministic path is enough for 80% of cases.
+**Requirements:**
+- Deterministic action: parameter `target language` enum (Russian,
+  Ukrainian, Bulgarian, Serbian — same set as Cyrillic → Latin).
+  Default: Russian. Uses standard GOST / BGN-PCGN tables per language.
+- AI action: prompt template asks the model to transliterate to Cyrillic,
+  preserving proper-noun conventions and dialectal target.
+- Both appear in the user's action list independently (like the existing
+  trim deterministic + AI text-cleanup pairing).
+
+---
+
+### #A19 — Pretty Code: two parallel actions — local (deterministic) + AI
+
+**Status:** planned. Confirmed explicitly: two actions, two implementations,
+NOT merged into one.
+**Touches:** new `LocalPrettyCode.swift` (deterministic
+JSON/XML/HTML/CSS + simple code reformat), `AIPromptTemplates.swift`
+(AI Code Formatter seed), `DefaultTransformationSeed.swift`.
+**Context:** Local action gives instant offline reformatting for common
+structured formats and a "good enough" code reformat (whitespace, brace
+position). AI action gives quality reformatting for arbitrary code with
+language auto-detection and idiomatic style — slower, online, but high
+quality.
+**Requirements — local (Pretty Code: Local):**
+- JSON → `JSONSerialization` with `.prettyPrinted + .sortedKeys`.
+- XML → `XMLDocument` with `.nodePrettyPrint`.
+- HTML → simple regex-based reformat: newlines after `>`, indent by tag
+  depth, collapse multi-space. Targets 90% common cases.
+- CSS → simple regex: newline after `;`, indent rule body 2 spaces.
+- Generic code (no language detected) → whitespace normalization only:
+  collapse 3+ blank lines, trim trailing whitespace, normalize
+  line-ending to LF, expand tabs to 4 spaces (parameter).
+- Format auto-detect by content: leading `{`/`[` → JSON, leading `<?xml`
+  → XML, leading `<!DOCTYPE`/`<html` → HTML, leading selector + `{` → CSS,
+  else generic.
+- Fully offline, < 50 ms for typical sizes.
+
+**Requirements — AI (Pretty Code: AI):**
+- Prompt template: "Format this code idiomatically. Detect the language.
+  Preserve semantics. Use 2-space indent unless language convention
+  differs. Return only formatted code, no commentary."
+- `Quality: high` directive in prompt (this is one of the cases where
+  quality matters).
+- Works on any language the model knows.
+- Slower (typical 3–8 s), requires internet.
+
+---
+
+### #A20 — Unit conversion: local action with metric ↔ imperial round-trip
+
+**Status:** planned. New idea from flight-test session. High user value
+(immigrant from metric country grappling with imperial measurements).
+**Touches:** new `UnitConversionAction.swift`,
+`DefaultTransformationSeed.swift`, parser tables for each unit category.
+**Context:** Selection like "6 feet 7 in" → "200.7 cm"; "200 kg" →
+"441 lb"; "75 °F" → "23.9 °C". Auto-detect source system, convert to the
+opposite, replace in place. Works offline.
+**Requirements:**
+- Categories supported in v1:
+  - Length: m / cm / mm / km ↔ in / ft / yd / mi.
+  - Weight: g / kg ↔ oz / lb.
+  - Temperature: C ↔ F (no Kelvin per user spec).
+  - Volume: L / mL ↔ fl oz / gal / qt / pt.
+  - Speed: km/h ↔ mph.
+  - Area: m² ↔ ft².
+- Parser handles:
+  - Single value: "6 ft", "200kg", "75°F", "5 km/h".
+  - Compound: "6 feet 7 in", "5 ft 11", "200 lb 4 oz".
+  - Implicit unit pairs: "5'11"" (feet + inches via primes).
+  - Decimal + comma decimals: "5.5 kg" and "5,5 kg" both work.
+- Direction param: `auto` (default — detect source system, convert to
+  opposite), `to metric`, `to imperial`.
+- Output precision: 1 decimal for most categories, 0 for whole-pound
+  weights and whole-Fahrenheit temperatures.
+- In-place replacement: walk the input string with a regex; replace
+  each match with the converted equivalent in parentheses or inline
+  per parameter `replace | append`.
+- Default behaviour: append in parentheses → "It's 75 °F (23.9 °C)
+  outside". Replace mode swaps fully: "It's 23.9 °C outside".
+
+**Implementation notes:**
+- Use SI conversion factors as the single source of truth. All
+  conversions go through SI base unit (meter, kilogram, kelvin, liter,
+  m/s, m²) and back, never directly between non-SI units.
+- Regex-driven scanner with a unit-keyword lookup table — keep simple,
+  no NL parsing.
+- Currency / time / bytes deferred to v2 (live API needed for currency).
+
+---
+
+### #A21 — File → Image extraction (PDF first page, simple)
+
+**Status:** planned. Solves common case of "I want the cover image".
+**Touches:** new `FileToImageAction.swift`, `DefaultTransformationSeed.swift`.
+**Context:** A clip containing a single PDF / image-format file should
+have an action that extracts the first page (PDF) or just re-encodes the
+file (HEIC / RAW → PNG). Scope is intentionally narrow per user: only
+first page, only simple cases.
+**Requirements:**
+- Input: `.files` clip with exactly one file URL.
+- PDF → render page 1 via `PDFKit` at 2× scale, output as PNG.
+- HEIC / HEIF → re-encode to PNG via `CIImage(contentsOf:)` +
+  `NSBitmapImageRep.representation(using: .png)`.
+- TIFF / BMP / GIF → same, simple format conversion.
+- Output replaces clip with `.image` containing the PNG data.
+- Multi-page PDFs: page 1 only (per user spec).
+- Anything else (video, archives, unknown) → action disabled / inapplicable.
+
+---
+
+### #A22 — URL preview cards via local HTML parsing
+
+**Status:** planned. Adds richness to URL-type clips without external calls.
+**Touches:** `URLActions.swift` (new fetch + parse), `BigHUD.swift` /
+`RichTextPreviewView.swift` (card rendering).
+**Context:** URL-type clips currently show as plain links. A "Preview"
+action could fetch the page, extract `<title>` and `og:image`, render a
+small card.
+**Requirements:**
+- Action applicable to `.url` clips only.
+- Local HTML fetch via `URLSession` (5 s timeout).
+- Parse `<title>`, `<meta property="og:title">`, `<meta property="og:image">`,
+  `<meta property="og:description">` via simple regex (NSXMLParser is
+  overkill for malformed HTML; regex on the head section is fine).
+- Build NSAttributedString:
+  - First line: og:title or `<title>`, bold.
+  - Second line: og:description (truncated to 200 chars), regular.
+  - Third line: original URL, link-styled.
+  - If og:image present: download it, inline as attachment above title.
+- Output is rich-text clip replacing the original URL (or appended,
+  parameter).
+- Fallback: any fetch / parse failure → leave URL clip untouched, play
+  failure sound.
+
+**Implementation notes:**
+- No JS execution — single GET, parse raw HTML.
+- User-Agent set to a reasonable browser string (some sites block
+  curl-style UAs).
+- Domain-aware enhancements (Twitter/X, GitHub, YouTube) deferred to
+  later iteration.
+
+---
+
+### #A23 — macOS Services menu integration (right-click context menu)
+
+**Status:** planned. Largest single inflow channel we don't yet support.
+**Touches:** `Info.plist` (NSServices array), new
+`DrPasteServicesProvider.swift` (NSServices handler class),
+`main.swift` (`NSApp.servicesProvider`).
+**Context:** macOS Services are the system-wide right-click → "Services"
+submenu surface. Letting users send selected text / files into DrPaste
+actions from any app's context menu is a massive discoverability boost.
+**Requirements:**
+- Register Services entries in `Info.plist` with `NSMessage`,
+  `NSPortName`, `NSSendTypes` (`public.utf8-plain-text`, `public.file-url`,
+  `public.image`), `NSReturnTypes`.
+- Entries to expose (v1):
+  - "Add to DrPaste history" (sendTypes: text, file, image).
+  - "DrPaste: Translate to English" (sendTypes: text; reuses default
+    Translate action).
+  - "DrPaste: Quick Copy" (sendTypes: text/file/image — same as ⌥⌘C).
+- Service handler reads pasteboard, performs the action, returns
+  result (for actions that produce output) or returns nothing (for
+  history-add).
+- User can extend the list via Settings → Services → "Expose action
+  as Service" toggle per action (deferred to v2).
+- Documentation in HELP.md: how to enable / where to find them.
+
+**Implementation notes:**
+- Services entries land in `Info.plist` and require the app to be a
+  proper `.app` bundle (depends on #A1).
+- Service handlers are invoked on background threads; route to MainActor
+  for any state mutation.
+
+---
+
+### #A24 — Markdown → Rich Text action
+
+**Status:** ✅ Shipped in 0.42.0 as `builtin.md_to_rich` in
+`MarkdownActions.swift`. Curated-on by default. Pastes into
+Mail / Pages / Notes / Word with formatting intact. Entry kept for
+historical context.
+**Touches:** `MarkdownActions.swift` (MarkdownToRichTextAction),
+**Touches:** new `MarkdownToRichTextAction.swift` (or extension to
+`MarkdownActions.swift`), `DefaultTransformationSeed.swift`.
+**Context:** Convert markdown source to rendered NSAttributedString (with
+bold / italic / headings / lists / code blocks / links). Output is
+RTFD-compatible so it pastes into Mail / Notes / Pages with formatting.
+**Requirements:**
+- Input: plain text containing markdown syntax.
+- Output: NSAttributedString with proper styles, written to pasteboard as
+  4 representations (RTFD / RTF / HTML / plain) per existing accumulator
+  pattern.
+- Renderer reuses `RichTextHelpers.attributedStringFromMarkdown(_:)` if
+  it covers needed syntax; otherwise fold in `Down` or `cmark`-style
+  parsing. Internal pure function — no UI.
+
+---
+
+### #A25 — Unicode Fancy on markdown: convert markup to unicode-styled
+
+**Status:** ✅ Shipped in 0.42.0 as `builtin.font_markdown` (seed v6).
+`UnicodeStylizer.applyMarkdown(to:)` walks the input, matches markup
+tokens longest-first (`***` before `**` before `*`, same for `__` /
+`_`, plus `~~strike~~` and `` ` ``), applies the matching style
+span-by-span, and drops the markup characters. Entry kept for
+historical context.
+**Touches:** `UnicodeStyles.swift` (UnicodeFontStyle.markdownAware),
+**Touches:** `UnicodeStyles.swift` (new `stylizeMarkdown(_:)` entry
+point), `DefaultTransformationSeed.swift` (new seed or replace existing).
+**Context:** Current Unicode Stylize applies one style to the whole
+selection. Markdown-aware variant interprets `**bold**` / `*italic*` /
+`__under__` / `~~strike~~` / `` `code` `` and renders each span with the
+corresponding unicode pseudo-font, then strips the markup characters.
+**Requirements:**
+- `**bold**` → 𝐛𝐨𝐥𝐝 (sans-serif bold).
+- `*italic*` → 𝑖𝑡𝑎𝑙𝑖𝑐 (sans-serif italic).
+- `***bold-italic***` → bold-italic glyphs.
+- `__bold__` (alt syntax) → same as `**`.
+- `_italic_` (alt syntax) → same as `*`.
+- `~~strike~~` → S̶t̶r̶i̶k̶e̶ (combining overline `̶` per character).
+- `` `code` `` → monospace block glyphs (𝚌𝚘𝚍𝚎).
+- Plain text outside markup stays unstyled.
+- Markup characters fully removed from output.
+
+---
+
+### #A26 — ASCII art transformation: rich text + monospaced + maxWidth param
+
+**Status:** partially shipped in 0.42.0 — rich-text output + monospaced
+NSFont + 40-column default landed (`ImageToASCIIArtAction.swift`).
+`render(image:outWidth:)` exposes the width parameter at the API
+level. **Remaining work** before this can fully close: surface the
+`maxWidth` slider in the Settings UI so users can dial it without
+editing code. Needs to wait for **#A16** (Built-in editor redesign with
+handler picker) — descriptor-based parameter editing infrastructure
+isn't ready for hardcoded ClipboardAction subclasses yet.
+**Touches (remaining):** `ImageActions.swift` exposes a `maxWidth`
+input through #A16's parameter editor scaffolding.
+
+---
+
+### #A27 — Type Slowly preview: animated, 1.5× faster than default
+
+**Status:** ✅ Shipped in 0.42.0. `TypeSimulator.defaultBaseDelay` =
+0.133 s/char (was 0.2). `TestOutputPane.TypeSlowlyPreview` animates the
+output character-by-character at the same delay as production so the
+playground is bit-for-bit honest. The 0.42.1 hot-patch additionally
+fixed Type Slowly via per-action hotkey committing as plain ⌘V — see
+the 0.42.1 changelog entry. Entry kept for historical context.
+
+---
+
+### #A28 — Engine consolidation: merge prepend / append / wrap, trim / collapse
+
+**Status:** planned. Reduces user-pickable engine count without losing
+function.
+**Touches:** `CustomTransformation.swift` (engine enum + handler),
+`TransformationEditor.swift` (engine picker), `DefaultTransformationSeed.swift`
+(seed migrations).
+**Context:** Today the engine picker has separate entries for prepend,
+append, wrap, trim, collapse. Logically these are subsets of more
+general engines: wrap-with-fixed-strings (covers all three of
+prepend/append/wrap by setting one side empty), and normalize-whitespace
+(covers both trim and collapse via parameter combinations).
+**Requirements:**
+- Single "Wrap with text" engine with `prefix` + `suffix` parameters
+  (either can be empty). Replaces prepend / append / wrap.
+- Single "Normalize whitespace" engine with `trimEdges: bool` and
+  `collapseRuns: bool` flags. Replaces trim / collapse.
+- Migration: existing custom transformations using old engines
+  auto-migrate to new engines with equivalent parameters on first
+  launch (seed v8 bump).
+- Parameter-less engines (e.g. uppercase / lowercase / title case) move
+  back to built-in handlers — not exposed in transformation engine
+  picker (they shouldn't be there since no param to vary).
+- Find/Replace and Regex stay separate (genuinely different from wrap).
+
+---
+
+### #A29 — Color, Email, PDF, Wiki, HTML semantic kinds + applicable types
+
+**Status:** planned. Expands the semantic-type grid for action targeting.
+**Touches:** `SemanticClassifier.swift`, `ClipboardModel.swift` (`SemanticKind`
+enum), `ActionEditor.swift` (applicable-types grid expansion).
+**Context:** Today the applicable-types grid covers text / url / email /
+files / image / richText / pdf / code / markdown / json / table. Missing:
+- Color (hex / rgb / named).
+- Wiki markup.
+- HTML source.
+- Math / coordinate / phone / date are interesting but deferred.
+**Requirements:**
+- Add `.color` semantic kind, detector matches `#rgb`, `#rrggbb`,
+  `rgb(r,g,b)`, `hsl(h,s,l)`, CSS named colors. Color is genuinely useful
+  for designers — gets immediate value via Resize / Stylize / Preview
+  actions.
+- Add `.wiki` for content containing `{|` table markers or `[[link]]`
+  syntax. Detect first.
+- Add `.html` for content with `<` `>` tag pairs > 3.
+- Settings → applicable-types grid grows to include new entries.
+
+---
+
+### #A30 — HUD Pin button (per-session sticky stay-open)
+
+**Status:** planned. Power-user surface.
+**Touches:** `BigHUD.swift` (header pin button next to ✕), `HudState.swift`
+(`isPinned` flag).
+**Context:** When working through multiple clips iteratively, the user
+sometimes wants HUD to stay open across action runs. Pin button (toggle)
+disables the auto-close on commit for the duration of the session.
+**Requirements:**
+- Pin button rendered in HUD header next to ✕, same size, pin icon.
+- Click → toggles `isPinned`. When true: action commit does not close
+  HUD, paste flow runs, then HUD stays open with the next item focused.
+- Reset to false on every HUD reopen (no persistent pinning).
+- Visual indicator: pinned state shows pin icon filled / accent color.
+
+---
+
+### #A31 — Clickable legend items
+
+**Status:** planned. Discoverability nudge.
+**Touches:** `BigHUD.swift` footer legend, `MiniHUD.swift` footer legend.
+**Context:** The single-word footer legend ("↑↓ hist · ←→ act · ⌫ del ·
+S merge · C copy · ⏎ paste/keep · esc close") is currently text-only.
+Making each item clickable triggers the corresponding action — saves a
+mouse-only user from learning the keybinds.
+**Requirements:**
+- Each legend chip is a button.
+- Click → dispatches the corresponding action via the same path as the
+  keybind.
+- Hover → underline + accent color.
+- Disabled state (action not applicable) → gray + no click.
+
+---
+
+### #A32 — Bug: Unicode fancy reverse table is wrong (𝐓𝐡𝐞 → "The bnick")
+
+**Status:** planned. Small bug.
+**Touches:** `UnicodeStyles.swift` reverse lookup table.
+**Context:** When pasting unicode-styled text back through the
+`unicodeStyle` action's denormalize-then-restyle path, the reverse
+mapping produces garbage. Likely off-by-one or wrong-base in the lookup
+table.
+**Requirements:**
+- Audit `UnicodeStyles.reverseGlyphMap` (or equivalent name) for off-by-N
+  errors.
+- Test cases: `𝐀-𝐙`, `𝐚-𝐳`, `𝟎-𝟗` round-trip to ASCII.
+- Test all 12 styles in both directions.
+- Once fixed, Unicode Stylize's denormalize-then-restyle (#A33) becomes
+  reliable.
+
+---
+
+### #A33 — Bug: Unicode Stylize doesn't denormalize its own outputs
+
+**Status:** planned. Depends on #A32.
+**Touches:** `UnicodeStyles.swift` (stylize entry point), seed metadata.
+**Context:** Applying Unicode Stylize to already-styled text should first
+strip the existing style (using the reverse table) and then apply the
+new one. Today it just stacks combining marks on already-styled glyphs,
+producing junk.
+**Requirements:**
+- Before applying new style, call `denormalize(_:)` to recover ASCII.
+- Then apply the new style table on the recovered ASCII.
+- This naturally falls out of #A32 being correct.
+
+---
+
+### #A34 — Bug: Save button broken in New Built-in action
+
+**Status:** planned. Small bug.
+**Touches:** `BuiltinActionEditor.swift` Save action wiring.
+**Context:** Creating a new Built-in action from the "+ New" palette and
+hitting Save does nothing — the sheet doesn't dismiss, the action isn't
+persisted. Probably stale binding from an earlier refactor.
+**Requirements:**
+- Debug Save closure binding in BuiltinActionEditor's "+ New" mode.
+- Ensure `onSave` callback fires `registry.upsertBuiltinAction(...)`.
+- Sheet dismisses on success.
+
+---
+
+### #A35 — Bug: Extract links / Extract headings × Rich Text input
+
+**Status:** planned. Small bug.
+**Touches:** `MarkdownActions.swift` (extractLinks / extractHeadings handlers),
+applicable-types metadata.
+**Context:** When a `.richText` clip is input to Extract Links or Extract
+Headings, the action crashes or returns empty because it expects plain
+text input.
+**Requirements:**
+- Either: cast input to plain `.string` before processing (preserves
+  applicability across rich text).
+- Or: mark the actions as inapplicable for `.richText` in the
+  applicable-types grid (cleaner UX).
+- User preference: applicable (process the `.string` of the rich text).
+
+---
+
+### #A36 — Bug / audit: engine visibility inconsistency in pickers
+
+**Status:** planned. Small bug + audit.
+**Touches:** `TransformationEditor.swift` engine picker, registry pass.
+**Context:** Markdown → Plain text and Extract headings engines are
+visible in one engine picker dropdown but not another. Same engine,
+inconsistent visibility based on which surface invokes the picker.
+**Requirements:**
+- Single source of truth: `CustomTransformation.userPickableEngines`.
+- All UI surfaces use that list.
+- Audit pass: confirm parity across Settings action editor + Playground +
+  ⌥⌘E inline picker.
+
+---
+
+### #A37 — AX text operations for full-document context
+
+**Status:** planned. Power feature, large scope. Deferred but recorded.
+**Touches:** new `AXTextOperations.swift`, ContextDetector enhancements.
+**Context:** Today AI actions see only the clipboard content. For
+translation / summarization the model would do dramatically better
+with surrounding context (paragraph, page, full document). Use macOS
+Accessibility API to read the focused text field / web area's full
+content.
+**Requirements:**
+- AX-read the focused text-bearing element's full string.
+- Pass surrounding context as a secondary input to AI prompt (separate
+  field, model sees it but knows the primary input is the clipboard
+  fragment).
+- Privacy: opt-in per action (checkbox in action settings: "Include
+  surrounding context"); default OFF.
+- Failure modes: AX denied → silently skip context, action runs with
+  clipboard only.
+
+---
+
+### #A63 — Visual distinction: selected clip vs selected action + failure / side-effect outcome clarity
+
+**Status:** partial. Outcome-clarity half landed organically in earlier
+versions — BigHUD already shows notice blocks for `.failed`,
+`.sideEffect`, and `.alternativeCommit` (Type Slowly / Type Fast).
+**Remaining work** is scoped to the clip-vs-action *selection style*:
+both currently use the same solid accent fill, which conflates
+"object" (the clip) with "command" (the action).
+**Touches:** `BigHUD.swift` action-chip styling only.
+**Context:** Today the focused clip in the history strip and the
+focused action in the action bar both use the same accent-color
+fill style. Visually they read as "the same kind of selected" —
+but they are different kinds of objects: a clip is *what will be
+pasted*, an action is *what will be applied to it*. Conflating
+their visual treatment costs scanability.
+
+**Requirements (remaining):**
+
+- **Clip selection** keeps the current solid accent fill — clips
+  *are* objects, that style fits.
+- **Action selection** switches to a thinner outline / underline
+  treatment (accent border or accent underline, no fill). Reads as
+  a *command*, not a contained object.
+- Footer chip `⏎ keep / paste / cancel` stays the same wording —
+  the existing outcome notices already answer "what will the commit
+  do", the chip answers "which key fires the commit".
+
+**Already done (ships in baseline, do not re-implement):**
+
+- `.preview(item)` → no notice (preview answers).
+- `.alternativeCommit(item, .typeSlowly(_, _))` / `.typeFast` →
+  inline notice block above the preview.
+- `.failed(original, reason, _)` → muted-red notice.
+- `.sideEffect(_, _)` → blue notice with a description.
+
+---
+
+### #A64 — Title / description model split (data + UI)
+
+**Status:** planned. P0 per UX review — biggest single architecture
+win for action discoverability. **Depends on #A41 (import/export merge
+audit + ImportReport)** for the conflict-resolution policy below.
+
+**Adversarial-pass refinements (must follow):**
+
+- **Built-in description overrides store a base-hash**, not just text.
+  Schema: `{ text: String, baseDefaultHash: String, editedAt: Date }`.
+  When the bundled `BuiltinActionMetadata.descriptions[id]` changes
+  in a later release, the user's stored override is silently stale
+  if we only compare strings; with a hash we detect "the default I
+  was overriding has changed" and surface an editor conflict UI
+  with "Keep mine / Use new default / Compare". Export / import
+  preserves the hash so the same conflict surfaces on the next
+  machine.
+- **Never render an empty line 2** in the Settings row. Fallback
+  chain: `customDescriptions[id]` → `BuiltinActionMetadata.
+  descriptions[id]` → **generated descriptor summary** built from
+  the engine + parameters ("Regex replace · Applies to Text, Code"
+  for a CustomTransformationDescriptor; "AI via OpenAI · Prompt
+  starts: …" for a CustomAIDescriptor). Only omit line 2 when even
+  the generated summary returns nil.
+- **No backfill into config for i18n**. Built-in default descriptions
+  are read from the bundle at display time, NOT copied into
+  `customDescriptions` at any point. Only user overrides land in
+  config. This forecloses the trap where a later Russian-UI ship
+  would find user configs holding English defaults that pre-date
+  localisation.
+- **Import merge policy required.** For the same action ID with a
+  non-empty `customDescriptions[id]` on both sides:
+  default = keep current, log as conflict in ImportReport with
+  "Replace / Keep / Duplicate as new action" options. Same policy
+  surface as the `customTitles` merge work in #A41.
+
+**Touches:** `CustomTransformationDescriptor.swift` +
+`CustomAIDescriptor` gain a `description: String?` field;
+`ActionConfig` gains `customDescriptions: [String: OverrideEntry]`
+where `OverrideEntry = { text, baseDefaultHash, editedAt }`;
+`BuiltinActionEditor.swift` metadata dictionary stays as
+authoritative for hardcoded built-ins but exposes editable user
+override; `SettingsWindow.swift` action row becomes 2-line;
+`ActionEditor.swift` gains a Description field; `BigHUD.swift`
+keeps showing title only.
+**Touches:** `CustomTransformationDescriptor.swift` + `CustomAIDescriptor`
+gain a `description: String?` field; `BuiltinActionEditor.swift`
+metadata dictionary stays as authoritative for hardcoded built-ins
+but exposes editable user override; `SettingsWindow.swift` action
+row becomes 2-line; `ActionEditor.swift` gains a Description field;
+`BigHUD.swift` keeps showing title only.
+
+**Context:** Today action data has only a `title` field. Built-in
+actions have descriptions in a side table (`BuiltinActionMetadata.
+descriptions`), but custom transformations and custom AI actions
+have no description at all — the user can name an action
+"Translate to Spanish" but cannot add "Uses formal register, treats
+code blocks as untranslatable" anywhere persistable. Settings list
+rows show only the title, which leaves no scannable answer to
+"what does this disabled action actually do".
+
+**Requirements (data):**
+
+- Add `description: String?` to `CustomTransformationDescriptor`,
+  `CustomAIDescriptor`, and to a new lightweight `BuiltinTitleOverride`
+  field on `ActionConfig.customTitles` (or expand to `customTitles
+  + customDescriptions`).
+- Decoding default = nil; old saved configs migrate cleanly
+  (no version bump needed unless we want to backfill).
+- Built-in actions: `ActionMetadata.description(forActionID:)` looks
+  up `customDescriptions[id]` first, then falls back to
+  `BuiltinActionMetadata.descriptions[id]`.
+
+**Requirements (UI):**
+
+- **Settings action row** becomes 2-line:
+  - Line 1 (current): icon · title · provider badge · usage · hotkey
+    badge · drag handle · enabled toggle · Edit button.
+  - Line 2 (new): description in secondary font, truncated to
+    1 line with tail ellipsis. Empty if no description set.
+- **Action editor** gains a "Description" `TextField` directly
+  under Title. Same visual treatment for built-in / transformation
+  / AI mode. Editable for ALL action kinds — the colleague's
+  "read-only for built-in unless cloned" rule is rejected:
+  consistency with custom-title behaviour wins, and a user who
+  renames a built-in already proved they want to customise.
+- **HUD** stays title-only. Description never paints in HUD.
+- **+ Add more actions palette** uses description as the
+  secondary line under each available action's title.
+
+**Requirements (editor layout per UX review):**
+
+- Order of fields in `ActionEditor`:
+  1. Title
+  2. Description (new)
+  3. Enabled toggle + Applies-to grid
+  4. Hotkey recorder
+  5. Provider picker (AI only)
+  6. Prompt template / engine parameters (mode-specific)
+  7. Test panel
+  8. Duplicate / Delete footer
+- Visual hierarchy: bold section dividers, comfortable spacing on
+  fields 1-4 (the "I just want to rename / reassign" use case),
+  more dense layout on 5-7 (power-user surface).
+
+---
+
+### #A65 — Append Copy lightweight feedback toast
+
+**Status:** planned. UX from review.
+**Touches:** new `ToastController.swift` (or extend MiniHUD),
+`main.swift` `hotkeyEngineDidAppendCopy()`.
+**Context:** The menu-bar dot is the primary append-session
+indicator (correctly so), but a new user may not look at the menu
+bar after pressing ⌥⌘S. A brief inline toast bridges the gap:
+explicit confirmation of what just happened.
+
+**Requirements:**
+
+- Three messages (short, secondary tone):
+  - First ⌥⌘S of a session → "Append started"
+  - Subsequent ⌥⌘S of same session → "Appended (\(n) clips)"
+  - Session ended (timeout / other hotkey) → "Append ended"
+- Render as a small NSPanel toast (matching MiniHUD chrome) anchored
+  near the menu-bar icon, auto-dismiss after 1.5 s.
+- Settings → Sound feedback section: separate toggle "Show append
+  toasts" — some users will find it noisy, default-on.
+
+---
+
+### #A66 — Region Capture: "Captured X×Y" toast + permission hint
+
+**Status:** planned. UX from review.
+**Touches:** `ScreenRegionCapture.swift` post-capture path,
+permission-denied path.
+**Context:** Today the only post-capture feedback is the captured
+PNG appearing as a clip in BigHUD (which auto-opens). A short toast
+with the captured dimensions ("Captured 1280×720") gives explicit
+confirmation. For permission-denied case: a clear "Screen Recording
+needed — open System Settings" toast instead of silent failure.
+
+**Requirements:**
+
+- Successful capture → 1.0 s toast: "Captured \(w)×\(h)" anchored
+  near the captured area (or near menu-bar icon if the area is
+  off-screen). Reuses the toast surface from #A65.
+- Permission denied → modal-ish toast: "Screen Recording needed"
+  + "Open System Settings" button. No silent failure.
+- Source-app label inside the HUD ("Captured from Safari") stays
+  unchanged — it's already useful context.
+
+---
+
+### #A67 — Cheat sheet line: "Tap to run · hold ⌥⌘ to preview"
+
+**Status:** planned. UX from review. Trivial.
+**Touches:** `RegionCaptureCheatSheet.swift` legend, Welcome
+window per-action hotkeys section, Hotkey Recorder helper text.
+**Context:** Per-action hotkey "tap = direct, hold = BigHUD preview"
+semantics are explained in HELP.md but nowhere in-product near the
+recorder itself. A single-line hint at the bottom of the recorder
++ a line in the cheat sheet closes the discovery gap.
+
+**Requirements:**
+
+- `HotkeyRecorder` view gains a static footer line under the
+  recording field: "Tap to run · hold ⌥⌘ to preview"
+- `RegionCaptureCheatSheet` per-action chord legend rows gain a
+  ` — tap run, hold preview` suffix:
+  `⌥⌘T  Translate to Spanish  — tap run, hold preview`
+- Welcome window per-action hotkeys section already explains this;
+  no change needed there.
+
+---
+
+### #A68 — Theme picker preview shows mini-HUD, not abstract swatches
+
+**Status:** ✅ Already shipped. `ThemeThumbnail` already exists in
+`AppTheme.swift` and is consumed by the Settings Appearance tab —
+verified during cleanup pass. The original concern (abstract swatches)
+no longer applies. Entry kept for historical context; if a future
+"even more realistic BigHUD-shaped thumbnail" is desired (real action
+chips, footer chip, actual history rows instead of stripes), file a
+fresh narrower entry.
+
+---
+
+### #A69 — MiniHUD explicit failure state
+
+**Status:** planned. UX from review. Currently MiniHUD plays the
+`pasteFailure` sound and closes without showing *what* went wrong.
+**Touches:** `MiniHUD.swift` view, `main.swift` failure-completion
+path in `actionHotkeyDidFire`.
+**Context:** Direct-trigger AI / image failures currently disappear
+silently after the sound. The user doesn't know whether the network
+failed, the model rejected, the key is bad, the source was too
+large. They have to repeat the action, possibly in BigHUD, to see
+the failure reason.
+
+**Requirements:**
+
+- MiniHUD gains a `.failure(reason: String, recovery: RecoveryHint?)`
+  state alongside `.loading` / `.complete`.
+- Failure state shows: ✕ icon (red), action title, one-line reason
+  ("Network error", "Image too large for OpenAI (>4 MB)",
+  "Provider key unauthorized — check Settings"), and an optional
+  recovery button (e.g. "Open Settings", "Resize and retry" once
+  #A55 lands).
+- Auto-dismiss timer: 4 s for failure (longer than success 0.6 s
+  Done pill), or user clicks the ✕.
+- The same failure surface is used by the BigHUD's commitOutcome
+  failed path, eventually — pair with #A39 PasteCommitter work.
+
+---
+
+### #A59 — Discoverability hint: "hold to browse · release to paste"
+
+**Status:** planned. UX. The central gesture of the product
+(release-to-paste in Gesture Mode) is not surfaced anywhere visible
+inside the BigHUD itself. Welcome window covers first-launch, but
+after a few days the user is relying on memory. New users who
+re-discover the app months later have no in-HUD reminder.
+**Touches:** `BigHUD.swift` header row, possibly a one-time
+fade-out inline tip.
+
+**Context:** Footer hints were intentionally kept terse to avoid
+wrapping (`↑↓ hist · ←→ act · …`); the comment in `footer` explicitly
+notes that "release pastes" was removed for width reasons. But the
+removal leaves the most important affordance invisible. The other
+modes ARE surfaced: Limited Mode shows a banner; per-action hotkey
+hold-preview is described in Welcome. Only the core ⌥⌘V release
+gesture is undocumented in-HUD.
+
+**Requirements:**
+
+- In Gesture Mode only, surface a small inline hint above the
+  history strip or in the header sub-line: "hold ⌥⌘V to browse ·
+  release to paste · esc to cancel". Single line, secondary
+  foreground, monospaced 10pt so it doesn't compete with content.
+- **State schema for the auto-fade counter** (per adversarial pass —
+  a naive "N successful commits" counter goes wrong on Factory Reset,
+  fresh-install-on-second-machine, and year-old users):
+
+  ```
+  struct HintState: Codable {
+      var successfulCommits: Int           // total, monotonic
+      var lastShownVersion: String         // AppBrand.version on last paint
+      var lastCommitDate: Date             // for staleness detection
+      var resetGeneration: Int             // bumped by Factory Reset
+  }
+  ```
+
+  Stored under `drpaste.hint.releaseToPaste`. Default: show until
+  `successfulCommits` ≥ 5 within the current `resetGeneration`.
+
+- **Re-education rules** (also adversarial-pass-driven):
+  - Factory Reset → `resetGeneration += 1`, counter starts over.
+    Same user re-learns from a clean state.
+  - Fresh install on a second machine → UserDefaults doesn't sync
+    by default, so the counter starts at zero anyway.
+  - **Staleness window**: if `lastCommitDate < now − 90 days`,
+    show the hint exactly once on the next HUD open even if the
+    counter is past threshold. Captures the "year-old user reopens
+    the app" case. Sets `lastCommitDate = now` on display so it
+    doesn't fire again unless another 90-day gap occurs.
+- Settings → General → "Show release-to-paste hint" toggle to
+  re-enable for users who want it permanent.
+- Hint NEVER appears in Limited Mode (it's wrong for that mode and
+  the Limited banner already covers the topic).
+
+---
+
+### #A60 — Append session indicator tooltip + Settings explanation
+
+**Status:** planned. Small UX gap.
+**Touches:** `main.swift` (status item NSView + tooltip),
+`SettingsWindow.swift` (Sound feedback section already exists; add
+indicator explanation row).
+
+**Context:** The colored dot on the menu-bar icon (red = rich-text
+accumulator, cyan = files-strict accumulator) is silently informative.
+A user who hasn't read HELP.md just sees "a colored dot appeared on
+the icon" with no in-product explanation. Tooltip + a "How it works"
+row in Settings would close this loop.
+
+**Requirements:**
+
+- `NSStatusItem.button.toolTip` updated dynamically:
+  - No active session → "DrPaste — clipboard history" (current).
+  - Rich session active → "Append Copy: rich-text accumulator
+    active (red). Press ⌥⌘S to add more, ⌥⌘V to paste."
+  - Files session active → "Append Copy: files accumulator active
+    (cyan). Drag/select more files and press ⌥⌘S."
+- Settings → General → new "Append Copy" section with a one-paragraph
+  explanation of red vs cyan dot + the timeout (120 s).
+- Optional: clicking the colored dot opens HELP.md anchored at the
+  Append Copy section (depends on #240 User Guide menu item).
+
+---
+
+### #A61 — Empty-history HUD onboarding
+
+**Status:** planned. UX polish.
+**Touches:** `BigHUD.swift` history strip empty state.
+
+**Context:** Pressing ⌥⌘V on first launch (or after Factory Reset)
+opens the HUD against an empty history. Unclear what the current
+empty state looks like, but the right behaviour is a Welcome-like
+inline panel: "Your clipboard history is empty. Copy something with
+⌘C and try again." with a small ⌘C key chip and a "What is DrPaste?"
+link to Welcome / HELP.md.
+
+**Requirements:**
+
+- Detect `store.items.isEmpty` → render onboarding panel instead of
+  the (empty) history strip.
+- Keep the action bar still hidden (no actions apply to nothing).
+- Keep release/esc semantics the same — releasing on empty just
+  closes the HUD with no failure sound.
+- Add the same panel after Factory Reset until the first new clip.
+
+---
+
+### #A62 — Assign-hotkey shortcut from HUD action chip
+
+**Status:** planned. Discoverability. Power-user feature, but it has
+no current discovery path inside the HUD.
+**Touches:** `BigHUD.swift` action chip context menu / long-press,
+`ActionHotkeyManager.swift`.
+
+**Context:** Today the only way to assign ⌥⌘<letter> to an action is
+Settings → Actions → Edit → Hotkey recorder. Five clicks deep, and
+the user has to leave their press-and-hold gesture to do it. A user
+who keeps reaching for Translate to Spanish has no in-HUD signal
+"hey, you can put this on a hotkey." Two affordances would close
+this:
+
+**Requirements:**
+
+- Right-click (or long-press) on an action chip in the HUD → context
+  menu with:
+  - "Assign hotkey…" → opens an inline recorder anchored to the
+    chip, captures the next ⌥⌘<letter>, saves through
+    `setHotkey(_:for:)`.
+  - "Open in Settings…" → opens Settings → action editor for this
+    action (existing behaviour).
+- Hotkey recording uses the same conflict / reserved-chord rules
+  as the Settings recorder (auto-steal + system-chord block).
+- After a hotkey is bound, the chip grows a small ⌥⌘<letter> badge
+  inline, the same badge that appears in the Settings row.
+- Optional second affordance: usage telemetry (local-only) tracks
+  which actions a user runs more than 5 times via HUD without a
+  hotkey, and surfaces a one-time "Want to put Translate on ⌥⌘T?"
+  prompt. Defer this — needs careful tuning to not be naggy.
+
+---
+
+### #A46 — Persistence I/O: debounce + off-main + image cache
+
+**Status:** planned. Performance. Targets perceivable HUD/Settings
+lag on large clips and on slow disks (Dropbox-resident
+Application Support, iCloud-hydrated files).
+**Touches:** `ActionConfig` didSet save, `ClipboardStore.save`,
+`BigHUD.swift` image preview load, `Settings*` blob reads.
+
+**Requirements:**
+
+- **Config save debounce.** `actions.json` is rewritten on every
+  `config` didSet. Coalesce writes via a 200 ms debounce; flush
+  immediately on `applicationWillTerminate` and Factory Reset.
+- **ClipboardStore.save debounce.** Same pattern for `index.json` —
+  rapid copy bursts trigger a flush after the last one settles, not
+  per copy. Immediate flush on remove/clear.
+- **BigHUD image preview cache.** `NSCache<NSString, NSImage>`
+  keyed by blob rel. Bounded total cost; thumbnail loads stay on
+  main but full-size loads go through `Task.detached`.
+- **APIKeyStorage fallback file I/O off main.** Reads on launch are
+  fine; writes from "Save key" flow should not block the editor.
+
+---
+
+### #A47 — Image rendering: drop `lockFocus`, prefer CGContext / CIImage
+
+**Status:** planned. Reliability + perf.
+**Touches:** `ImageActions.swift`, `AppendAccumulator.swift`,
+`ClipboardModel.swift`, `ActionTestSamples.swift`.
+**Context:** `NSImage.lockFocus()` is the old AppKit path: main-thread,
+backing-scale-fragile, less predictable for resize / colour-space
+operations. Switching to CGContext / CIImage gives deterministic
+output + thread-safety.
+
+**Requirements:**
+
+- New shared helper `ImageRenderer.downscale(_:maxSide:)` returning
+  PNG `Data`, no `lockFocus`. Uses CGContext at integer pixel sizes
+  with Lanczos interpolation.
+- All four call sites migrate to the helper.
+- Output size + colour-space deterministic across light/dark mode and
+  Retina/non-Retina.
+
+---
+
+### #A48 — Image actions: load *original* representation, not preview
+
+**Status:** planned. Correctness. Image transformations (Grayscale,
+Rotate, AI Watercolor) may currently operate on the cached preview
+thumbnail rather than the raw `public.png` / `public.jpeg` /
+`public.tiff` / `public.heic` representation when both are stored.
+**Touches:** `ImageActions.swift` `loadImage`, `AIImageActions.swift`
+loading helpers, `ClipboardModel.swift` representation lookup.
+
+**Requirements:**
+
+- Split into two helpers:
+  - `loadOriginalImage(_ item:)` — prefer `representations["public.png"]
+    / .jpeg / .tiff / .heic` over `previewImageRel`.
+  - `loadPreviewImage(_ item:)` — prefer `previewImageRel` (small,
+    fast for HUD chrome).
+- Image actions call `loadOriginalImage`; HUD chrome calls
+  `loadPreviewImage`.
+- Regression test in #A45 against a clip that has both representations:
+  action output dimensions match the original, not the thumbnail.
+
+---
+
+### #A49 — `withWatchdog(timeout:)` helper
+
+**Status:** planned. Refactor. The 90 s detached-task watchdog pattern
+exists in two places (BigHUD AI streaming, direct-trigger AI). Code
++ comments are duplicated.
+**Touches:** new helper in `Concurrency+Util.swift` (or similar);
+`main.swift` call sites.
+
+**Requirements:**
+
+- Generic helper:
+
+  ```swift
+  func withWatchdog<R>(timeout: Duration,
+                       cancelling tasks: () -> [Task<some Sendable, Error>],
+                       _ body: () async throws -> R) async rethrows -> R
+  ```
+- Watchdog is `Task.detached(priority: .background)` (escape MainActor
+  congestion — see #245 lesson).
+- Both BigHUD streaming and direct-trigger streaming switch to the
+  helper.
+
+---
+
+### #A50 — Central elapsed-time ticker (replace scattered Timers)
+
+**Status:** planned. Refactor.
+**Touches:** `BigHUD.swift` AI elapsed, `MiniHUD.swift`,
+`SettingsWindow.swift` test result, `ActionEditor.swift` playground.
+
+**Context:** Several `Timer.scheduledTimer` instances tick at 0.1 Hz
+for the elapsed-time UI. Each surface must manually invalidate on
+disappear. A single shared `ElapsedClock` ObservableObject (or async
+task loop) per surface lifecycle would auto-cancel via SwiftUI's
+.task modifier.
+
+**Requirements:**
+
+- `ElapsedClock(startedAt:)` ObservableObject. Internally drives a
+  10 Hz `Task.sleep` loop; sets `elapsed: TimeInterval` on MainActor.
+- Tear-down on `deinit` / `.task` cancellation — no manual invalidate
+  scattered across views.
+
+---
+
+### #A51 — AI HTTP session with explicit timeouts
+
+**Status:** planned. Reliability.
+**Touches:** `AIProvider.swift` non-streaming `run` paths,
+`AIImageActions.swift` image HTTP, `UsageProbe.swift`,
+`ActionTestSamples.swift` Mandrill download.
+
+**Context:** Streaming paths use a tuned URLSession; non-streaming
+paths fall through to `URLSession.shared` (60 s default request
+timeout, no resource timeout). Test-connection / usage-probe /
+image-fetch can therefore hang longer than the user expects.
+
+**Requirements:**
+
+- One `enum AIHTTP { static let session: URLSession = { ... }() }`
+  with `timeoutIntervalForRequest = 20 s`,
+  `timeoutIntervalForResource = 60 s`, custom UA.
+- Every non-streaming AI HTTP call moves to `AIHTTP.session`.
+
+---
+
+### #A52 — ClipboardStore image dedup via content hash
+
+**Status:** planned. Correctness.
+**Touches:** `ClipboardModel.swift` `ClipboardStore.sameContent`,
+`ClipboardItem` (new `contentHash` field, optional, lazy-computed).
+
+**Context:** Today image dedup compares `previewImageRel` strings,
+which are UUID-named per write — so two identical screenshots end
+up as two separate history rows. Hash-based dedup catches this.
+
+**Requirements:**
+
+- `ClipboardItem.contentHash: String?` (lazy SHA-256 of the largest
+  representation blob).
+- `ClipboardStore.sameContent(a, b)`: compare semantic + contentHash
+  when both are present.
+- Hash computed off-main; back-fill on history load for items written
+  before the field existed (Codable default = nil; computed on first
+  comparison).
+- Bonus: same logic dedups large text (5+ MB Markdown copies, etc.).
+
+---
+
+### #A53 — Orphan blob garbage collection
+
+**Status:** planned. Hygiene.
+**Touches:** `ClipboardModel.swift`, `ActionConfig.swift`,
+`AppStorage` paths.
+
+**Context:** Between `writeRawBlob` and index `save` a crash can leave
+orphan blobs. Deleted history items / replaced descriptors don't
+clean up their blobs. Application Support grows monotonically.
+
+**Requirements:**
+
+- On launch (or once per N launches): collect all referenced rels
+  from `index.json` + `actions.json` testSamples + active accumulator
+  state.
+- Walk `blobs/` and `images/`. Anything unreferenced AND older than
+  24 hours → delete.
+- Skip user-dropped playground images that are referenced from
+  Application Support (already covered by the above rule).
+- NSLog the cleanup summary.
+
+---
+
+### #A54 — Snapshot pasteboard size caps + Settings preference
+
+**Status:** planned. Reliability + UX preference.
+**Touches:** `ClipboardModel.swift` `snapshotPasteboard`,
+`SettingsWindow.swift` General tab.
+
+**Context:** Huge PDFs / proprietary payloads can be 100 MB+ and will
+land in `index.json` + blobs. On Dropbox-resident Application Support
+that's painful.
+
+**Requirements:**
+
+- Per-representation soft limit (default 16 MB). Above limit, store
+  metadata + thumbnail only, skip raw blob.
+- For `.files` clips, never copy file contents — only the URL.
+- Settings → General → "Max clipboard item size (MB)" slider, default
+  16, range 1–256.
+
+---
+
+### #A55 — AI image preflight: auto-resize 4 MB cap
+
+**Status:** planned. UX.
+**Touches:** `AIImageActions.swift` size-check path.
+
+**Context:** OpenAI gpt-image-1 caps source PNG at ~4 MB. Today the
+action fails with "Image too large" and suggests the user manually
+chain Resize / Compress. For direct-trigger flows this means the
+hotkey just fails.
+
+**Requirements:**
+
+- Action descriptor parameter: `autoResizeForProvider: Bool` (default
+  true).
+- Preflight: if source PNG > 4 MB, downscale longer side to 2048 px
+  + PNG-recompress, retry once. Show "Resized for upload (2048 px)"
+  inline notice in the inflight panel.
+- Off path: parameter set to false → action fails as today.
+
+---
+
+### #A56 — OpenRouter anchor → Codable per-provider struct
+
+**Status:** planned. Reliability.
+**Touches:** `UsageProbe.swift` anchor storage.
+
+**Context:** Per-provider OpenRouter anchor (date / credits /
+machine-UUID) currently lives as separate UserDefaults double keys.
+Re-key detection works but is fragile (string compare on prefixes).
+
+**Requirements:**
+
+- `struct OpenRouterAnchor: Codable { providerID, date, credits,
+  machineUUID, keyFingerprint }` keyed by providerID.
+- Re-key detection compares key SHA-256 fingerprint (or last 4 chars
+  if hashing keys feels wrong).
+- Migration from old key layout: read old keys once, write new
+  struct, delete old keys.
+
+---
+
+### #A57 — Playground / Settings test-task cancellation hygiene
+
+**Status:** planned. Bug prevention.
+**Touches:** `ActionEditor.swift`, `SettingsWindow.swift` playground.
+
+**Context:** Playground "Run test" spawns a Task. If the user closes
+the window or switches to a different action mid-run, the Task keeps
+going (and may try to update a now-stale view). For AI test runs
+this also burns tokens unnecessarily.
+
+**Requirements:**
+
+- Store the test task as a property on the view model.
+- Cancel on: window close, action switch, "Run test" pressed again,
+  view's `.onDisappear`.
+- Use the same `previewToken` pattern as BigHUD to guard against
+  stale results painting into the wrong action's pane.
+
+---
+
+### #A58 — Diagnostics snapshot + Settings → "Copy diagnostics"
+
+**Status:** planned. Support / debugging.
+**Touches:** new `Diagnostics.swift`, Settings General tab.
+
+**Context:** When a user reports "Type Slowly didn't work" or "the
+HUD froze on a long AI call" there's no quick way to dump runtime
+state. NSLog goes to Console.app, which is opaque to most users.
+
+**Requirements:**
+
+- `Diagnostics.snapshot() -> String`:
+  - Version + build commit + AppBrand.version
+  - Engine kind (EventTap / Carbon / Monitor) + AX trusted
+  - Active surface state (#A42's enum)
+  - Active tasks (action / streaming / watchdog)
+  - Provider readiness + last test results
+  - Pasteboard changeCount + last source-app bundleID
+  - Store item count + total blob size
+  - Last action outcome (action ID + outcome case)
+- Settings → General → "Copy diagnostics" button → clipboard.
+
+---
+
+### #A39 — Unified action execution pipeline + PasteCommitter
+
+**Status:** planned. Architectural cleanup with a real bug-prevention
+payoff. Surfaced by an external code-review pass; the same review
+found a confirmed bug (Type Slowly via per-action hotkey was pasting
+as plain ⌘V — fixed in 0.42.x as a one-off patch), which is the
+canonical example of *why* the pipeline needs to be unified.
+**Depends on #A40 (SelectionCaptureService).** Commit unification
+alone is insufficient — direct-hotkey and HUD paths also diverge on
+*source capture* (the former is selection-first via simulated ⌘C,
+the latter reads stored history). Unified inputs require the unified
+`CapturedInput { item, sourceApp, captureGeneration, pasteboardChange }`
+structure that #A40 produces.
+**Touches:** new `ActionExecutionPipeline.swift` + `PasteCommitter.swift`,
+`main.swift` `actionHotkeyDidFire(actionID:)`, `commitOutcome(_:savedApp:)`,
+`deferPasteAfterAILoad(savedApp:)`, BigHUD commit path,
+Settings playground execute path.
+**Context:** Today multiple entry points (BigHUD commit, ⌥⌘⏎ Paste & Keep,
+per-action direct-trigger, hold-preview commit, deferred AI paste,
+Settings playground) each construct their own switch over `ApplyOutcome`
+to decide what to do with it. The patches stay in step *by hand*; the
+Type Slowly bug existed for many versions because the direct-trigger
+switch collapsed `.alternativeCommit(_, _)` to plain paste. Future
+surfaces (Services menu, drag-out) would inherit the same risk.
+
+**Requirements:**
+
+- `ActionExecutionPipeline.execute(action:, on item:, sourceApp:) async
+  -> ApplyOutcome` — single async entry point. Handles preview-token
+  invalidation, AI streaming wiring, watchdog setup.
+- `PasteCommitter.commit(_:into:, mode:)` — single sync entry point for
+  side-effect application:
+  - `.preview(item)` / `.alternativeCommit(item, .standardPaste)` →
+    `performStandardPaste`.
+  - `.alternativeCommit(item, .typeSlowly(delay, jitter))` →
+    `performTypeSlowly`.
+  - `.alternativeCommit(item, .typeFast)` → `performTypeSlowly`
+    with fast preset.
+  - `.sideEffect(_, perform)` → `perform()` + success sound.
+  - `.failed(original, reason, _)` → mode-dependent: HUD/Playground
+    commits paste the original (current `commitOutcome` behaviour);
+    direct-trigger commits play the failure sound only (no paste —
+    current `actionHotkeyDidFire` behaviour). Mode enum drives this.
+- `PasteCommitter.Mode` enum: `.standard`, `.keepingHUDOpen`,
+  `.deferredAI`, `.directHotkey`, **`.previewOnly`** (added per
+  adversarial pass). The `.previewOnly` mode is for the Settings
+  playground: it rejects `.sideEffect` and `.alternativeCommit`
+  with a visible "test-only" notice so a `Run` button can never
+  accidentally write to the system pasteboard, type into the
+  frontmost app, or open Finder. The playground renders only
+  through `TestOutputPane`; the committer is the single guard
+  that prevents test runs from escaping the sandbox.
+- **Mode × outcome policy table**, written explicitly to avoid
+  the side-effect-in-`.keepingHUDOpen` ambiguity caught by the
+  adversarial pass:
+
+  | Mode | `.sideEffect` | `.alternativeCommit` | `.failed` |
+  |---|---|---|---|
+  | `.standard` | run + success sound, close HUD | dispatch by style | paste original |
+  | `.keepingHUDOpen` | **close HUD before perform** (side effects steal focus, leaving HUD open behind a Finder window confuses) | dispatch by style, keep HUD open | paste original, keep HUD open |
+  | `.deferredAI` | run + success sound | dispatch by style | failure sound only |
+  | `.directHotkey` | run + success sound | dispatch by style | failure sound only |
+  | `.previewOnly` | **REJECT** with `"side effect not runnable from playground"` notice | **REJECT** with `"\(commitStyle) not runnable from playground"` notice | render failure inline |
+
+- **Typed terminal state from the pipeline** (per adversarial pass):
+  `enum PipelineResult { case completed(ApplyOutcome, generation: Int), case cancelled(generation: Int), case failed(Error, generation: Int) }`. The committer requires a matching active generation token before applying. This closes the race where a user clicks ✕ in MiniHUD at the same moment the provider delivers the final SSE chunk: cancellation clears `pendingDeferredPasteApp` *first*, then awaits the task's cancellation, then any subsequent `.completed` arrival is a no-op because its generation no longer matches.
+- Every entry point is rewritten to call the pipeline + committer.
+  Direct switches on `ApplyOutcome` in main.swift go away.
+- Regression tests from #A45: (i) triggering Type Slowly via a per-
+  action hotkey produces character-by-character typing, not a ⌘V
+  paste; (ii) `.previewOnly` mode rejects `.sideEffect` even when
+  the test action would otherwise have opened a URL; (iii) cancel
+  + completion race produces zero paste into the frontmost app.
+
+**Implementation notes:**
+
+- `PasteCommitter` is `@MainActor`; pipeline is async but commits land
+  through the committer on MainActor.
+- Keep `pendingDeferredPasteApp` as the only "where to paste later"
+  storage; both pipeline and committer read it through a helper.
+- The 0.42.x Type Slowly patch in `actionHotkeyDidFire` should be
+  the second-to-last code change to that function — after this lands,
+  the function becomes a thin wrapper around the pipeline.
+
+---
+
+### #A40 — SelectionCaptureService extraction
+
+**Status:** planned. Refactor; no user-visible change beyond fewer
+regressions in the selection-first paths.
+**Touches:** new `SelectionCaptureService.swift`, `main.swift`
+selection-first sites (per-action hotkey, Cut & Replace, hold-preview),
+`PasteSimulator.swift` (already has `simulateCopyAndAwaitChange`).
+**Context:** The selection-first sequence (write a sentinel to
+pasteboard, simulate ⌘C, await pasteboard change, snapshot all
+representations losslessly, optionally promote to history) is currently
+inlined in multiple places. Each copy carries small variations: how
+long to wait, whether to promote, what to do on empty. The behaviour
+needs to be identical across surfaces so a new surface (e.g. macOS
+Services menu, #A23) inherits the same correctness.
+
+**Requirements:**
+
+- Single typed entry point:
+
+  ```swift
+  enum SelectionCaptureError: Error {
+      case noSelection           // pasteboard didn't change within timeout
+      case timeout(Double)
+      case inaccessible          // AX not granted
+      case emptyPayload          // pasteboard changed but no usable type
+  }
+
+  func captureSelection(sourceApp: NSRunningApplication?,
+                        timeout: TimeInterval = 0.5,
+                        promoteToHistory: Bool = false)
+      async -> Result<ClipboardItem, SelectionCaptureError>
+  ```
+- Source-app metadata (`sourceBundleID`, `sourceAppName`,
+  `sourceWindowTitle`) is captured at entry time, not inferred later.
+- `promoteToHistory: true` adds the captured item to ClipboardStore
+  through the normal `store.add(_:)` path so dedup / 500-item cap /
+  Watcher.ignoreNextChange all behave correctly.
+- Test coverage in #A45 against a fake pasteboard.
+
+---
+
+### #A41 — Import / export merge audit + ImportReport
+
+**Status:** planned. Real correctness gap. Currently `Import…` and
+`Replace from file…` claim to handle "configuration" wholesale, but
+the merge implementation may skip `customTransformations`, `customTitles`,
+`actionOrder`, `actionHotkeys`, `testSamples`. Aborting on first
+duplicate is silent, which mis-represents the partial result.
+**Touches:** `ActionConfig.merge(from:)` (or wherever the merge lives),
+new `ImportReport` struct, `SettingsWindow.swift` General tab UI.
+
+**Requirements (phase 1 — audit):**
+
+- Document for each `ActionConfig` field exactly what Import does:
+  merge / replace / skip / keep-current. Currently undocumented.
+- Identify the gaps (likely candidates: customTransformations
+  per-id merge, customTitles per-id merge, actionOrder per-kind
+  merge, actionHotkeys conflict policy on import, testSamples merge).
+- Decide a unified strategy per field. Capture in
+  SKILL.md → "Persistence" section.
+
+**Requirements (phase 2 — implementation):**
+
+- `ImportReport` struct:
+
+  ```swift
+  struct ImportReport {
+      var addedActions: [String]        // ids
+      var skippedDuplicates: [String]
+      var replacedActions: [String]
+      var hotkeysStolen: [(actionID: String, fromActionID: String, chord: String)]
+      var hotkeysSkipped: [(actionID: String, chord: String, reason: String)]
+      var preferencesChanged: Bool
+      var samplesUpdated: Int
+  }
+  ```
+- Settings → General "Import…" shows a follow-up sheet rendering the
+  report: "Imported 12 actions, skipped 2 duplicates, 1 hotkey
+  reassigned, preferences kept." Includes a "Show details…" expander.
+- Replace mode is unaffected (always replaces wholesale); only the
+  merge variant gets the report.
+
+---
+
+### #A42 — State machines (lite) for surfaces + action lifecycle
+
+**Status:** planned. Refactor; reduces a class of "this flag must be
+nil before that one is set" defensive code.
+**Touches:** `AppDelegate` flag fields, `MiniHUDController.swift`,
+`BigHUD.swift`.
+**Context:** Today main.swift carries many implicit-state flags
+(`actionHotkeyTask`, `bigHUDOpenTask`, `aiStreamingTask`,
+`pendingDeferredPasteApp`, `pasteAndKeepDidFire`, `bigHUDShowSession`).
+Every new surface (region capture, MiniHUD, deferred AI) adds another
+flag that must guard against the others. Two small enums collapse the
+combinatorics.
+
+**Requirements:**
+
+- `enum DrPasteSurfaceState`:
+  - `.idle`
+  - `.bigHUDGesture(session: BigHUDSession)`
+  - `.bigHUDSummon(session: BigHUDSession)`
+  - `.miniHUDDirectAction(token: MiniHUDToken)`
+  - `.miniHUDDeferredPaste(token: MiniHUDToken)`
+  - `.regionCaptureArmed`
+  - `.regionCaptureSelecting(origin: CGPoint)`
+- `enum ActionRunState`:
+  - `.idle`
+  - `.capturingSelection`
+  - `.applyingLocal`
+  - `.streamingAI(token: PreviewToken)`
+  - `.waitingDeferredPaste`
+  - `.committing`
+  - `.cancelled`
+  - `.failed(Error)`
+- Both expose a `transition(to:)` method that asserts legal moves and
+  performs side-effects (e.g. `cancelAllPriorTasks()` on transition
+  to `.idle`). Illegal moves are NSLog'd and recovered to `.idle`
+  rather than crashing.
+
+**Implementation notes:**
+
+- DO NOT introduce a heavyweight Mealy / Moore framework. Two flat
+  enums + a switch in `transition(to:)` is enough.
+- The watchdog patterns (#245 fix) survive as transition side-effects
+  rather than free-floating `Task.detached` blocks.
+
+---
+
+### #A43 — PreferencesKeys enum (single source of truth for UserDefaults)
+
+**Status:** planned. Cheap win. ~30 minutes work, prevents subtle
+"key drift" bugs in Factory Reset and Settings.
+**Touches:** new `PreferenceKeys.swift`, every UserDefaults string
+literal call site, `SettingsWindow.swift` Factory Reset path.
+**Context:** UserDefaults keys are currently spelled as raw strings in
+several files. Factory Reset wipes them by iterating a hand-maintained
+list. SKILL.md APPENDIX B lists them by hand. These can drift. One enum
+catches all three at compile time.
+
+**Requirements:**
+
+- `enum PreferenceKeys { static let hudFontScale = "drpaste.hud.fontScale"
+  ; static let cheatSheetDisabled = "drpaste.cheatSheet.disabled" ; … }`
+- Every UserDefaults call moves to `PreferenceKeys.<name>`.
+- Factory Reset uses `Mirror(reflecting: PreferenceKeys.self)` or a
+  hand-listed `static let allKeys: [String]` to iterate.
+- SKILL.md APPENDIX B references the enum by symbol, not by string,
+  so doc + code drift together.
+
+---
+
+### #A44 — ProviderResolver tighten-up + ResolvedProvider struct
+
+**Status:** planned. Builds on the partial work already shipped in
+0.35.x (resolveExecutorProvider helper, cheapestEnabledImageProvider
+cache). Promotes a scattered helper into an explicit type so consumers
+can't accidentally use the wrong field.
+**Touches:** new `ProviderResolver.swift`, `ResolvedProvider.swift`,
+call sites in `AIProvider.swift` runtime, `ActionEditor.swift`
+provider picker, `BigHUD.swift` / `MiniHUD.swift` chrome,
+`SettingsWindow.swift` action row badge.
+
+**Requirements:**
+
+- `struct ResolvedProvider`:
+  - `providerID: String`
+  - `providerLabel: String`
+  - `providerKind: ProviderKind`
+  - `modelLabel: String`
+  - `isRerouted: Bool`
+  - `rerouteReason: String?`
+  - `capabilityUsed: AICapability` (`.text` / `.imageEdit` / `.textToImage`)
+  - `recoveryHint: String?`
+- `enum ProviderResolver { static func resolve(action:, operationKind:,
+  config: ProvidersConfig) -> ResolvedProvider }` — pure function.
+- Every UI consumer reads from a `ResolvedProvider` instance; no more
+  per-surface "look up provider then check if rerouted" recipes.
+- Existing `resolveExecutorProvider` collapses into a thin wrapper.
+
+---
+
+### #A45 — Contract tests: registry, migrations, provider resolution, commits
+
+**Status:** planned. Next maturity step beyond pure-module tests in
+#A4. Adds *behaviour* tests that lock the product's invariants in place.
+**Touches:** `Tests/DrPasteTests/*.swift`. Some tests can use a fake
+`AIProvider`, fake `NSPasteboard`, fake `URLSession`; others can
+run against real ActionRegistry with a temp Application Support dir.
+
+**Tests to add (initial set):**
+
+- `ActionRegistry.runFirstLaunchSeeds`: each seed version is idempotent;
+  v3 → v4 → v5 → v6 transitions add expected descriptors and don't
+  clobber user edits.
+- `CuratedDefaults.enabledByDefault`: snapshot of first-launch enabled
+  set; failing test catches accidental defaulting of new actions.
+- `ActionRegistry.reorder`: identity action always pinned first;
+  reorder respects content-kind grouping.
+- `ActionRegistry.isEnabled`: returns correct value for built-in,
+  customAI, customTransformation across enabledFlags / descriptor.enabled.
+- `ActionConfig` import/export: replace replaces, merge merges per
+  documented policy (#A41).
+- `ProviderResolver`: explicit provider wins; default fills in;
+  image-incapable default → cheapest image-capable fallback in
+  cost order; isRerouted flag matches reality.
+- `HotkeyRecorder.conflicts`: reserved DrPaste chords are rejected;
+  system chords (Force Quit etc.) are rejected with the right hint;
+  conflicts auto-steal.
+- `ActionRegistry.pruneOrphanHotkeys`: hotkeys for deleted actions
+  are removed on launch.
+- **#A39 regression test:** triggering Type Slowly via a per-action
+  hotkey produces character-by-character typing, not a single paste.
+- `PasteboardWriter.write`: representations land in correct order;
+  `watcher.ignoreNextChange` is set before the write completes.
+- `APIKeyStorage` fallback path: round-trip with Keychain off
+  goes through JSON file with correct permissions.
+- Fake-stream AI: partial chunks accumulate; finish marker breaks
+  loop; cancellation aborts mid-stream; idle-timeout hits 90s.
+- `AppendAccumulator`: rich + image bridge, files-strict track,
+  non-image-file rejection (failure sound path).
+- `ScreenRegionCapture`: captured item carries sourceApp metadata.
+
+**Implementation notes:**
+
+- Use `XCTestCase.measure` for the rich-text round-trip path —
+  reflow throttle (5–10 Hz) shouldn't be regressed accidentally.
+- Tests must NOT touch the real Application Support directory; use
+  a `TempDir.swift` helper that swaps `AppStorage.dataDir` for a
+  temporary URL per test.
+
+---
+
+### #A38 — Investigate transparent in-place MiniHUD → BigHUD promotion
+
+**Status:** planned. Follow-up to #A12.
+**Touches:** `MiniHUD.swift`, `BigHUD.swift`, transition coordinator.
+**Context:** Once #A12 is in users' hands with the conservative
+"close MiniHUD first, then open BigHUD" transition, evaluate whether
+users would prefer a smooth in-place expansion. Decision is held back
+because animations across two different NSPanel kinds are non-trivial
+and could regress reliability.
+**Requirements:**
+- Defer until #A12 has 2+ weeks of real-world feedback.
+- If proceeding: morph MiniHUD's panel into BigHUD's panel via a single
+  frame animation + content cross-fade; suppress close+reopen.
+
+---
+
 ## Changelog
 
 Shipped versions. Each bullet is one observable change. Implementation-level
@@ -1164,6 +2841,314 @@ recovered via `git log --follow BACKLOG.md` and inspected with
 `git show <commit>:BACKLOG.md`. The early revisions are bilingual and
 include verbose technical reasoning per "Правка"; this current revision is
 the curated, English-only working document.
+
+### 0.50.0 — Adversarial review integration (hot-patch + 8 spec deepens)
+
+Second adversarial review pass on the project. Unlike previous rounds
+which echoed back consensus, this one — explicitly framed as
+"attack mode" — surfaced one real production bug and eight concrete
+spec refinements that hadn't been caught by our own thinking. Version
+jumped 0.42.4 → 0.50.0 to mark the inflection: from here the project
+plan reflects the adversarial-pass corrections.
+
+**Hot-patch (the bug):**
+
+- **CuratedDefaults legacy IDs lose user state on upgrade.** In 0.42.4
+  the seed switched to current IDs (`builtin.json_keys`,
+  `builtin.md_headings`, `builtin.md_links`) and we kept the legacy
+  `_extract_` IDs as metadata/icon aliases on the assumption that
+  saved configs would gracefully degrade. They wouldn't: an upgrading
+  user with hotkey ⌥⌘K bound to `builtin.json_extract_keys` would
+  see the freshly-seeded `builtin.json_keys` action appear next to
+  their orphaned customisation. The hotkey looks like it stopped
+  working; the renamed action looks like it disappeared.
+  `remapLegacyActionIDs(into:)` now runs **before** seedTransformations
+  in `runFirstLaunchSeeds`, walking enabledFlags / customTitles /
+  actionHotkeys / actionOrder / actionTestSamples and re-keying
+  legacy → current. Legacy aliases in metadata/icons retire in a
+  later release once no live install can still be running pre-0.50.
+
+**Backlog spec refinements (the eight points that landed):**
+
+- **#A64** — built-in description overrides now carry a
+  `baseDefaultHash` so a future better-default-description doesn't
+  silently hide behind a stale user override. Empty `description`
+  no longer renders as a dead empty second line — fallback chain
+  ends with a generated descriptor summary ("Regex replace · Applies
+  to Text, Code"). No backfill of bundle defaults into config (i18n
+  trap). Explicit dependency on #A41 for import/export merge policy.
+- **#A39** — adds `.previewOnly` PasteCommitter mode that rejects
+  side effects + alternativeCommit for Settings playground (closes
+  the "Run test ran an action that opened Finder" failure mode).
+  Adds explicit mode × outcome policy table including side-effect
+  handling in `.keepingHUDOpen`. Adds typed terminal state
+  `.completed / .cancelled / .failed(_, generation:)` so a cancel
+  + stream-completion race produces a no-op, not a stray paste.
+  Explicit dependency on #A40 for unified CapturedInput.
+- **#A59** — release-to-paste hint state is now
+  `{ successfulCommits, lastShownVersion, lastCommitDate,
+  resetGeneration }`. Factory Reset bumps generation; staleness
+  window of 90 days re-shows once. Closes the "year-old user
+  reopens, has counter past threshold" gap.
+- **#A1** — release-day checklist gains a `try!` → boot-phase
+  fatal UI replacement. Three-button panel ("Open folder", "Reset
+  storage", "Quit") for the sandboxed-build case where Application
+  Support is recoverably unavailable. `try!` stays defensible
+  *only* if this recovery path exists.
+
+**SKILL.md refinement:**
+
+- Trap-comments principle clarified: comments follow the *invariant
+  owner*, not the call site. When extracting code, migrate trap
+  comments into the new owner's API doc or into a regression-test
+  name. Stale local comments at the old call site become misleading
+  rather than informative. The original principle ("trap memory
+  stays in code, not external docs") remains.
+
+**Process note:**
+
+The adversarial-pass technique — explicit prompt-level requirement
+for failure modes with `(gesture → code path → user observation →
+fix)` shape, minimum 2 findings per target, ban on consensus
+phrasing and conclusion sections — produced 11 of 12 actionable
+findings (only one was already-handled, and that was correctly
+identified as such). This is the calibration baseline for future
+rounds: ask for attack mode explicitly, constrain the output shape,
+and the reviewer's AI on the other side will produce real value
+instead of consensus mirroring.
+
+### 0.42.4 — Hot-patch: built-in action ID sync (CuratedDefaults + metadata + icons)
+
+A test run on a second machine surfaced a class of ID rename drift:
+`DefaultTransformationSeed` was bumped to current IDs
+(`builtin.json_keys`, `builtin.md_headings`, `builtin.md_links`)
+but three companion side tables still referenced the legacy
+`_extract_` IDs that no longer exist as seeds.
+
+**Symptom:** `Extract Keys` and `Extract Headings` did not appear in
+the default-enabled set on fresh installs (CuratedDefaults pointed at
+non-existent action IDs); Settings rows rendered without descriptions
+for the current actions and with `gearshape` fallback icons.
+
+**Fix:**
+
+- `CuratedDefaults.enabledByDefault` switched
+  `builtin.json_extract_keys` → `builtin.json_keys` and
+  `builtin.md_extract_headings` → `builtin.md_headings`. Fresh installs
+  now enable both as intended.
+- `BuiltinActionEditor.descriptions` gained entries for the current
+  seed IDs (`builtin.json_keys`, `builtin.md_headings`,
+  `builtin.md_links`). Legacy `_extract_` descriptions kept as
+  aliases so users whose saved configs still carry the old IDs (or
+  whose ActionTestSamples lookup paths use the alias) continue to
+  see proper descriptions.
+- `BuiltinActionIcons.symbolName` gained matching cases for the
+  three current IDs; legacy cases kept.
+
+Legacy aliases will be removed in a dedicated migration task at a
+later date (the ID drift exists in real saved configs in the wild,
+not just test fixtures).
+
+### 0.42.3 — UX micro-fixes from the final UX/UI review
+
+Three small UX touch-ups + one user-requested polish, all
+applied immediately. The bigger UX recommendations from the same
+review (#A63–#A69, plus Welcome refocus in #241) live in backlog.
+
+- **HUD footer wording: `C save` and `esc cancel`** (`BigHUD.swift`).
+  Was `C copy` and `esc close`. "Copy" read as system ⌘C and confused
+  what the key does inside the HUD; "save" honestly describes the
+  promote-preview-to-history-plus-pasteboard semantic. "Close"
+  understated the cancel intent; "cancel" matches what esc actually
+  does. Both modes (Gesture / Limited) get the new wording.
+- **Settings action row — original title inline in grey when
+  renamed** (`SettingsWindow.swift`). Was a second-line
+  "default: <title>" subtitle that doubled the row's vertical
+  footprint. Now an inline secondary-coloured title next to the
+  user's custom title in the same row. The dim colour already reads
+  as "the original", no `default:` prefix needed. User-requested
+  polish on top of the colleague's title/description recommendation
+  (the bigger split work lives in #A64).
+- **HotkeyRecorder footer hint** (`HotkeyRecorder.swift`). Under the
+  recorder field, when a hotkey is bound, a one-line caption now
+  spells out the dual semantics: "Tap to run · hold ⌥⌘ to preview
+  in HUD". Closes the in-product discovery gap for the per-action
+  hotkey hold-preview feature — previously documented only in
+  HELP.md and Welcome window. Part of #A67; the cheat-sheet half
+  (per-action chord legend " — tap run, hold preview" suffix) is
+  still queued.
+- **Menu-bar tooltip reflects accumulator state** (`main.swift`
+  status item). Was the static "DrPaste — clipboard history" at
+  all times. Now updates dynamically: idle = unchanged; rich-text
+  session active = "Append Copy: rich-text accumulator active
+  (red). Press ⌥⌘S to add more, ⌥⌘V to paste."; files session
+  active = "Append Copy: files accumulator active (cyan). Select
+  more files and press ⌥⌘S to add." Hovering the menu-bar icon
+  for a beat now answers "what does the coloured dot mean" without
+  the user opening HELP.md. Part of #A60; the Settings → General
+  "Append Copy" explanation row is still queued.
+
+### 0.42.2 — Quick-wins from the code-review pass
+
+Second pass over the same code-review session. Eight point patches —
+each small, all correctness or performance wins:
+
+- **Pasteboard polling timeout 0.25 s → 0.40 s + bundleID logging**
+  (`PasteSimulator.simulateCopyAndAwaitChange`). Electron / Java /
+  Office / Remote Desktop apps sometimes take 250–350 ms to fulfil a
+  synthetic ⌘C; the earlier budget produced false "selection capture
+  failed" outcomes on per-action hotkeys and Append Copy. Fast-path
+  latency is unchanged (loop exits on the first `changeCount` tick).
+  On timeout, the frontmost app's bundleID is now logged so problem
+  apps are diagnosable.
+- **Shared CIContext** (`ImageActions.swift`). Two filter sites built
+  a fresh `CIContext` per call; CIContext init allocates GPU/Metal
+  resources and loads shader caches. Switched to one static
+  `sharedCIContext`. Faster image actions, especially when the user
+  arrow-keys across several image actions in the HUD.
+- **Safer AX bridge cast** (`ClipboardModel.swift` `SourceResolver.
+  windowTitle`). Was `focusedWindow as! AXUIElement`. Replaced with a
+  `CFGetTypeID(focused) == AXUIElementGetTypeID()` check + the bridge
+  cast — if the platform ever returns a different CF type
+  (private-frameworks, third-party AX shims, future macOS) the
+  function returns nil instead of crashing.
+- **Doc fix: clipboard index path.** Code uses `index.json`, docs said
+  `clipboard.json`. Docs corrected; the path constant lives at
+  `ClipboardStore.indexURL`, line 188 of ClipboardModel.swift.
+- **Doc fix: fallback-only UserDefaults key.** Code uses
+  `"drpaste.api_keys.use_fallback_only"`, docs said
+  `"drpaste.fallbackOnly"`. Docs corrected; release-day Keychain
+  migration (#A1) and any future Factory Reset key registry need the
+  real string.
+- **UsageProbe `Today` is local-day, not UTC** (`UsageProbe.swift`).
+  Earlier comment claimed "midnight UTC"; the code uses
+  `Calendar(identifier: .gregorian).startOfDay(for: Date())` which is
+  the user's local-time midnight. Local-day is the more intuitive
+  default ("today" matches the user's wall clock, not their region
+  offset). Comment + code-level note brought into alignment; no
+  behaviour change.
+- **MiniHUD "Done · X.Xs" pill now also fires for image-AI**
+  (`main.swift` `actionHotkeyDidFire`). The gate was `action is
+  AIAction` only, which silently dropped the completion UX for image
+  AI (`AIImageAction`) and text-to-image (`AITextToImageAction`) —
+  exactly the actions with the longest perceived wait. Widened the
+  gate to include both.
+- **PasteboardWriter only declares readable types.** Earlier code
+  declared every type in `typesOrdered` and silently skipped the
+  `setData` call when the on-disk blob couldn't be read. Result:
+  receiving apps that preferred the missing type over plain text got
+  an empty paste. Now a two-pass write loads all blobs first,
+  declares only the readable subset, and falls back to
+  previewText/previewImage if every blob is missing. Missing blob
+  count is NSLog'd for diagnostics.
+
+### 0.42.1 — Hot-patch: Type Slowly via per-action hotkey
+
+External code-review pass on the codebase surfaced a confirmed bug:
+a per-action hotkey bound to Type Slowly committed the result as a
+plain ⌘V paste instead of typing character-by-character. The action's
+output (`ApplyOutcome.alternativeCommit(item, .typeSlowly(delay,
+jitter))`) was being collapsed into `performStandardPaste(item, …)` by
+the direct-trigger branch in `actionHotkeyDidFire(actionID:)` — line
+997 of main.swift carried a wildcard pattern
+`case .preview(let result), .alternativeCommit(let result, _)`. The
+BigHUD commit path (`commitOutcome`) handled all three styles
+correctly; the direct-trigger path did not.
+
+Patched with explicit per-style branches mirroring `commitOutcome`. A
+regression test is queued under #A45.
+
+The same review surfaced six structural recommendations now in the
+active backlog (#A39 unified pipeline, #A40 SelectionCaptureService,
+#A41 import audit, #A42 surface state machines, #A43 PreferenceKeys
+enum, #A44 ProviderResolver tighten-up, #A45 contract tests). #A39 is
+the prevention layer for this class of bug — Type Slowly was caught
+only because someone reviewed the direct-trigger code by hand; a
+unified `PasteCommitter` would have made the bug structurally
+impossible.
+
+### 0.42.0 — Small-bug sweep + medium UX polish
+
+Flight-test session ended with a 27-item idea / bug list. After a
+follow-up discussion settling the design questions for each item,
+27 new entries (#A12–#A38) landed in the active backlog. This release
+ships the first eight: four small-bug fixes, four medium UX upgrades.
+The larger user-visible features land in the next release.
+
+**Small bugs (#A32, #A34, #A35, #A36):**
+
+- **Unicode reverse table denormalize bug.** Applying `Plain (strip
+  styling)` to a `𝐭𝐡𝐞 𝐪𝐮𝐢𝐜𝐤` Math Bold input returned `the bnick`
+  instead of `the quick` — every `q` collapsed to `b`, every `u` to `n`,
+  and so on. Root cause: `customReverse` was built from `upsideDownMap`,
+  which contains self-swapping ASCII pairs (`b: q` plus `q: b`,
+  `d: p` plus `p: d`, `n: u` plus `u: n`). The reverse map ended up
+  with `reverse[q] = b`, `reverse[n] = u`, etc. — so any plain ASCII
+  letter that fell through NFKC then got corrupted in the second pass.
+  Filter added: skip entries whose `fancy` form is itself a plain ASCII
+  glyph, keeping the reverse map to genuine non-ASCII keys only.
+- **Save button in "+ New Built-in".** Picking a built-in handler in
+  the "+ New" dialog and clicking Save sometimes felt like a no-op
+  even though the descriptor was being touched: if the picked handler
+  was disabled by curated defaults, the title-and-hotkey writes ran but
+  the action stayed hidden, looking identical to "Save did nothing".
+  `save()` now calls `registry.setEnabled(true, …)` on the
+  `.createNew + .builtin` branch only — explicit user gesture
+  ("I want this handler in my list") overrides the curated default
+  for that one action.
+- **Extract links / headings on Rich text.** Both engines walked
+  `previewText`, which for a `.richText` clip is the rendered string
+  with markup stripped — so headings and link URLs the user could
+  clearly see in the formatting were invisible to the engine.
+  `CustomTransformationAction.apply` now special-cases the two engines:
+  when input is rich text, recover the markdown source via
+  `RichTextHelpers.attributedStringToMarkdown(_:)` on the RTF/RTFD
+  representation and feed that to the engine. `applicableTypes`
+  widened from `[.markdown]` to `[.markdown, .text, .richText]`, with a
+  one-shot migration (`expandMarkdownExtractTypesIfNeeded`) bumping
+  existing installs that still have the legacy single-type set.
+- **Built-in handler picker visibility audit.** Descriptor-backed
+  bundled handlers (`builtin.md_to_plain`, `builtin.md_headings`,
+  `builtin.md_links`, `builtin.cyrillic_translit`, the Unicode pseudo-
+  font family) were filtered out of the "+ New Built-in" picker because
+  they already had Settings rows. That produced an inconsistency: a
+  user couldn't pick "Markdown → plain" or "Extract links" as a New
+  Built-in even though they're in the Settings list. Filter removed —
+  every `builtin.*` action is pickable, except the identity anchor.
+
+**Medium UX upgrades (#A24, #A25, #A26, #A27):**
+
+- **Markdown → Rich text action.** New `builtin.md_to_rich` action
+  parses plain Markdown source (bold, italic, inline code, links) into
+  an NSAttributedString and writes RTFD/RTF/HTML/plain reps to the
+  pasteboard. Pastes into Mail / Pages / Notes / Word with formatting
+  intact. Curated-on by default; appears in the Markdown category.
+- **Unicode Fancy on markdown markup.** New
+  `builtin.font_markdown` action interprets inline markdown markup as
+  per-span style hints: `**bold**` → 𝐛𝐨𝐥𝐝 (Math Bold), `*italic*` →
+  𝑖𝑡𝑎𝑙𝑖𝑐 (Math Italic), `***x***` → bold-italic, `` `code` `` →
+  𝚌𝚘𝚍𝚎 (Math Monospace), `~~strike~~` → S̶t̶r̶i̶k̶e̶ (combining
+  longstroke per char). Markup characters dropped from output. Plain
+  text outside markup stays unstyled. Backed by a new
+  `markdownAware` case in `UnicodeFontStyle` so the existing
+  `unicodeStyle` engine drives it without a new engine type.
+- **ASCII art: rich text + monospaced + tighter default width.** Output
+  is now an NSAttributedString with `NSFont.monospacedSystemFont(11pt)`
+  so the result pastes into Mail / Notes / Pages / Word with column
+  alignment preserved. Plain-text targets still receive the bare
+  string via `.string`. Default column count dropped from 100 → 40 —
+  fits comfortably in chat messages, code comments, Twitter/X posts.
+  The `render(image:outWidth:)` API now accepts a width parameter so
+  #A16 (Built-in editor redesign) can surface a slider later.
+- **Type Slowly: 1.5× faster + animated playground preview.**
+  `defaultBaseDelay` dropped from 0.2 → 0.133 s/char (still slow
+  enough to defeat input-field throttling, but 13 s for a 100-char
+  paragraph instead of 20 s). TestOutputPane gets a new
+  `TypeSlowlyPreview` view that animates the output character-by-
+  character at the exact production delay, so the playground is
+  bit-for-bit honest about real-world speed — no "2× faster for
+  illustration" — and the user can dial the delay against perceived
+  cadence before triggering against real input.
 
 ### 0.32.9 — Edit-button label + small-system fallback + Playground persistence
 

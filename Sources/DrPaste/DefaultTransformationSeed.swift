@@ -33,7 +33,16 @@ enum DefaultTransformationSeed {
     ///     on existing installs without nuking user customizations.
     /// 4 — added "К → K  Cyrillic transliteration" (Russian / Ukrainian /
     ///     Belarusian / Bulgarian / Serbian / Macedonian with auto-detect).
-    static let currentSeedVersion: Int = 4
+    /// 5 — expanded `builtin.md_headings` and `builtin.md_links` from
+    ///     [.markdown] to [.markdown, .text, .richText] so they're
+    ///     applicable to plain text and rich-text clips too. Migration
+    ///     in `ActionRegistry.expandMarkdownExtractTypesIfNeeded` patches
+    ///     existing installs without touching user-edited applicableTypes.
+    /// 6 — added `builtin.font_markdown` (Markdown styles → Unicode):
+    ///     parses **bold** / *italic* / `code` / ~~strike~~ and applies
+    ///     pseudo-fonts span-by-span. Seeded via the normal new-entry
+    ///     path in `seedTransformations`; no extra migration required.
+    static let currentSeedVersion: Int = 6
 
     /// All bundled transformations. IDs match the legacy hardcoded action IDs
     /// so existing user customizations carry over without remapping.
@@ -75,8 +84,8 @@ enum DefaultTransformationSeed {
 
             // Markdown.
             descriptor(id: "builtin.md_to_plain",        title: "Markdown → plain",   engine: .mdToPlain,         params: [:], types: [.markdown]),
-            descriptor(id: "builtin.md_headings",        title: "Extract headings",   engine: .mdExtractHeadings, params: [:], types: [.markdown]),
-            descriptor(id: "builtin.md_links",           title: "Extract links",      engine: .mdExtractLinks,    params: [:], types: [.markdown]),
+            descriptor(id: "builtin.md_headings",        title: "Extract headings",   engine: .mdExtractHeadings, params: [:], types: [.markdown, .text, .richText]),
+            descriptor(id: "builtin.md_links",           title: "Extract links",      engine: .mdExtractLinks,    params: [:], types: [.markdown, .text, .richText]),
 
             // URL.
             descriptor(id: "builtin.url_strip_tracking", title: "Clean URL",          engine: .urlStripTracking,  params: [:], types: [.url]),
@@ -109,6 +118,20 @@ enum DefaultTransformationSeed {
             unicodeFontDescriptor("builtin.font_squared",               .squared,          prefix: "🄰"),
             unicodeFontDescriptor("builtin.font_filled_squared",        .filledSquared,    prefix: "🅰"),
             unicodeFontDescriptor("builtin.font_upside_down",           .upsideDown,       prefix: "∀"),
+            // Markdown-aware stylization. Parses **bold** / *italic* /
+            // ***bold-italic*** / `code` / ~~strike~~ inline markdown
+            // markup and applies the matching Unicode pseudo-font style
+            // span-by-span. Markup characters are dropped — output is
+            // plain Unicode-styled text. Useful for Twitter / X,
+            // Telegram bios, LinkedIn captions, Discord profiles,
+            // anywhere markdown isn't rendered but emphasis matters.
+            descriptor(
+                id: "builtin.font_markdown",
+                title: "**md** → 𝐦𝐝  Markdown styles → Unicode",
+                engine: .unicodeStyle,
+                params: ["style": UnicodeFontStyle.markdownAware.rawValue],
+                types: [.text, .markdown]
+            ),
             // Reverse pass — strip any styled Unicode back to plain ASCII.
             // Title visualises the direction: stylized A → plain ABC.
             descriptor(

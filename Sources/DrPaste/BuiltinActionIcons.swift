@@ -34,6 +34,8 @@ enum BuiltinActionIcons {
         case "builtin.cyrillic_translit":    return "character.book.closed"
         case "builtin.json_pretty":          return "curlybraces"
         case "builtin.json_minify":          return "curlybraces.square"
+        // Current seed ID is `builtin.json_keys`; legacy alias kept below.
+        case "builtin.json_keys":            return "list.bullet"
         case "builtin.json_extract_keys":    return "list.bullet"
         case "builtin.json_flatten":         return "rectangle.compress.vertical"
         case "builtin.json_remove_nulls":    return "minus.circle"
@@ -46,6 +48,11 @@ enum BuiltinActionIcons {
         case "builtin.table_to_json":        return "tablecells.badge.ellipsis"
         case "builtin.table_to_md":          return "tablecells"
         case "builtin.md_to_plain":          return "text.alignleft"
+        case "builtin.md_to_rich":           return "text.badge.plus"
+        // Current seed IDs are `builtin.md_headings` / `builtin.md_links`;
+        // `_extract_` aliases kept for legacy configs.
+        case "builtin.md_headings":          return "list.number"
+        case "builtin.md_links":             return "link"
         case "builtin.md_extract_headings":  return "list.number"
         case "builtin.md_extract_links":     return "link"
         case "builtin.code_wrap":            return "chevron.left.forwardslash.chevron.right"

@@ -95,12 +95,19 @@ enum UsageProbeRegistry {
 
 // MARK: - OpenAI
 
-/// Hits `GET /v1/organization/costs?start_time=<midnight-utc>&bucket_width=1d`
-/// with the provider's regular inference key. The endpoint
-/// nominally wants an Organization-scope key (`sk-admin-…`); a
-/// regular `sk-…` key returns 401 and the row surfaces
-/// "Unauthorized — check key" so the user knows the inference key
-/// doesn't have billing scope. We deliberately don't ask for a
+/// Hits `GET /v1/organization/costs?start_time=<midnight-local>&bucket_width=1d`
+/// with the provider's regular inference key. **`start_time` is the
+/// Unix-epoch seconds for the user's local-time midnight, not UTC
+/// midnight** — the OpenAI endpoint accepts any Unix timestamp and
+/// returns aggregated costs since that point, so anchoring the bucket
+/// at the user's local calendar day is the more intuitive default
+/// ("today" matches the user's wall clock, not their region offset
+/// from UTC). Earlier the comment claimed UTC; the code never matched
+/// that claim, and the user-facing label "Today: $0.042" reads as
+/// local-day anyway. The endpoint nominally wants an
+/// Organization-scope key (`sk-admin-…`); a regular `sk-…` key returns
+/// 401 and the row surfaces "Unauthorized — check key" so the user
+/// knows the inference key doesn't have billing scope. We deliberately don't ask for a
 /// second key in the UI — one key per provider is enough; users
 /// who have a billing-scope key can put THAT in the API Key field
 /// and inference still works fine against it.
@@ -117,8 +124,11 @@ struct OpenAIUsageProbe: UsageProbe {
               !apiKey.isEmpty else {
             throw UsageProbeError.missingKey
         }
-        // Midnight UTC today; OpenAI's costs API takes Unix
-        // seconds and returns USD aggregated per bucket.
+        // Midnight at the user's LOCAL calendar day; OpenAI's costs
+        // API takes Unix seconds and returns USD aggregated since that
+        // point. Anchoring on local midnight makes "Today" in the UI
+        // mean what the user expects ("since I woke up today"), not
+        // what UTC says.
         let startOfDay = Calendar(identifier: .gregorian).startOfDay(for: Date())
         let startTime = Int(startOfDay.timeIntervalSince1970)
         var comps = URLComponents(string: "https://api.openai.com/v1/organization/costs")!

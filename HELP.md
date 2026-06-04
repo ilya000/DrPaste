@@ -1,71 +1,73 @@
-# DrPaste — руководство пользователя
+# DrPaste — User Guide
 
-DrPaste — это менеджер буфера обмена для macOS. История буфера, умные действия над содержимым, AI-преобразования прямо из любой программы, всё через единый жест **⌥⌘V**.
+DrPaste is a clipboard manager for macOS. Clipboard history, smart actions over content, AI transformations straight from any application — all behind a single gesture: **⌥⌘V**.
 
-Этот документ описывает каждую фичу простым языком, с примерами реальных сценариев. Если что-то непонятно — нажмите thumbs-down в чате с Claude и оставьте feedback, мы дополним.
+Current version: **0.50.0** (alpha).
 
----
-
-## Оглавление
-
-1. [Что это и зачем](#что-это-и-зачем)
-2. [Установка и разрешения](#установка-и-разрешения)
-3. [Главный жест: ⌥⌘V](#главный-жест-v)
-4. [Два режима: Gesture vs Limited](#два-режима-gesture-vs-limited)
-5. [Глобальные хоткеи](#глобальные-хоткеи)
-6. [Внутри HUD](#внутри-hud)
-7. [Действия (Actions)](#действия-actions)
-8. [Кастомные действия](#кастомные-действия)
-9. [AI-провайдеры](#ai-провайдеры)
-10. [AI-действия с картинками](#ai-действия-с-картинками)
-11. [⌥⌘S Append Copy — склеивание клипов](#s-append-copy--склеивание-клипов)
-12. [Region Capture — скриншоты участка экрана](#region-capture--скриншоты-участка-экрана)
-13. [Настройки](#настройки)
-14. [Звуки и темы](#звуки-и-темы)
-15. [Советы и приёмы](#советы-и-приёмы)
-16. [Решение проблем](#решение-проблем)
+This document describes every feature in plain language, with concrete real-world scenarios. If something's unclear, send feedback via the thumbs-down button.
 
 ---
 
-## Что это и зачем
+## Table of contents
 
-В стандартном macOS буфер обмена помнит только последний скопированный фрагмент. Скопировали что-то новое — старое потеряно. DrPaste решает три проблемы одним инструментом:
-
-- **История буфера.** Каждый ⌘C сохраняется. Можно вернуться к тому, что копировали полчаса назад.
-- **Действия над содержимым.** Из самого буфера можно запустить преобразование: перевести текст на испанский, поправить опечатки через AI, вырезать таблицу из JSON, перевести картинку в карандашный набросок.
-- **Жест вместо окна.** Не нужно открывать отдельное приложение и листать в нём список. Зажал ⌥⌘V — увидел историю и доступные действия, отпустил — вставился результат.
-
-Это один из жестов, как ⌘V, только мощнее. Никакого отдельного окна, которое надо помнить переключать.
-
----
-
-## Установка и разрешения
-
-DrPaste нужен один раз дать **Accessibility** доступ, чтобы:
-
-- Перехватывать ⌥⌘V и другие глобальные хоткеи.
-- Вставлять результат действия в активную программу (программно нажать ⌘V).
-- Захватывать выделение из активной программы (программно нажать ⌘C для action-режима).
-
-**Как дать:** при первом запуске откроется Welcome Window с подсказкой и кнопкой «Open System Settings → Privacy & Security → Accessibility». Нужно включить переключатель напротив DrPaste и перезапустить.
-
-Без Accessibility приложение всё равно работает, но в так называемом **Limited Mode** — без жеста ⌥⌘V, история открывается через menu bar.
-
-**Где живёт.** В системной строке меню сверху справа появляется иконка-планшет ⌘V. Кликом открывается status menu со списком действий и пунктом Settings.
+1. [What it is and why](#what-it-is-and-why)
+2. [Installation and permissions](#installation-and-permissions)
+3. [The main gesture: ⌥⌘V](#the-main-gesture-v)
+4. [Two modes: Gesture vs Limited](#two-modes-gesture-vs-limited)
+5. [Global hotkeys](#global-hotkeys)
+6. [Inside the HUD](#inside-the-hud)
+7. [Actions](#actions)
+8. [Custom actions](#custom-actions)
+9. [AI providers](#ai-providers)
+10. [AI image actions](#ai-image-actions)
+11. [⌥⌘S Append Copy — merging clips](#s-append-copy--merging-clips)
+12. [Region Capture — screen-region screenshots](#region-capture--screen-region-screenshots)
+13. [Settings](#settings)
+14. [Sounds and themes](#sounds-and-themes)
+15. [Tips and tricks](#tips-and-tricks)
+16. [Troubleshooting](#troubleshooting)
 
 ---
 
-## Главный жест: ⌥⌘V
+## What it is and why
 
-**Нажми и держи ⌥⌘V.** Появится HUD — широкое полупрозрачное окно по центру экрана с тремя зонами:
+Stock macOS only remembers the last copied fragment. Copy something new — the old one is gone. DrPaste solves three problems with one tool:
+
+- **Clipboard history.** Every ⌘C is saved. You can go back to what you copied half an hour ago.
+- **Actions over content.** From the clipboard itself you can run a transformation: translate text to Spanish, fix typos with AI, extract a table from JSON, convert an image to a pencil sketch.
+- **Gesture instead of window.** No separate application to open and scroll. Hold ⌥⌘V, see history and available actions, release to paste the result.
+
+It's a gesture like ⌘V, just more powerful. No standalone window to remember switching to.
+
+---
+
+## Installation and permissions
+
+DrPaste needs **Accessibility** access once, so it can:
+
+- Intercept ⌥⌘V and other global hotkeys.
+- Paste the action result into the active app (programmatically press ⌘V).
+- Capture the selection from the active app (programmatically press ⌘C for action mode).
+
+**How to grant:** on first launch a Welcome Window appears with a hint and an "Open System Settings → Privacy & Security → Accessibility" button. Toggle DrPaste on and restart.
+
+Without Accessibility the app still runs, but in **Limited Mode** — no ⌥⌘V gesture, history opens through the menu bar.
+
+**Where it lives.** A clipboard ⌘V icon appears in the system menu bar (top right). Clicking opens a status menu with a list of actions and a Settings entry.
+
+---
+
+## The main gesture: ⌥⌘V
+
+**Press and hold ⌥⌘V.** A HUD appears — a wide translucent window centered on the screen with three zones:
 
 ```
 ┌─────────────────────────────────────────────────┐
-│ DrPaste · из Safari · 2 минуты назад            │  ← header
+│ DrPaste · from Safari · 2 min ago               │  ← header
 ├─────────────────────────────────────────────────┤
-│ ▸ Перевести на испанский                        │  ← actions bar (←→)
+│ ▸ Translate to Spanish                          │  ← actions bar (←→)
 │   Paste as is                                   │
-│   Reverse text                                   │
+│   Reverse text                                  │
 ├─────────────────────────────────────────────────┤
 │ Hello world!                                    │  ← preview pane
 │                                                 │
@@ -75,371 +77,375 @@ DrPaste нужен один раз дать **Accessibility** доступ, чт
 └─────────────────────────────────────────────────┘
 ```
 
-- **History (история).** Вверху — лента из последних 500 скопированных фрагментов. Стрелки ↑↓ перелистывают.
-- **Actions (действия).** Слева — список действий, применимых к выбранному фрагменту. Стрелки ←→ переключают.
-- **Preview (превью).** Большая зона снизу показывает результат выбранного действия в реальном времени.
+- **History.** Top — the strip of the last 500 copied fragments. Arrows ↑↓ navigate.
+- **Actions.** Below history — the list of actions applicable to the focused fragment. Arrows ←→ switch.
+- **Preview.** The large area below shows the result of the focused action in real time.
 
-**Отпускаешь ⌥⌘V** — превью вставляется в то приложение, где курсор был до открытия HUD. Если хотел отменить — нажми **Esc** до отпускания.
+**Release ⌥⌘V** — the preview is pasted into the application where your cursor was before HUD opened. To cancel — press **Esc** before releasing.
 
-Это весь основной жест. Дальше всё опционально.
+That's the whole core gesture. Everything else is optional.
 
 ---
 
-## Два режима: Gesture vs Limited
+## Two modes: Gesture vs Limited
 
-**Gesture Mode** (Full) — основной. Требует Accessibility доступа. Удерживаешь ⌥⌘V — HUD появляется, отпускаешь — вставляется. Быстро, не отрывает руки от клавиатуры.
+**Gesture Mode** (Full) — the main mode. Requires Accessibility. Hold ⌥⌘V → HUD appears, release → it pastes. Fast, keyboard-driven, hands never leave the keys.
 
-**Limited Mode** — fallback. Если Accessibility выключен или DrPaste его не получил, HUD открывается как обычное окно: тапнул ⌥⌘V, HUD остался на экране, навигируешь стрелками, нажимаешь **⏎** для вставки или **Esc** для отмены.
+**Limited Mode** — fallback. If Accessibility is off or DrPaste hasn't gotten it, the HUD opens as a regular window: tap ⌥⌘V, the HUD stays on screen, navigate with arrow keys, press **⏎** to paste or **Esc** to cancel.
 
-Различия по умолчанию:
+Default behaviour differences:
 
-| Действие | Gesture | Limited |
+| Action | Gesture | Limited |
 |---|---|---|
-| Открыть HUD | Зажать ⌥⌘V | Тапнуть ⌥⌘V |
-| Вставить | Отпустить ⌥⌘ | ⏎ |
-| Отменить | Esc до отпускания | Esc |
-| Перейти в действие | ←→ (при зажатых ⌥⌘) | ←→ |
-| Перейти в истории | ↑↓ | ↑↓ |
-| Удалить элемент | ⌫ | ⌫ |
+| Open HUD | Hold ⌥⌘V | Tap ⌥⌘V |
+| Paste | Release ⌥⌘ | ⏎ |
+| Cancel | Esc before release | Esc |
+| Switch action | ←→ (while ⌥⌘ held) | ←→ |
+| Switch in history | ↑↓ | ↑↓ |
+| Delete item | ⌫ | ⌫ |
 
-Режим выбирается автоматически: AX trusted → Gesture, нет → Limited.
+The mode is selected automatically: AX trusted → Gesture, otherwise → Limited.
 
 ---
 
-## Глобальные хоткеи
+## Global hotkeys
 
-Эти комбинации работают **из любой программы**, независимо от того, открыт ли HUD.
+These chords work **from any application**, regardless of whether the HUD is open.
 
-### ⌥⌘V — Open BigHUD (главный)
+### ⌥⌘V — Open BigHUD (main)
 
-Открывает HUD с историей буфера. Описано выше.
+Opens the HUD with clipboard history. Described above.
 
 ### ⌥⌘C — Quick Copy
 
-Симулирует ⌘C во фронтальной программе и подтверждает звуком, что копия попала в буфер. Полезно, когда стандартное «правой кнопкой → Copy» неудобно или ⌘C не реагирует (бывает в каких-то слабых текст-полях).
+Simulates ⌘C in the frontmost application and confirms with a sound that the copy landed in the clipboard. Useful when the standard "right-click → Copy" is awkward, or ⌘C doesn't respond (happens in some weak text fields).
 
 ### ⌥⌘X — Cut & Replace
 
-Сложная операция: вырезает выделение, открывает HUD, ждёт пока выберешь другой клип, вставляет его на место. По сути «обменять выделенное на что-то из истории».
+A compound operation: cuts the current selection, opens the HUD, waits for you to pick a different clip, pastes it in place. Effectively "swap the selected text for something from history".
 
-Сценарий: в письме у тебя написано «sincerely, John», нужно поменять подпись на «best regards, Jane». Выделил `sincerely, John`, нажал ⌥⌘X, в HUD выбрал заранее скопированную `best regards, Jane`, отпустил — текст подменился.
+Scenario: in an email you have "sincerely, John", you need to change the signature to "best regards, Jane". Select `sincerely, John`, press ⌥⌘X, pick the previously-copied `best regards, Jane` in the HUD, release — the text is replaced.
 
-В Settings → General есть переключатель **«Cut & Replace: start cursor on second item»** — если включён, ⌥⌘X пропускает только-что-вырезанный фрагмент в истории (он только что был наверху), и фокус сразу на следующем. Удобно для последовательных swap'ов.
+Settings → General has a toggle **"Cut & Replace: start cursor on second item"** — when enabled, ⌥⌘X skips the just-cut fragment in history (it's at the top), and focus lands on the next item. Useful for sequential swaps.
 
 ### ⌥⌘S — Append Copy
 
-Накапливает несколько копий в один большой клип. **Подробно ниже**, в отдельном разделе.
+Accumulates multiple copies into one larger clip. **Detailed below** in its own section.
 
 ### ⌥⌘+drag — Region Capture
 
-Зажми ⌥⌘ и потяни мышью прямоугольник на экране — захватится PNG этой области и положится в clipboard как картинка. Откроется HUD сфокусированный на этом скриншоте. **Подробно ниже**.
+Hold ⌥⌘ and drag a rectangle with the mouse on screen — that area is captured as a PNG and placed in the clipboard as an image. The HUD opens focused on this screenshot. **Detailed below**.
 
-### ⌥⌘ + <буква> — Custom action hotkeys
+### ⌥⌘ + <letter> — Custom action hotkeys
 
-Любому action в Settings можно назначить свой хоткей. **Прямое срабатывание** без открытия HUD: нажал — действие применилось к выделению, результат вставился. **Удержание ⌥⌘ после нажатия буквы** — открывает HUD сфокусированный на этом действии для предпросмотра перед фиксацией. Это #A10 «hold-preview synergy».
+Any action in Settings can be assigned its own hotkey. **Direct trigger** without opening the HUD: press → action is applied to selection, result is pasted (a MiniHUD loading panel appears while AI calls stream their result). **Hold ⌥⌘ after the letter** for ~250 ms — **BigHUD opens focused on that action** with the normal preview surface, history strip, action bar, and Gesture-Mode release-to-paste. The hold-preview surface is BigHUD, not MiniHUD.
 
-Зарезервированные комбинации (которые **нельзя** назначить):
+Reserved chords (which **cannot** be assigned):
 
-- `⌥⌘V/C/X/S/⏎` — используются самим DrPaste.
-- `⌥⌘Q/D/M/H/L/N/O/P/T/Space` — системные macOS хоткеи (Force Quit, Show Dock, Minimize All, и т.д.). Recorder откажется и подскажет, кто владеет.
+- `⌥⌘V/C/X/S/⏎` — used by DrPaste itself.
+- `⌥⌘Q/D/M/H/L/N/O/P/T/Space` — system macOS chords (Force Quit, Show Dock, Minimize All, etc.). The recorder refuses and tells you who owns the chord.
 
 ---
 
-## Внутри HUD
+## Inside the HUD
 
-Когда HUD открыт, доступно:
+When the HUD is open, the following keys are available:
 
-| Клавиша | Действие |
+| Key | Action |
 |---|---|
-| ↑↓ | Перейти по истории |
-| ←→ | Перейти между действиями |
-| ⏎ | Вставить + закрыть HUD (или просто отпустить ⌥⌘ в Gesture Mode) |
-| ⌥⌘⏎ | **Вставить + оставить HUD открытым** — для серии вставок подряд |
-| C (Gesture) или ⌥⌘C (Limited) | **Copy preview** — текущее превью становится новым клипом наверху истории, фокус прыгает на него |
-| S (Gesture) или ⌥⌘S (Limited) | **Merge** — добавить текущий клип к аккумулятору |
-| ⌫ | Удалить выбранный клип из истории |
-| Esc | Закрыть HUD без вставки |
-| ⌘+/− или +/− (Gesture) | Увеличить/уменьшить шрифт HUD |
-| ⌘0 или 0 | Сбросить шрифт |
+| ↑↓ | Navigate history |
+| ←→ | Switch action |
+| ⏎ | Paste + close HUD (or just release ⌥⌘ in Gesture Mode) |
+| ⌥⌘⏎ | **Paste + keep HUD open** — for a series of consecutive pastes |
+| C (Gesture) or ⌥⌘C (Limited) | **Copy preview** — current preview becomes a new clip at the top of history, focus jumps to it |
+| S (Gesture) or ⌥⌘S (Limited) | **Merge** — add current clip to the accumulator |
+| ⌫ | Delete focused clip from history |
+| Esc | Close HUD without pasting |
+| ⌘+/− or +/− (Gesture) | Increase/decrease HUD font size |
+| ⌘0 or 0 | Reset font |
 
 ### Paste & Keep (⌥⌘⏎)
 
-Вставляет выбранный клип в целевую программу, но HUD остаётся открытым. Можно сделать второй ⌥⌘⏎ — вставится тот же или (если стрелками перешёл) другой клип.
+Pastes the focused clip into the target app, but the HUD stays open. You can do another ⌥⌘⏎ — it pastes the same clip, or (if you've arrowed to a different one) the new one.
 
-Сценарий: заполняешь форму на сайте, нужно последовательно вставить имя, email, номер телефона из истории. ⌥⌘V → выбрал имя → ⌥⌘⏎ → стрелка вниз → email → ⌥⌘⏎ → стрелка вниз → телефон → ⌥⌘⏎ → Esc.
+Scenario: filling out a web form, you need to paste name, email, phone number sequentially from history. ⌥⌘V → pick name → ⌥⌘⏎ → arrow down → email → ⌥⌘⏎ → arrow down → phone → ⌥⌘⏎ → Esc.
 
 ### Copy preview (C / ⌥⌘C)
 
-«Возьми то, что я сейчас вижу в превью, обратно в буфер.» Это нужно, когда применил action (например AI translate) и хочешь сохранить результат как отдельный клип в истории, чтобы:
+"Take what I see in the preview right now and put it back in the clipboard." Useful when you've applied an action (say AI translate) and want to save the result as a separate clip in history, so you can:
 
-- Можно было ⌥⌘V → выбрать этот результат → применить ещё одно action поверх (цепочка преобразований).
-- Можно было вставить ⌘V в любое приложение вне DrPaste.
+- ⌥⌘V → pick that result → apply another action on top (chain transformations).
+- Paste ⌘V into any application outside DrPaste.
 
-Новый клип ложится **наверх** истории (как при обычном ⌘C), фокус в HUD прыгает на него.
+The new clip lands **on top** of history (as if it were a regular ⌘C), HUD focus jumps to it.
 
-### Merge (S / ⌥⌘S) — про это есть [отдельный раздел](#s-append-copy--склеивание-клипов).
+### Merge (S / ⌥⌘S) — see [its own section](#s-append-copy--merging-clips).
 
 ---
 
-## Действия (Actions)
+## Actions
 
-DrPaste умеет три типа действий:
+DrPaste has three types of actions:
 
-### Built-in (встроенные)
+### Built-in
 
-Жёстко прошитые в код. Не редактируются по существу, но можно переименовать и назначить хоткей. Примеры:
+Hard-wired into the code. Not fundamentally editable, but can be renamed and given a hotkey. Examples:
 
-- **Paste as is** — вставить буфер без изменений (всегда первое в списке).
-- **Reveal in Finder** — для file-клипов открывает Finder в папке.
-- **Open URL** — для URL-клипов открывает в браузере по умолчанию.
-- **Image: OCR** — извлекает текст из картинки через Apple Vision.
-- **Image: Grayscale / Invert / Rotate / Strip metadata / Compress JPEG / ASCII art / Decode QR** — локальные image-преобразования через CoreImage.
+- **Paste as is** — paste the buffer unchanged (always first in the list).
+- **Reveal in Finder** — for file clips, opens Finder at the folder.
+- **Open URL** — for URL clips, opens in the default browser.
+- **Image: OCR** — extracts text from an image via Apple Vision.
+- **Image: Grayscale / Invert / Rotate / Strip metadata / Compress JPEG / Decode QR** — local image transformations via CoreImage.
+- **Image: ASCII art** — renders an image as a monospaced ASCII block. The output is **rich text** with a monospaced 11pt font (so columns survive when pasted into Mail/Notes/Pages). Default width is **40 columns** (convenient for chat messages, code comments, Twitter/X posts). Before 0.42.0 the width was 100 and the output was plain text — the upgrade doesn't touch copies already in history, but new runs of the action use the new parameters.
 
-### Transformations (преобразования)
+### Transformations
 
-Детерминированные операции над текстом через настраиваемые движки:
+Deterministic operations over text via configurable engines:
 
 - **caseChange** — UPPER, lower, Title Case.
-- **regexReplace** — поиск/замена по регэкспу.
-- **findReplace** — простая замена строки.
-- **prepend / append / wrap** — добавить префикс / суффикс / обернуть.
-- **trim / collapse spaces** — нормализация пробелов.
-- **unicodeStyle** — псевдо-шрифты Unicode (𝐛𝐨𝐥𝐝, 𝑖𝑡𝑎𝑙𝑖𝑐) для Twitter/Telegram, где markup стирается.
-- **cyrillic ↔ latin** — транслитерация с автоопределением варианта (Иванов → Ivanov, или Ivanov → Иванов).
-- **lineFilter** — фильтр строк по regexp/keyword.
-- **wikiMarkup** — конвертация в Wiki-markup.
+- **regexReplace** — search/replace via regular expression.
+- **findReplace** — simple string replace.
+- **prepend / append / wrap** — add prefix / suffix / wrap.
+- **trim / collapse spaces** — whitespace normalization.
+- **unicodeStyle** — Unicode pseudo-fonts (𝐛𝐨𝐥𝐝, 𝑖𝑡𝑎𝑙𝑖𝑐, 𝓢𝓬𝓻𝓲𝓹𝓽, 𝔉𝔯𝔞𝔨𝔱𝔲𝔯, 𝙼𝚘𝚗𝚘𝚜𝚙𝚊𝚌𝚎, Sᴍᴀʟʟ Cᴀᴘs, Ⓒⓘⓡⓒⓛⓔⓓ, ∀ uʍop ǝpᴉsdn, etc. — about 20 styles) for Twitter/X, Telegram, LinkedIn, Discord — anywhere Markdown is not rendered.
+- **markdown styles → unicode** (`builtin.font_markdown`, added in 0.42.0) — takes plain Markdown with inline markup (`**bold**`, `*italic*`, `***bi***`, `` `code` ``, `~~strike~~`) and replaces each span with the matching Unicode pseudo-font; markup characters are stripped. Plain text between markup stays unchanged.
+- **markdown → rich text** (`builtin.md_to_rich`, added in 0.42.0) — converts plain Markdown source into NSAttributedString. When pasted into Mail / Pages / Notes / Word the formatting is preserved.
+- **cyrillic → latin** — transliteration with variant auto-detection (Russian / Ukrainian / Belarusian / Bulgarian / Serbian / Macedonian), `Привет → Privet`.
+- **lineFilter** — filter lines by regex/keyword.
+- **wikiMarkup** — conversion to Wiki markup.
 
-Можно создать свои: Settings → Actions → +New → Transformation.
+You can create your own: Settings → Actions → +New → Transformation.
 
-### AI (через языковую модель)
+### AI (via language model)
 
-Произвольный prompt-шаблон, который пропускается через выбранного AI-провайдера. Использует `{input}` как placeholder под содержимое буфера. Бывают трёх kind:
+A free-form prompt template that runs through the selected AI provider. Uses `{input}` as a placeholder for the clipboard content. Three kinds:
 
-- **Text → Text** — текст в текст. Перевести, переписать, исправить, краткое содержание, и т.д.
-- **Text → Image** — текст в картинку. На основе clipboard + prompt генерируется новая картинка. Пример seed-action: **AI: Whiteboard sketch** — превращает любую концепцию в рисунок на белой доске.
-- **Image → Image** — преобразование картинки. Seed-actions: **AI: Pencil sketch**, **AI: Watercolor**, **AI: Cartoon**.
+- **Text → Text** — text to text. Translate, rewrite, fix, summarize, etc.
+- **Text → Image** — text to image. A new image is generated based on clipboard + prompt. Example seed action: **AI: Whiteboard sketch** — turns any concept into a whiteboard-drawn illustration.
+- **Image → Image** — image transformation. Seed actions: **AI: Pencil sketch**, **AI: Watercolor**, **AI: Cartoon**.
 
-Подробнее про AI — [ниже](#ai-провайдеры).
-
----
-
-## Кастомные действия
-
-Settings → Actions → **+New** открывает дилог создания action.
-
-**Mode selector** наверху — три варианта:
-
-1. **Built-in** — выбрать существующий handler из списка и переименовать. По сути «алиас на встроенное».
-2. **Transformation** — выбрать engine (caseChange, regexReplace, ...) и настроить параметры. UI меняется в зависимости от engine.
-3. **AI** — выбрать operation (Text→Text, Text→Image, Image→Image), написать prompt template, выбрать провайдера.
-
-**Applies to:** галочки по семантическим типам контента — какие клипы это действие должно показывать в списке. Текст, Rich text, URL, JSON, Table, Markdown, Code, Image, Files. По умолчанию для AI text-text — все text-bearing, для Image→Image — только image.
-
-**Hotkey:** опционально, ⌥⌘+буква для прямого вызова. Recorder проверяет коллизии (см. главу про global hotkeys).
-
-**Test панель внизу** — Sample Input + Output, кнопка «Run test». Можно прямо в редакторе проверить, как action работает на примере, не закрывая диалог.
-
-- Для AI image actions есть кнопка drop-в-картинку: положи свой PNG/JPG в Input, или используется встроенный Mandrill.
-- Для text actions есть curated sample под каждый action — Translate sample для AI Translate, JSON sample для JSON Pretty, и т.д.
-- Введённый в Input текст запоминается per-action, чтобы при следующем открытии редактора был тот же sample.
-
-**Duplicate** — кнопка снизу. Создаёт копию текущего action с суффиксом «2» (или «3», «4», если уже занято). Клон встаёт **сразу после оригинала** в списке. Открывается отдельное окно для редактирования копии; оригинал остаётся открыт. Удобно для «у меня уже есть AI: Translate to Spanish, хочу сделать ещё AI: Translate to French — продублирую и поменяю промпт».
-
-**Delete** — удаляет user-action. Built-in actions удалить нельзя, только отключить (галочка в Settings list).
+More on AI — [below](#ai-providers).
 
 ---
 
-## AI-провайдеры
+## Custom actions
 
-DrPaste не зашит на одного вендора. В Settings → AI можно подключить несколько провайдеров и переключать default.
+Settings → Actions → **+New** opens the action-creation dialog.
 
-Поддерживаются:
+**Mode selector** at the top — three options:
 
-| Провайдер | Где взять ключ | Тип |
+1. **Built-in** — pick an existing handler from the list and rename it. Effectively "alias on top of a built-in".
+2. **Transformation** — pick an engine (caseChange, regexReplace, ...) and configure parameters. The UI changes depending on the engine.
+3. **AI** — pick an operation (Text→Text, Text→Image, Image→Image), write a prompt template, choose a provider.
+
+**Applies to:** checkboxes per semantic content type — which clips this action should show in the list for. Text, Rich text, URL, JSON, Table, Markdown, Code, Image, Files. Default for AI text-text — all text-bearing types; for Image→Image — only image.
+
+**Hotkey:** optional, ⌥⌘+letter for direct invocation. The recorder checks for collisions (see the global-hotkey chapter).
+
+**Test panel at the bottom** — Sample Input + Output, "Run test" button. You can verify the action's behaviour on a sample without closing the dialog.
+
+- For AI image actions there's a drop-image hint: drag your PNG/JPG into Input, or the bundled Mandrill is used.
+- For text actions, each action has a curated sample — Translate sample for AI Translate, JSON sample for JSON Pretty, etc.
+- Text typed into Input is remembered per-action, so the next time the editor opens you see the same sample.
+- For Type Slowly, the playground animates the output at the production typing speed so you can dial the delay against perceived cadence.
+
+**Duplicate** — button at the bottom. Creates a copy of the current action with a "2" suffix (or "3", "4" if already taken). The clone lands **immediately after the original** in the list. A separate editor window opens for the clone; the original stays open. Useful for "I already have AI: Translate to Spanish, I want to make AI: Translate to French — duplicate and change the prompt".
+
+**Delete** — removes a user action. Built-in actions can't be deleted, only disabled (checkbox in Settings list).
+
+---
+
+## AI providers
+
+DrPaste is not tied to a single vendor. In Settings → AI you can connect multiple providers and switch the default.
+
+Supported providers:
+
+| Provider | Where to get a key | Type |
 |---|---|---|
-| **Anthropic Claude** | console.anthropic.com | Облачный, text-only |
-| **OpenAI** | platform.openai.com | Облачный, text + images |
-| **Google Gemini** | aistudio.google.com | Облачный, text + images (самый дешёвый для images) |
-| **Grok (xAI)** | x.ai | Облачный, text-only |
-| **Mistral** | mistral.ai | Облачный, text-only |
-| **DeepSeek** | platform.deepseek.com | Облачный, text-only |
-| **OpenRouter** | openrouter.ai | Прокси: один ключ — много моделей, включая images |
-| **Together AI** | together.ai | Облачный |
-| **Groq** | groq.com | Облачный, очень быстрый |
-| **Cerebras** | cerebras.ai | Облачный |
-| **Cloudflare Workers AI** | dash.cloudflare.com | Облачный |
-| **Ollama** | localhost:11434 | Локальный |
-| **LM Studio** | localhost:1234 | Локальный |
-| **llama.cpp** | localhost:8080 | Локальный |
-| **Custom** | свой URL | OpenAI-совместимый эндпоинт |
+| **Anthropic Claude** | console.anthropic.com | Cloud, text-only |
+| **OpenAI** | platform.openai.com | Cloud, text + images |
+| **Google Gemini** | aistudio.google.com | Cloud, text + images (cheapest for images) |
+| **Grok (xAI)** | x.ai | Cloud, text-only |
+| **Mistral** | mistral.ai | Cloud, text-only |
+| **DeepSeek** | platform.deepseek.com | Cloud, text-only |
+| **OpenRouter** | openrouter.ai | Proxy: one key — many models, images included |
+| **Together AI** | together.ai | Cloud |
+| **Groq** | groq.com | Cloud, very fast |
+| **Cerebras** | cerebras.ai | Cloud |
+| **Cloudflare Workers AI** | dash.cloudflare.com | Cloud |
+| **Ollama** | localhost:11434 | Local |
+| **LM Studio** | localhost:1234 | Local |
+| **llama.cpp** | localhost:8080 | Local |
+| **Custom** | your own URL | OpenAI-compatible endpoint |
 
-### Default-провайдер
+### Default provider
 
-Радио-кнопка слева от каждого провайдера в Settings → AI помечает, кто будет использоваться по умолчанию для всех AI-actions, у которых явно не выбран provider. Меняешь default — все default-bound actions мгновенно переключаются.
+A radio button to the left of each provider in Settings → AI marks who is used by default for all AI actions that don't have an explicit provider. Change the default — all default-bound actions switch instantly.
 
-Если default-провайдер не умеет нужную операцию (например, default = Anthropic, а action = Text→Image, а Anthropic не делает картинок), **runtime автоматически переключается на самого дешёвого провайдера, который умеет** (по цене: Gemini → OpenRouter → OpenAI → Custom). При этом:
+If the default provider can't perform the required operation (e.g. default = Anthropic, action = Text→Image, and Anthropic doesn't generate images), **runtime automatically switches to the cheapest provider that can** (priority: Gemini → OpenRouter → OpenAI → Custom). Meanwhile:
 
-- **Иконка провайдера** в Edit Action рядом с «Provider:» показывает **реального исполнителя**.
-- **Оранжевый glyph 🠷** рядом с chip-ом сигналит, что выбранный default не подошёл и рантайм переключился.
-- **Hint под picker'ом** объясняет: «Default chat provider (Anthropic) can't run image actions. Routed to Gemini.»
+- The **provider icon** in Edit Action next to "Provider:" shows the **actual executor**.
+- An **orange glyph 🠷** next to the chip signals that the chosen default didn't fit and runtime rerouted.
+- A **hint under the picker** explains: "Default chat provider (Anthropic) can't run image actions. Routed to Gemini."
 
-То есть UI всегда честно показывает, кто реально работает, не врёт.
+So the UI always honestly shows who actually executed, never lies.
 
 ### Per-action override
 
-В Edit Action можно явно выбрать провайдера в Provider picker. Все configured провайдеры всегда видны, но **неподходящие задизейблены** (для image actions Anthropic будет greyed-out с пометкой «no image support»). Можно вернуться к Default sentinel — он покажется как «Default · <name>».
+In Edit Action you can explicitly select a provider in the Provider picker. All configured providers are always visible, but **unsupported ones are disabled** (for image actions Anthropic will be greyed-out with a "no image support" tag). You can return to the Default sentinel — it will show as "Default · <name>".
 
 ### Connection test
 
-В Settings → AI → Edit рядом с каждым провайдером есть «Test connection». Шлёт короткий «Reply with the single word OK.» промпт и подтверждает, что API key валиден и эндпоинт отвечает. Зелёная точка слева от строки — последний тест прошёл, красная — упал (наведи мышь, увидишь причину), серая — никогда не тестировался.
+In Settings → AI → Edit, next to each provider, there's "Test connection". Sends a short "Reply with the single word OK." prompt and verifies that the API key is valid and the endpoint responds. A green dot to the left of the row — the last test passed; red — failed (hover for the reason); grey — never tested.
 
-После successful Save новый/изменённый провайдер автоматически тестируется и автоматически становится default, если в системе ещё нет default.
+After a successful Save, a new/changed provider is auto-tested and auto-promoted to default if the system doesn't have one.
 
-### Usage stats (только OpenAI, OpenRouter)
+### Usage stats (OpenAI, OpenRouter only)
 
-Под именем провайдера показывается **«Today: $0.042 · 14 reqs»** — сегодняшний расход, если провайдер отдаёт billing data:
+Under the provider name, **"Today: $0.042 · 14 reqs"** is shown — today's spend, if the provider exposes billing data:
 
-- **OpenAI** — через `/v1/organization/costs`, требует ключ с Organization scope. Если у тебя обычный inference-ключ без билинговых прав — строка просто не показывается (HTTP 403 → silent hide).
-- **OpenRouter** — через `/api/v1/credits`. Считает дельту от первого читания в течение дня.
+- **OpenAI** — via `/v1/organization/costs`. Uses the regular API key (no admin scope required since 0.35.1). If your key doesn't have billing scope — the row is silently hidden (HTTP 401/403 → silent hide).
+- **OpenRouter** — via `/api/v1/credits`. Computes a delta from the first-seen reading of the day.
 
-Кликни строку — refresh. Tooltip покажет «updated 3s ago».
+Click the row — refresh. Tooltip says "updated 3s ago".
 
-Anthropic, Gemini и другие провайдеры не имеют публичного usage API — для них строки нет.
+Anthropic, Gemini and others don't have a public usage API — no row for them.
 
 ---
 
-## AI-действия с картинками
+## AI image actions
 
 ### Text → Image
 
-Action принимает текст из буфера + твой prompt → возвращает новую сгенерированную картинку.
+An action that takes the buffer text + your prompt → returns a newly-generated image.
 
-В prompt template можно использовать `{input}` как placeholder под clipboard text. Если `{input}` не написан — clipboard text дописывается в конец промпта.
+In the prompt template you can use `{input}` as a placeholder for the clipboard text. If `{input}` is absent — the clipboard text is appended to the end of the prompt.
 
-**Seed action: AI: Whiteboard sketch.** Копируешь концепцию (например «Build → Measure → Learn цикл с тремя стрелками»), запускаешь → получаешь PNG, который выглядит как нарисовано на доске. Хорошо для слайдов, заметок, документов.
+**Seed action: AI: Whiteboard sketch.** Copy a concept (e.g. "Build → Measure → Learn cycle with three arrows"), run it → you get a PNG that looks like a whiteboard drawing. Good for slides, notes, documents.
 
 ### Image → Image
 
-Action принимает картинку из буфера + твой prompt → возвращает преобразованную картинку.
+An action that takes the image from the buffer + your prompt → returns a transformed image.
 
 **Seed actions:**
 
-- **AI: Pencil sketch** — портретный карандашный рисунок.
-- **AI: Watercolor** — акварельная стилизация.
-- **AI: Cartoon** — мультяшная иллюстрация с чёрным контуром.
+- **AI: Pencil sketch** — a portrait-style pencil drawing.
+- **AI: Watercolor** — watercolor stylization.
+- **AI: Cartoon** — cartoon illustration with black outline.
 
-Можно дублицировать и менять prompt: «AI: Oil paint», «AI: Stained glass», «AI: Pixel art» и т.д. Через Duplicate в Edit Action.
+You can duplicate and change the prompt: "AI: Oil paint", "AI: Stained glass", "AI: Pixel art", etc. Via Duplicate in Edit Action.
 
-### Quality directive в prompt
+### Quality directive in prompt
 
-В seed prompts есть строка **`Quality: low`** в конце. Это директива для OpenAI gpt-image-1, которая снижает quality tier:
+Seed prompts contain the line **`Quality: low`** at the end. This is a directive for OpenAI gpt-image-1 that lowers the quality tier:
 
-- `low` — ~$0.011 за 1024×1024 (для эскизов, sketch'ев — норм качество).
-- `medium` — ~$0.042 (default OpenAI).
-- `high` — ~$0.167 (gallery-grade детализация).
-- `auto` — OpenAI решит.
+- `low` — ~$0.011 for 1024×1024 (good enough for sketches).
+- `medium` — ~$0.042 (OpenAI default).
+- `high` — ~$0.167 (gallery-grade detail).
+- `auto` — OpenAI decides.
 
-Хочешь дороже и качественнее? Открой Edit Action, поменяй `Quality: low` на `Quality: high` (или вообще удали строку — будет medium). Парсер извлекает её из промпта и шлёт как параметр на API. Не действует для Gemini/OpenRouter (там другой API).
+Want pricier and higher-quality? Open Edit Action, change `Quality: low` to `Quality: high` (or delete the line entirely — it becomes medium). The parser extracts it from the prompt and sends it as an API parameter. Does NOT apply to Gemini/OpenRouter (different APIs).
 
-### Какой провайдер? — Cost-aware fallback
+### Which provider? — Cost-aware fallback
 
-DrPaste автоматически выбирает самого дешёвого image-capable провайдера, если не настроен явно:
+DrPaste automatically picks the cheapest image-capable provider if none is explicitly chosen:
 
-1. **Gemini** — ~$0.039 / картинка (cheapest).
-2. **OpenRouter** — обычно дешевле OpenAI через flux/imagen models.
-3. **OpenAI** — $0.011 (low) → $0.167 (high) для gpt-image-1.
-4. **Custom** — неизвестно, в конце.
+1. **Gemini** — ~$0.039 / image (cheapest).
+2. **OpenRouter** — usually cheaper than OpenAI via flux/imagen models.
+3. **OpenAI** — $0.011 (low) → $0.167 (high) for gpt-image-1.
+4. **Custom** — unknown cost, last resort.
 
-Если у тебя подключены и Gemini, и OpenAI — auto-select для нового image action возьмёт Gemini. Сэкономишь 75%+ на каждом запросе.
+If you have both Gemini and OpenAI connected — auto-select for a new image action will take Gemini. Saves 75%+ on each request.
 
 ---
 
-## ⌥⌘S Append Copy — склеивание клипов
+## ⌥⌘S Append Copy — merging clips
 
-**Цель:** скопировать несколько фрагментов один за другим, и получить **один общий** клип в буфере.
+**Goal:** copy multiple fragments one after another, and get **one combined** clip in the buffer.
 
-### Базовый сценарий (текст)
+### Basic scenario (text)
 
-1. Выделяешь первую часть → **⌥⌘S**. В буфер легло то, что ты выделил. В строке меню сверху загорелась **красная точка** ● — индикатор активной сессии.
-2. Переключаешься на другое место (или другое приложение), выделяешь вторую часть → **⌥⌘S** снова. Звук success. В буфере теперь обе части, разделённые `\n`.
-3. И так далее. Каждое ⌥⌘S добавляет новый фрагмент.
-4. ⌘V в финальном приложении — вставится вся накопленная цепочка.
+1. Select the first piece → **⌥⌘S**. The buffer now holds what you selected. A **red dot** ● appears on the menu-bar icon — the active-session indicator.
+2. Switch to another place (or another app), select the second piece → **⌥⌘S** again. Success sound. The buffer now contains both pieces separated by `\n`.
+3. And so on. Each ⌥⌘S adds a new fragment.
+4. ⌘V in the final app — the entire accumulated chain is pasted.
 
-### Что можно склеивать
+### What can be merged
 
-DrPaste умеет два **трека**, которые **не пересекаются**:
+DrPaste supports two **tracks** that **don't mix**:
 
-#### Трек 1: Rich-text-аккумулятор (красная точка ●)
+#### Track 1: Rich-text accumulator (red dot ●)
 
-Сюда подходят:
+Accepts:
 
 - Plain text
-- Rich text с форматированием (жирный, курсив, цвета, ссылки)
-- Картинки (вставляются как inline-attachments в RTFD)
-- Любое смешение
+- Rich text with formatting (bold, italic, colors, links)
+- Images (embedded as inline attachments in RTFD)
+- Any mixture
 
-**Картинки сохраняют формат:** при вставке в Mail, Notes, Pages или TextEdit получаешь полноценный документ с inline-картинками. При вставке в Slack/Terminal/code editor картинки выпадают (форматы их не поддерживают), остаётся только текст.
+**Images keep their format:** pasting into Mail, Notes, Pages or TextEdit gives a full document with inline images. Pasting into Slack/Terminal/code editor drops the images (those formats don't support them); only the text remains.
 
-#### Трек 2: Files-аккумулятор (голубая точка ●)
+#### Track 2: Files accumulator (cyan dot ●)
 
-Сюда подходят **только файлы** из Finder. Множественное выделение файлов в Finder + ⌥⌘S → список URL'ов. Следующий ⌥⌘S опять с файлами → объединение URL list.
+Accepts **files only** from Finder. Multi-select files in Finder + ⌥⌘S → URL list. Next ⌥⌘S with files again → URLs combine.
 
-### Пересечения и conversion
+### Crossovers and conversion
 
-DrPaste умеет автоматически переводить между треками, **если файлы — это картинки**:
+DrPaste auto-bridges between the tracks **when files are images**:
 
-- **Files-трек, прибежал rich/text:** проверяется, все ли файлы — картинки (PNG/JPG/HEIC/...). Если да — files конвертируются в inline-attachments, прилетевший rich добавляется сверху. Точка меняется с голубой на красную. Сессия теперь rich.
-- **Rich-трек, прибежал файл:** аналогично. Если файл — картинка, конвертируется в attachment, добавляется к rich. Точка остаётся красной.
-- **Files + не-картинка (например PDF, .zip)** + что-то нефайловое → звук **неудачи**, состояние накопленного не меняется. Сессия живёт в прежнем режиме, пробуй ещё.
-- **Rich + не-картинка-файл (PDF, .zip)** → звук неудачи, rich не меняется.
+- **Files track, rich/text arrived:** checks whether all files are images (PNG/JPG/HEIC/...). If yes — files convert into inline attachments, the incoming rich is appended on top. The dot flips from cyan to red. The session is now rich.
+- **Rich track, file arrived:** same logic. If the file is an image, it converts to attachment and is appended to rich. The dot stays red.
+- **Files + a non-image (e.g. PDF, .zip)** + something non-file → **failure sound**, accumulator state unchanged. The session lives in the previous mode, try again.
+- **Rich + non-image file (PDF, .zip)** → failure sound, rich unchanged.
 
-### Сессии и timeout
+### Sessions and timeout
 
-**Сессия живёт 120 секунд** с момента последнего ⌥⌘S. После 2 минут бездействия следующее ⌥⌘S = **новая сессия**: текущий буфер уходит в history, новое выделение становится seed.
+**A session lives 120 seconds** since the last ⌥⌘S. After 2 minutes of inactivity, the next ⌥⌘S = **new session**: the current buffer goes into history, the new selection becomes the seed.
 
-Сессия **резко сбрасывается** на любое из:
+The session is **immediately reset** by any of:
 
-- ⌥⌘V — открыть HUD.
+- ⌥⌘V — open HUD.
 - ⌥⌘C — Quick Copy.
 - ⌥⌘X — Cut & Replace.
-- Любой custom ⌥⌘+буква action hotkey.
+- Any custom ⌥⌘+letter action hotkey.
 - Region capture (⌥⌘+drag).
 
-Идея: «я переключился на другую задачу — копилку больше не нужно держать».
+Idea: "I switched to a different task — the accumulator is no longer needed."
 
-### Цветовая точка-индикатор
+### Indicator dot color
 
-В строке меню справа сверху, на иконке-планшете DrPaste:
+In the menu bar (top right), on the DrPaste clipboard icon:
 
-- **● красная** — активна rich-text сессия. Следующий ⌥⌘S добавит к ней.
-- **● голубая** — активна files-сессия. Следующий ⌥⌘S должен быть на файле.
-- **(нет точки)** — сессии нет. Следующий ⌥⌘S = новая сессия.
+- **● red** — rich-text session active. The next ⌥⌘S will add to it.
+- **● cyan** — files session active. The next ⌥⌘S should be on a file.
+- **(no dot)** — no session. Next ⌥⌘S = new session.
 
-Цвет сразу подсказывает, на чём ты сейчас находишься.
+Color tells you at a glance where you stand.
 
-### ⌥⌘S внутри HUD — другая семантика
+### ⌥⌘S inside the HUD — different semantics
 
-Внутри HUD ⌥⌘S (или просто **S** в Gesture Mode) работает иначе: накапливает выбранные **из истории** клипы в композитный preview. Anchor row помечается зелёным; consumed rows (уже вошедшие в merge) визуально прячутся. Поддерживает то же rich+image поведение.
+Inside the HUD, ⌥⌘S (or just **S** in Gesture Mode) works differently: it accumulates clips selected **from history** into a composite preview. The anchor row is marked green; consumed rows (already merged in) are visually hidden. It supports the same rich+image behaviour.
 
-При commit (отпускание ⌥⌘ или ⏎) вставляется весь накопленный композит, не выбранный отдельный клип.
+On commit (release of ⌥⌘ or ⏎), the entire accumulated composite is pasted, not the single focused clip.
 
 ---
 
-## Region Capture — скриншоты участка экрана
+## Region Capture — screen-region screenshots
 
-### Жест
+### Gesture
 
-Зажми **⌥⌘** в любом приложении. Курсор превратится в перекрестие. **Не отпуская** ⌥⌘, нажми и потяни левой кнопкой мыши — нарисуется прямоугольник. Отпустишь мышь — PNG этой области автоматически захватится:
+Hold **⌥⌘** in any app. The cursor turns into a crosshair. **Without releasing** ⌥⌘, press and drag with the left mouse button — a rectangle is drawn. Release the mouse — the PNG of that area is automatically captured:
 
-- Положится в системный буфер как PNG.
-- Сохранится в history DrPaste.
-- Откроется HUD сфокусированный на этом скриншоте, готовый к paste.
+- Placed into the system clipboard as PNG.
+- Saved into DrPaste history.
+- HUD opens focused on this screenshot, ready to paste.
 
-Отпускаешь ⌥⌘ — скриншот вставится в то приложение, что было до жеста.
+Release ⌥⌘ — the screenshot is pasted into whichever app you were in before the gesture.
 
-### Cheat sheet в углу
+### Cheat sheet in the corner
 
-Пока удерживаешь ⌥⌘ (даже без drag), в правом нижнем углу появляется маленькая клавиатура-подсказка с легендой:
+While ⌥⌘ is held (even without a drag), a small keyboard hint appears in the bottom-right corner with a legend:
 
 ```
 ⌥⌘ + drag    capture region (highlighted)
@@ -447,102 +453,102 @@ DrPaste умеет автоматически переводить между т
 ⌥⌘C          quick copy
 ⌥⌘X          cut & replace
 ⌥⌘S          append copy
-⌥⌘<letter>   your custom actions (если есть)
+⌥⌘<letter>   your custom actions (if any)
 ```
 
-Cheat sheet тонко «выгорает» когда курсор подходит близко, чтобы не мешать выделять область.
+The cheat sheet softly "fades" when the cursor approaches it so it doesn't get in the way of selecting an area.
 
-**Можно выключить.** Settings → General → «Show keyboard cheat sheet on ⌥⌘ hold». Жест продолжает работать, просто без подсказки.
+**You can disable it.** Settings → General → "Show keyboard cheat sheet on ⌥⌘ hold". The gesture keeps working, just without the hint.
 
 ---
 
-## Настройки
+## Settings
 
-Settings открывается через menu bar icon → Settings, или через ⌘, в открытом окне Settings.
+Settings opens via menu bar icon → Settings, or via ⌘, when Settings is already open.
 
 ### General
 
-- **HUD font scale** — слайдер 0.7×–2.0×. Постоянный размер шрифта в HUD. Перекрывается на лету через ⌘+/⌘− внутри HUD.
-- **Cut & Replace: start cursor on second item** — описано выше.
-- **Show keyboard cheat sheet on ⌥⌘ hold** — toggle для corner cheat sheet.
+- **HUD font scale** — slider 0.7×–2.0×. Persistent font size in the HUD. Override on the fly via ⌘+/⌘− inside the HUD.
+- **Cut & Replace: start cursor on second item** — described above.
+- **Show keyboard cheat sheet on ⌥⌘ hold** — toggle for the corner cheat sheet.
 
 ### Sound feedback
 
-- **Volume** — общая громкость.
-- Отдельные toggles per cue:
+- **Volume** — global volume.
+- Per-cue toggles:
   - Copy success / failure
   - Paste success / failure
   - Append copy
   - Type Slowly tick
   - Delete from history
 
-При toggle проигрывается preview, чтобы услышать sample.
+On toggle, a preview plays so you can hear the sample.
 
 ### Configuration
 
-- **Export…** — сохраняет actions, hotkeys, transformations, prompt templates в JSON. **API keys не экспортируются** — они хранятся отдельно.
-- **Import…** — merge с текущей конфигурацией.
-- **Replace from file…** — полная замена.
-- **Factory Reset** — стирает ВСЁ (actions, hotkeys, providers, keys) и пересеивает defaults. Confirmation dialog.
+- **Export…** — saves actions, hotkeys, transformations, prompt templates as JSON. **API keys are not exported** — they're stored separately.
+- **Import…** — merges into the current configuration.
+- **Replace from file…** — full replacement.
+- **Factory Reset** — wipes EVERYTHING (actions, hotkeys, providers, keys) and reseeds defaults. Confirmation dialog.
 
 ### AI
 
-Список провайдеров с радио-default-кнопкой, статусом подключения, usage stats. Кнопка **+ Add provider** — выбор kind и настройка.
+The list of providers with the default-radio, connection status, usage stats. **+ Add provider** button — pick a kind and configure.
 
-ProviderEditor показывает:
+ProviderEditor shows:
 
-- Display name (можно менять).
-- Base URL (для local / custom).
-- API key (с «show/hide» eye-button, и подсказкой «A key is already saved. Leave blank to keep it.»).
-- Model — текст-поле + chips с suggestedModels per kind (одним кликом подставляются).
-- **Image-capability note** — объясняет, что DrPaste делает с image actions через этого провайдера: «Image actions: supported (OpenAI gpt-image-1)» / «Image actions: not supported» / «Image actions: OpenAI wire format» (для Custom).
-- Кнопка **Test connection**.
-- Save + Cancel + **Delete** (с confirmation dialog).
+- Display name (editable).
+- Base URL (for local / custom).
+- API key (with show/hide eye button, and "A key is already saved. Leave blank to keep it." hint).
+- Model — text field + chips with `suggestedModels` per kind (one-click insert).
+- **Image-capability note** — explains what DrPaste does with image actions via this provider: "Image actions: supported (OpenAI gpt-image-1)" / "Image actions: not supported" / "Image actions: OpenAI wire format" (for Custom).
+- **Test connection** button.
+- Save + Cancel + **Delete** (with a confirmation dialog).
 
 ### Actions
 
-Главный список actions с фильтром по типу контента (вкладки: Text, Rich text, URL, JSON, Table, Markdown, Code, Image, Files).
+The main list of actions with a content-type filter (tabs: Text, Rich text, URL, JSON, Table, Markdown, Code, Image, Files).
 
-Каждая строка:
+Each row:
 
-- Иконка типа (gear для built-in, function для transformation, sparkles для AI).
-- Title (можно переименовать через Edit).
-- Provider badge (для AI) — иконка провайдера, цвет бренда, greyscale+slash если provider не подходит.
-- Usage line под именем (для usage-tracked AI providers).
-- Hotkey indicator (если назначен ⌥⌘+буква).
+- Type icon (gear for built-in, function for transformation, sparkles for AI).
+- Title (rename via Edit).
+- Provider badge (for AI) — provider icon, brand color, greyscale+slash if the provider doesn't fit.
+- Usage line under the name (for usage-tracked AI providers).
+- Hotkey indicator (if a ⌥⌘+letter is assigned).
 - Edit button.
-- Drag handle (две горизонтальные линии) — перетаскиванием меняешь порядок.
+- Drag handle (two horizontal lines) — drag to reorder.
 - Enabled toggle.
 
-**+ New action** в правом верхнем углу. **+ Add more actions** popover — палитра built-in actions, которых ещё нет в списке.
+**+ New action** in the top-right corner. **+ Add more actions** popover — a palette of built-in actions not yet in the list.
 
 ### Appearance
 
-- **Theme** picker — Default, Vivid, Soft, Ocean. Меняет цвета HUD, MiniHUD, cheat sheet. Превью прямо в picker.
+- **Theme** picker — Default, Vivid, Soft, Ocean. Changes colors of HUD, MiniHUD, cheat sheet. Live preview in the picker.
 
 ---
 
-## Звуки и темы
+## Sounds and themes
 
-DrPaste играет аккуратные звуки на ключевые события: copy success/failure, paste success/failure, append, type-slowly tick, delete. Все toggle-able и preview-able в Settings.
+DrPaste plays tasteful sounds on key events: copy success/failure, paste success/failure, append, type-slowly tick, delete. All toggle-able and previewable in Settings.
 
-Темы: 4 пресета. Vivid — насыщенные градиенты, Soft — приглушённые, Ocean — синяя гамма. Меняются на лету, перезапуск не нужен.
+Themes: 4 presets. Vivid — saturated gradients, Soft — muted, Ocean — blue palette. Change on the fly, no restart.
 
 ---
 
-## Советы и приёмы
+## Tips and tricks
 
-### Цепочка преобразований
+### Chain transformations
 
-В HUD: выбрал клип → action → результат в preview → нажал **C** (copy preview) → новый клип сверху истории, фокус на нём → применил ещё одно action.
+In the HUD: pick a clip → action → result in preview → press **C** (copy preview) → new clip at the top of history with focus on it → apply another action.
 
-Пример: текст на русском → AI Translate → результат на испанском → C → AI Tone polish → результат отполированный.
+Example: Russian text → AI Translate → result in Spanish → C → AI Tone polish → polished result.
 
-### Промпт-шаблоны через `{input}`
+### Prompt templates via `{input}`
 
-В AI action prompts `{input}` подставляется на место clipboard text. Без него — текст просто аппендится в конец. Используй placeholder для контроля, чтобы model видела чёткую структуру.
+In AI action prompts, `{input}` is substituted with clipboard text. Without it — the text is just appended to the end. Use the placeholder for control, so the model sees a clear structure.
 
-Пример Text → Image prompt:
+Example Text → Image prompt:
 ```
 Generate a minimalist black-and-white icon representing: {input}
 
@@ -552,74 +558,78 @@ Quality: low
 
 ### Per-action hotkey hold-preview
 
-Назначил `⌥⌘T` на «AI: Translate to Spanish». В обычном использовании: выделил текст → ⌥⌘T → перевод вставился. Но если **удержать ⌥⌘ после буквы T** на 250 мс — HUD откроется уже сфокусированный на этом action с превью. Хорошо для случаев, когда хочешь увидеть результат до фиксации.
+Assign `⌥⌘T` to "AI: Translate to Spanish". Normal use: select text → ⌥⌘T → translation is pasted. But if you **hold ⌥⌘ after the letter T** for 250 ms — **BigHUD opens focused on that action** with full preview. From there you can release ⌥⌘ to commit, press Esc to cancel, ←→ to swap action, ↑↓ to pick a different clip — same as opening the HUD with ⌥⌘V and arrowing to the action.
 
-### Region capture в Mail
+### Region capture in Mail
 
-⌥⌘+drag в любом приложении → PNG в clipboard → быстро в Mail compose → ⌘V → картинка inline.
+⌥⌘+drag in any app → PNG in clipboard → quickly in Mail compose → ⌘V → image inline.
 
-### Append из нескольких приложений
+### Append from multiple apps
 
-Сценарий: нужно собрать заголовки трёх writeup'ов в один блок текста.
+Scenario: collect the titles of three writeups into one block of text.
 
-1. Открыл первый writeup, выделил заголовок → ⌥⌘S. Красная точка.
-2. ⌘Tab → другое приложение → выделил второй заголовок → ⌥⌘S.
-3. ⌘Tab → третий → ⌥⌘S.
-4. Перешёл в email/Note/документ → ⌘V — три заголовка через `\n`.
+1. Open the first writeup, select the title → ⌥⌘S. Red dot.
+2. ⌘Tab → another app → select the second title → ⌥⌘S.
+3. ⌘Tab → the third → ⌥⌘S.
+4. Switch to email/Notes/doc → ⌘V — three titles separated by `\n`.
 
-### Темы для презентаций
+### Themes for presentations
 
-Если делаешь скринкаст про DrPaste — переключи на **Vivid** или **Ocean** тему: HUD выглядит контрастнее на видео.
+Doing a screencast about DrPaste — switch to **Vivid** or **Ocean** theme: the HUD looks more contrasty on video.
 
-### Mandrill / Lenna placeholder
+### Image test-sample placeholder
 
-В Edit Action для image-actions встроенная placeholder картинка — обезьяна Mandrill (классический image-processing test). Если хочешь свою — drag-and-drop картинку прямо в Input pane. Она сохранится для следующих открытий редактора.
-
----
-
-## Решение проблем
-
-### Хоткеи не срабатывают
-
-1. Проверь System Settings → Privacy & Security → Accessibility: DrPaste включён?
-2. Перезапусти DrPaste после включения toggle (раз).
-3. Если используешь Karabiner или другое keyboard remap — проверь, не перехватывает ли он ⌥⌘V.
-
-### HUD открылся, но в нём пусто
-
-Никаких клипов в истории. Скопируй что-нибудь обычным ⌘C — появится.
-
-### AI action возвращает ошибку
-
-- HTTP 401 — невалидный API key, перепроверь в Settings.
-- HTTP 403 — key валиден, но без прав на конкретный endpoint (типично для OpenAI image без org scope).
-- HTTP 429 — rate limit, подожди или перейди на другого провайдера.
-- «Network: ...» — проблема с подключением. Local providers (Ollama, LM Studio) — проверь, что local server запущен.
-
-### Картинка в append-аккумуляторе не сохраняется при вставке
-
-Целевое приложение не поддерживает RTFD (картинки внутри текста). Тестируй в Notes или Mail — там работать должно. В Slack/Terminal/code editor inline-images не поддерживаются by design.
-
-### Cheat sheet раздражает
-
-Settings → General → выключи «Show keyboard cheat sheet on ⌥⌘ hold».
-
-### Стрелки в HUD не работают (Limited Mode)
-
-HUD должен быть key window. Кликни в HUD мышью, чтобы вернуть focus, потом стрелками.
-
-### MiniHUD остался висеть после долгого AI запроса
-
-Клик на ✕ в углу MiniHUD отменит запрос и закроет окно.
-
-### Сессия append случайно начала новую вместо продолжения
-
-Прошло > 120 секунд бездействия, или ты случайно сделал ⌥⌘V / ⌥⌘C / ⌥⌘X / per-action hotkey между нажатиями ⌥⌘S. Цветная точка в menu bar показывает, есть ли активная сессия.
+In Edit Action for image-actions, the Input pane needs a sample image so you can see what the action does without affecting your clipboard. DrPaste tries, in order: (1) a `Mandrill.png` if it's been bundled into Resources for this build (classic image-processing test image — not always present in the repo build), (2) a previously cached / user-dropped image in Application Support, (3) a stock photo from `/Library/User Pictures`, (4) an SF Symbol silhouette. Want your own — drag-and-drop an image into the Input pane. It will persist across the next openings of the editor.
 
 ---
 
-## Версия и обновления
+## Troubleshooting
 
-Текущая версия и changelog — в About окне (status menu → About DrPaste). Источники: GitHub `ilya000/DrPaste`. Релиз даёт `.app` бандл; альфа собирается через `swift build` из репозитория.
+### Hotkeys don't fire
 
-Feedback приветствуется — описывай конкретный сценарий, что ожидал, что получил.
+1. Check System Settings → Privacy & Security → Accessibility: is DrPaste enabled?
+2. Restart DrPaste after toggling (once).
+3. If you use Karabiner or another keyboard remapper — check it doesn't intercept ⌥⌘V.
+
+### HUD opened but it's empty
+
+No clips in history. Copy something with regular ⌘C — it'll appear.
+
+### AI action returns an error
+
+- HTTP 401 — invalid API key, double-check in Settings.
+- HTTP 403 — key is valid but lacks permission for that endpoint (typical for OpenAI image without org scope).
+- HTTP 429 — rate limit, wait or switch to a different provider.
+- "Network: ..." — connection issue. Local providers (Ollama, LM Studio) — check the local server is running.
+
+### Image in the append accumulator is dropped on paste
+
+The target app doesn't support RTFD (images inside text). Test in Notes or Mail — they should work. Slack/Terminal/code editor don't support inline images by design.
+
+### Cheat sheet is annoying
+
+Settings → General → disable "Show keyboard cheat sheet on ⌥⌘ hold".
+
+### Arrow keys don't work in HUD (Limited Mode)
+
+The HUD must be the key window. Click in the HUD with the mouse to regain focus, then use arrows.
+
+### MiniHUD got stuck after a long AI request
+
+Clicking ✕ in the corner of MiniHUD cancels the request and closes the window. Since 0.41.0 a 90-second watchdog is built in: if the provider goes silent for 90 seconds (e.g. keep-alive pings without data chunks), MiniHUD cancels the request itself. If it hangs sooner — that's usually a network timeout; try a different provider.
+
+### Type Slowly types too fast / too slow
+
+Since 0.42.0 the base delay is 0.133 seconds per character (was 0.2). If you want it different — open Settings → Actions → Type Slowly → Edit; the UI parameter isn't there yet (see backlog #A16), but the Playground preview now shows the actual production speed, so you can dial it in by eye before committing.
+
+### Append session unexpectedly started a new one instead of continuing
+
+More than 120 seconds of inactivity passed, or you accidentally did ⌥⌘V / ⌥⌘C / ⌥⌘X / per-action hotkey between the ⌥⌘S presses. The colored dot in the menu bar tells you whether a session is active.
+
+---
+
+## Version and updates
+
+The current version and changelog — in the About window (status menu → About DrPaste). Source: GitHub `ilya000/DrPaste`. A release ships a `.app` bundle; the alpha is built via `swift build` from the repository.
+
+Feedback is welcome — describe a concrete scenario, what you expected, and what you got.

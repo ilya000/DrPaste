@@ -958,7 +958,13 @@ struct BigHUDView: View {
             keyHint("S", "merge")
             if gesture {
                 // ⌥⌘ implicitly held — bare letters fire as chords.
-                keyHint("C", "copy")
+                // Label is "save" rather than "copy": semantically C
+                // here promotes the current preview into the top of
+                // clipboard history (and writes it back to the system
+                // pasteboard). The word "copy" reads as system ⌘C
+                // and confused users about what the key actually does
+                // inside the HUD vs. outside.
+                keyHint("C", "save")
                 keyHint("⏎", "keep")
             } else {
                 // Limited Mode — HUD is the key window, no modifiers
@@ -966,10 +972,14 @@ struct BigHUDView: View {
                 // ⌥⌘C for copy (S the same way) so the legend can
                 // stay bare-key. ⏎ pastes-and-closes; paste-and-keep
                 // is intentionally Gesture-Mode-only.
-                keyHint("C", "copy")
+                keyHint("C", "save")
                 keyHint("⏎", "paste")
             }
-            keyHint("esc", "close")
+            // `cancel` is the accurate semantic — esc aborts the
+            // commit, not just "closes the window". The HUD also
+            // closes, but the user mental model is "cancel without
+            // pasting", which is what the word communicates.
+            keyHint("esc", "cancel")
             Spacer()
             keyHint(zoomKey, "\(Int(state.fontScale * 100))%")
         }

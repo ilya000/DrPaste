@@ -28,6 +28,12 @@ enum BuiltinActionMetadata {
         "builtin.cyrillic_translit": "Transliterate Cyrillic text into Latin. Auto-detects script variant via marker letters: ћ ђ ј љ њ џ → Serbian/Macedonian (Gaj's diacritic scheme — ж→ž, ч→č, ш→š); ъ without ы/э/ё → Bulgarian (Streamlined 2009 — щ→sht, ъ→a); є ї ґ → Ukrainian; ў → Belarusian; otherwise Russian default (zh, ch, sh, kh digraphs). Preserves word case (Привет → Privet, ПРИВЕТ → PRIVET). Chains well with the Unicode pseudo-font actions: paste a Cyrillic name → transliterate → ⌥⌘Space → 𝐀 Bold for stylized output.",
         "builtin.json_pretty": "Reformats JSON with 2-space indentation.",
         "builtin.json_minify": "Removes whitespace from JSON for compact transmission.",
+        // Current seed ID is `builtin.json_keys`; `builtin.json_extract_keys`
+        // is kept as a legacy alias so older configs / migrated descriptors
+        // still find a description here. Both descriptions are deliberately
+        // close so users see the same explanation regardless of which ID
+        // their saved config carries.
+        "builtin.json_keys": "Lists all JSON keys recursively using dot notation — useful for understanding API responses and nested payloads.",
         "builtin.json_extract_keys": "Lists all top-level keys (one per line) — useful for understanding API responses.",
         "builtin.json_flatten": "Flattens nested objects into dot-notation keys (e.g. {a:{b:1}} → {a.b:1}).",
         "builtin.json_remove_nulls": "Removes keys with null values.",
@@ -38,6 +44,11 @@ enum BuiltinActionMetadata {
         "builtin.table_to_json": "Converts CSV / TSV to JSON array of objects.",
         "builtin.table_to_md": "Converts CSV / TSV to Markdown table.",
         "builtin.md_to_plain": "Strips Markdown markup, keeps only readable prose.",
+        "builtin.md_to_rich": "Renders Markdown source as rich text (bold, italic, inline code, links). Pastes into Mail / Pages / Notes / Word with formatting intact.",
+        // Current seed IDs are `builtin.md_headings` and `builtin.md_links`;
+        // the `_extract_` variants are kept as legacy aliases for older configs.
+        "builtin.md_headings": "Lists all Markdown headings — useful for building a TOC.",
+        "builtin.md_links": "Lists all Markdown links.",
         "builtin.md_extract_headings": "Lists all Markdown headings — for building a TOC.",
         "builtin.md_extract_links": "Lists all Markdown links.",
         "builtin.code_wrap": "Wraps text in a Markdown code block (triple backticks).",

@@ -28,48 +28,63 @@ struct HotkeyRecorderField: View {
     @State private var recorderMonitor: Any?
 
     var body: some View {
-        HStack(spacing: 8) {
-            Button {
-                toggleRecording()
-            } label: {
-                HStack(spacing: 6) {
-                    if isRecording {
-                        Text("Press shortcut…")
-                            .foregroundStyle(.secondary)
-                    } else if let hk = hotkey {
-                        Text(hk.displayString)
-                            .font(.system(size: 13, weight: .medium, design: .monospaced))
-                    } else {
-                        Text("Click to record")
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                .frame(minWidth: 130, alignment: .leading)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(isRecording
-                              ? Color.accentColor.opacity(0.20)
-                              : Color.primary.opacity(0.06))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 5)
-                        .strokeBorder(isRecording ? Color.accentColor : Color.clear, lineWidth: 1.5)
-                )
-            }
-            .buttonStyle(.plain)
-
-            if hotkey != nil {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 8) {
                 Button {
-                    hotkey = nil
-                    stopRecording()
+                    toggleRecording()
                 } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        if isRecording {
+                            Text("Press shortcut…")
+                                .foregroundStyle(.secondary)
+                        } else if let hk = hotkey {
+                            Text(hk.displayString)
+                                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                        } else {
+                            Text("Click to record")
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .frame(minWidth: 130, alignment: .leading)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(isRecording
+                                  ? Color.accentColor.opacity(0.20)
+                                  : Color.primary.opacity(0.06))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5)
+                            .strokeBorder(isRecording ? Color.accentColor : Color.clear, lineWidth: 1.5)
+                    )
                 }
                 .buttonStyle(.plain)
-                .help("Clear hotkey")
+
+                if hotkey != nil {
+                    Button {
+                        hotkey = nil
+                        stopRecording()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Clear hotkey")
+                }
+            }
+            // Per-action hotkey semantics primer — shown right under
+            // the recorder so users see it when they're actually
+            // assigning the chord. Tap fires direct (no HUD); holding
+            // ⌥⌘ after the letter opens BigHUD focused on this action.
+            // Wording matches the cheat sheet's per-action chord
+            // legend ("— tap run, hold preview"), so users see
+            // consistent phrasing across the recorder, the cheat
+            // sheet, and HELP.md.
+            if hotkey != nil {
+                Text("Tap to run · hold ⌥⌘ to preview in HUD")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
         }
         .onDisappear { stopRecording() }

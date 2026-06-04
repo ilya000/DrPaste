@@ -139,8 +139,19 @@ enum PasteSimulator {
     /// inlined the simulate-and-poll dance; the helper eliminates
     /// the duplication and gives all four paths a single timing
     /// model to maintain.
+    ///
+    /// **Timeout chosen at 0.40 s** (raised from 0.25 s in 0.42.2).
+    /// On Electron / Java / Office / Remote Desktop apps the ⌘C
+    /// round-trip occasionally takes 250–350 ms — large rich-text
+    /// or image selections cross that threshold reliably. The
+    /// earlier 0.25 s budget produced false "selection capture
+    /// failed" outcomes on per-action hotkeys and Append Copy in
+    /// those apps; the loop still exits the moment `changeCount`
+    /// ticks, so fast-path latency on native apps stays at one
+    /// poll interval (~20 ms). Logging on timeout includes the
+    /// frontmost app's bundleID so problem apps are diagnosable.
     @MainActor
-    static func simulateCopyAndAwaitChange(timeout: TimeInterval = 0.25) async -> Bool {
+    static func simulateCopyAndAwaitChange(timeout: TimeInterval = 0.40) async -> Bool {
         let pb = NSPasteboard.general
         let before = pb.changeCount
         simulateCopy()
@@ -149,6 +160,11 @@ enum PasteSimulator {
             try? await Task.sleep(nanoseconds: 20_000_000)
             if pb.changeCount > before { return true }
         }
+        // Selection capture timed out — log the frontmost app so
+        // repeated failures with one specific app can be diagnosed.
+        let frontBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
+        NSLog("DrPaste: simulateCopyAndAwaitChange timed out after %.2fs (frontmost: %@)",
+              timeout, frontBundleID)
         return false
     }
 }
@@ -165,21 +181,51 @@ enum PasteboardWriter {
         pb.clearContents()
 
         // If a full raw snapshot is available, restore losslessly.
+        // CRITICAL: declare only the types we can actually read back
+        // from disk. The earlier code declared every type in
+        // `typesOrdered` and then silently skipped the `setData` call
+        // for any missing / unreadable blob. Result: the pasteboard
+        // claimed e.g. "I have public.tiff" but had no bytes for it,
+        // so receiving apps that preferred .tiff over .string got an
+        // empty image and the user's text-only paste flow produced
+        // a broken paste. Two-pass: read all blobs into memory first,
+        // declare only types whose blob loaded, then write the data.
         if !item.representations.isEmpty && !item.typesOrdered.isEmpty {
-            let types = item.typesOrdered.map { NSPasteboard.PasteboardType($0) }
-            pb.declareTypes(types, owner: nil)
+            var readableData: [(type: String, data: Data)] = []
+            var missingCount = 0
             for typeStr in item.typesOrdered {
                 guard let rel = item.representations[typeStr] else { continue }
                 let url = store.blobURL(rel)
-                guard let data = try? Data(contentsOf: url) else { continue }
-                pb.setData(data, forType: NSPasteboard.PasteboardType(typeStr))
+                if let data = try? Data(contentsOf: url) {
+                    readableData.append((type: typeStr, data: data))
+                } else {
+                    missingCount += 1
+                }
             }
-            return
+            if !readableData.isEmpty {
+                let types = readableData.map { NSPasteboard.PasteboardType($0.type) }
+                pb.declareTypes(types, owner: nil)
+                for entry in readableData {
+                    pb.setData(entry.data,
+                               forType: NSPasteboard.PasteboardType(entry.type))
+                }
+                if missingCount > 0 {
+                    NSLog("DrPaste: PasteboardWriter skipped %d missing blob(s) for clip id=%@",
+                          missingCount, item.id.uuidString)
+                }
+                return
+            }
+            // Every representation failed to load. Fall through to the
+            // preview-only path so the user at least gets the rendered
+            // text / image, not an empty pasteboard.
+            NSLog("DrPaste: PasteboardWriter — all %d representations missing for clip id=%@; falling back to preview",
+                  item.typesOrdered.count, item.id.uuidString)
         }
 
         // Fallback path: write back from previewText / previewImageRel. Used
         // for transformed items where we created item.previewText without
-        // preserving the original representations (for example after JSON pretty).
+        // preserving the original representations (for example after JSON pretty),
+        // OR as a recovery when all blobs were missing above.
         if let text = item.previewText, !text.isEmpty {
             pb.setString(text, forType: .string)
         }

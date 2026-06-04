@@ -44,15 +44,25 @@ enum CuratedDefaults {
         // JSON — core 3.
         "builtin.json_pretty",
         "builtin.json_minify",
-        "builtin.json_extract_keys",
+        // The descriptor seeded by DefaultTransformationSeed is `builtin.json_keys`
+        // (current ID); `builtin.json_extract_keys` is the legacy ID that some
+        // older configs / tests still reference. Pointing the curated set at the
+        // legacy ID would leave Extract Keys disabled by default for fresh
+        // installs because the matching descriptor doesn't exist under that
+        // name — caught by the test suite on a clean machine.
+        "builtin.json_keys",
 
         // Table — core 2.
         "builtin.table_to_json",
         "builtin.table_to_md",
 
-        // Markdown — core 2.
+        // Markdown — core 3 (added md → rich).
         "builtin.md_to_plain",
-        "builtin.md_extract_headings",
+        "builtin.md_to_rich",
+        // Same legacy/current rename as the JSON case above: the seed
+        // uses `builtin.md_headings`; `builtin.md_extract_headings`
+        // is the legacy ID.
+        "builtin.md_headings",
 
         // Code — core 2.
         "builtin.code_wrap",

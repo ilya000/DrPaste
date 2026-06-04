@@ -153,7 +153,20 @@ struct TestOutputPane: View {
                 EmptyView()
             }
             // Content body — text / image / rich text / etc.
-            if let item = itemFromOutcome(outcome) {
+            //
+            // Type Slowly's outcome animates character-by-character at
+            // the SAME delay the production run will use, so the
+            // playground preview is bit-for-bit honest about what the
+            // user will see at the receiving end. No 2× / "speed it up"
+            // visualisation — matches the real keystroke cadence so
+            // users can dial the delay parameter against real perceived
+            // speed. Static fallback covers re-render cases (the view
+            // identity changes when the outcome is re-emitted).
+            if case .alternativeCommit(let item, .typeSlowly(let delay, let jitter)) = outcome {
+                TypeSlowlyPreview(text: item.previewText ?? "",
+                                  baseDelay: delay,
+                                  jitter: jitter)
+            } else if let item = itemFromOutcome(outcome) {
                 renderItem(item)
             }
         }
@@ -265,5 +278,73 @@ struct TestOutputPane: View {
         }
         .padding(6)
         .background(RoundedRectangle(cornerRadius: 4).fill(Color.purple.opacity(0.08)))
+    }
+}
+
+// MARK: - Type Slowly preview
+
+/// Renders the Type Slowly output by animating the string character-by-
+/// character at the same delay the production run uses (`TypeSimulator.
+/// typeSlowly(_:baseDelay:jitter:)`). Lets users dial the delay
+/// parameter against the actual perceived speed before triggering the
+/// action against a real input field.
+///
+/// Implementation note: keeps state inside the view so the playground's
+/// outcome re-emission (which can churn this view's identity) restarts
+/// from index 0 each time. The animation runs on a single Task that
+/// honours view-lifecycle cancellation via `.task`.
+private struct TypeSlowlyPreview: View {
+    let text: String
+    let baseDelay: TimeInterval
+    let jitter: Double
+
+    @State private var visibleCount: Int = 0
+    @State private var finished: Bool = false
+
+    var body: some View {
+        let prefix = text.prefix(visibleCount)
+        let suffix = text.dropFirst(visibleCount)
+
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: finished ? "checkmark.circle.fill" : "keyboard.fill")
+                    .foregroundStyle(finished ? .green : .purple)
+                    .font(.system(size: 11))
+                Text(finished
+                     ? "Preview complete · \(text.count) characters"
+                     : "Typing live at \(Int(baseDelay * 1000)) ms / char · \(visibleCount)/\(text.count)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            ScrollView {
+                // `foregroundStyle(_:)` on a `Text` value (as opposed to a
+                // View modifier on a container) is macOS 14+. Deployment
+                // target is macOS 13, so use the older
+                // `foregroundColor(_:)` API — it's deprecated for
+                // SwiftUI in general but still the supported call on a
+                // composed Text for back-deployment.
+                (Text(String(prefix))
+                    .foregroundColor(.primary)
+                 + Text(String(suffix))
+                    .foregroundColor(Color.secondary.opacity(0.35)))
+                .font(.system(size: 12, design: .monospaced))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+            }
+        }
+        .task(id: text + "|\(baseDelay)|\(jitter)") {
+            visibleCount = 0
+            finished = false
+            let chars = Array(text)
+            for i in 0..<chars.count {
+                if Task.isCancelled { return }
+                let factor = 1.0 + Double.random(in: -jitter...jitter)
+                let delay = baseDelay * factor
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                visibleCount = i + 1
+            }
+            finished = true
+        }
     }
 }
