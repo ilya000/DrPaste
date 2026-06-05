@@ -35,7 +35,7 @@ import AppKit
 /// transformation predictable and reversible without the Swift Markdown
 /// library dependency that `.full` would require.
 struct MarkdownToRichTextAction: ClipboardAction {
-    let id = "builtin.md_to_rich"
+    let id = "builtin.md.to_rich"
     let title = "Markdown → Rich text"
     let isLocal = true
 

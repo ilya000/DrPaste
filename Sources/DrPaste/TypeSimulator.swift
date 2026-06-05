@@ -179,7 +179,7 @@ enum TypeSimulator {
 // MARK: - Type Slowly action (Backlog #7)
 
 struct TypeSlowlyAction: ClipboardAction {
-    let id = "builtin.type_slowly"
+    let id = "builtin.text.type_slowly"
     let title = "Type Slowly"
     let isLocal = true
 

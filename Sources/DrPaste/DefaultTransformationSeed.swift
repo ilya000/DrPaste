@@ -48,53 +48,77 @@ enum DefaultTransformationSeed {
     ///     Internet Slang entries (Leetspeak, UwU, Zalgo). Seeded via the
     ///     normal new-entry path in `seedTransformations`; no migration
     ///     required.
-    static let currentSeedVersion: Int = 7
+    /// 8 — added 0.55.0 batch (#A72 missing actions audit): HTML strip
+    ///     tags / escape / unescape, JSON validate, normalize spaces,
+    ///     collapse blank lines, extract emails, extract links. Filling
+    ///     gaps the brain-storm spec flagged that weren't covered by
+    ///     existing engines. Seeded via the normal new-entry path; no
+    ///     migration required.
+    /// 9 — #A74 pre-distribution ID consolidation (0.56.0). Every
+    ///     default-shipped action ID renamed under convention v2
+    ///     (`<namespace>.<content_kind>.<verb_noun>`). Migration in
+    ///     `IDMigration056.apply()` runs first in
+    ///     `runFirstLaunchSeeds` and rewrites every dict key in
+    ///     ActionConfig. Also bundles new transformations: text
+    ///     remove_line_breaks + 2 wrap descriptors (smart quotes,
+    ///     parens), table.to_html. Plus merges duplicate
+    ///     `paste_as_text` + `clean_formatting` → single
+    ///     `builtin.rich.strip_formatting`.
+    static let currentSeedVersion: Int = 9
 
-    /// All bundled transformations. IDs match the legacy hardcoded action IDs
-    /// so existing user customizations carry over without remapping.
+    /// All bundled transformations. IDs follow convention v2 (#A74, 0.56.0):
+    /// `<namespace>.<content_kind>.<verb_noun>`. Content kind = source
+    /// SemanticKind (matches HUD chip filter). Sub-domain (translit /
+    /// HTML / fun / etc.) lives in title + verb_noun, NOT in category.
     static func defaults() -> [CustomTransformationDescriptor] {
         [
-            // Plain text — case.
-            descriptor(id: "builtin.uppercase",      title: "UPPERCASE",       engine: .caseChange,   params: ["case": "upper"],     types: [.text, .markdown, .code]),
-            descriptor(id: "builtin.lowercase",      title: "lowercase",       engine: .caseChange,   params: ["case": "lower"],     types: [.text, .markdown, .code]),
-            descriptor(id: "builtin.title_case",     title: "Title Case",      engine: .caseChange,   params: ["case": "title"],     types: [.text, .markdown]),
-            descriptor(id: "builtin.sentence_case",  title: "Sentence case",   engine: .caseChange,   params: ["case": "sentence"],  types: [.text, .markdown]),
-            descriptor(id: "builtin.camel_case",     title: "camelCase",       engine: .camelCase,    params: [:],                   types: [.text, .code]),
-            descriptor(id: "builtin.snake_case",     title: "snake_case",      engine: .snakeCase,    params: [:],                   types: [.text, .code]),
-            descriptor(id: "builtin.kebab_case",     title: "kebab-case",      engine: .kebabCase,    params: [:],                   types: [.text, .code]),
+            // MARK: text — case
+            descriptor(id: "builtin.text.uppercase",      title: "UPPERCASE",       engine: .caseChange,   params: ["case": "upper"],     types: [.text, .markdown, .code]),
+            descriptor(id: "builtin.text.lowercase",      title: "lowercase",       engine: .caseChange,   params: ["case": "lower"],     types: [.text, .markdown, .code]),
+            descriptor(id: "builtin.text.title_case",     title: "Title Case",      engine: .caseChange,   params: ["case": "title"],     types: [.text, .markdown]),
+            descriptor(id: "builtin.text.sentence_case",  title: "Sentence case",   engine: .caseChange,   params: ["case": "sentence"],  types: [.text, .markdown]),
+            descriptor(id: "builtin.text.camel_case",     title: "camelCase",       engine: .camelCase,    params: [:],                   types: [.text, .code]),
+            descriptor(id: "builtin.text.snake_case",     title: "snake_case",      engine: .snakeCase,    params: [:],                   types: [.text, .code]),
+            descriptor(id: "builtin.text.kebab_case",     title: "kebab-case",      engine: .kebabCase,    params: [:],                   types: [.text, .code]),
 
-            // Plain text — whitespace and lines.
-            descriptor(id: "builtin.trim",           title: "Trim whitespace", engine: .trim,         params: [:],                   types: [.text, .markdown, .code]),
-            descriptor(id: "builtin.sort_lines",    title: "Sort lines",      engine: .sortLines,    params: ["direction": "asc", "caseInsensitive": "false"], types: [.text, .markdown, .code]),
-            descriptor(id: "builtin.unique_lines",  title: "Unique lines",    engine: .uniqueLines,  params: [:],                   types: [.text, .markdown, .code]),
+            // MARK: text — whitespace and lines
+            descriptor(id: "builtin.text.trim",           title: "Trim whitespace", engine: .trim,         params: [:],                   types: [.text, .markdown, .code]),
+            descriptor(id: "builtin.text.sort_lines",     title: "Sort lines",      engine: .sortLines,    params: ["direction": "asc", "caseInsensitive": "false"], types: [.text, .markdown, .code]),
+            descriptor(id: "builtin.text.unique_lines",   title: "Unique lines",    engine: .uniqueLines,  params: [:],                   types: [.text, .markdown, .code]),
+            // #A74 (0.56.0) — new: join soft-wrapped lines.
+            descriptor(id: "builtin.text.remove_line_breaks", title: "Remove line breaks", engine: .removeLineBreaks, params: [:], types: [.text, .markdown, .richText]),
 
-            // Plain text — encoding.
-            descriptor(id: "builtin.base64_encode", title: "Base64 encode",   engine: .base64Encode, params: [:],                   types: [.text, .code]),
-            descriptor(id: "builtin.base64_decode", title: "Base64 decode",   engine: .base64Decode, params: [:],                   types: [.text, .code]),
-            descriptor(id: "builtin.url_encode",    title: "URL encode",      engine: .urlPercentEncode, params: [:],               types: [.text, .url, .code]),
-            descriptor(id: "builtin.url_decode",    title: "URL decode",      engine: .urlPercentDecode, params: [:],               types: [.text, .url, .code]),
+            // MARK: text — encoding
+            descriptor(id: "builtin.text.base64_encode", title: "Base64 encode",   engine: .base64Encode, params: [:],                   types: [.text, .code]),
+            descriptor(id: "builtin.text.base64_decode", title: "Base64 decode",   engine: .base64Decode, params: [:],                   types: [.text, .code]),
+            descriptor(id: "builtin.url.encode",         title: "URL encode",      engine: .urlPercentEncode, params: [:],               types: [.text, .url, .code]),
+            descriptor(id: "builtin.url.decode",         title: "URL decode",      engine: .urlPercentDecode, params: [:],               types: [.text, .url, .code]),
 
-            // Plain text — derived.
-            descriptor(id: "builtin.slugify",       title: "Slugify",         engine: .slugify,      params: [:],                   types: [.text]),
-            descriptor(id: "builtin.word_count",    title: "Word / char count", engine: .wordCount,  params: [:],                   types: [.text, .markdown, .code]),
+            // MARK: text — derived
+            descriptor(id: "builtin.text.slugify",       title: "Slugify",         engine: .slugify,      params: [:],                   types: [.text]),
+            descriptor(id: "builtin.text.word_count",    title: "Word / char count", engine: .wordCount,  params: [:],                   types: [.text, .markdown, .code]),
 
-            // JSON.
-            descriptor(id: "builtin.json_pretty",   title: "Pretty JSON",     engine: .jsonFormat,   params: ["operation": "pretty"],  types: [.json]),
-            descriptor(id: "builtin.json_minify",   title: "Minify JSON",     engine: .jsonFormat,   params: ["operation": "minify"],  types: [.json]),
-            descriptor(id: "builtin.json_keys",     title: "Extract keys",    engine: .jsonFormat,   params: ["operation": "extractKeysRecursive"], types: [.json]),
+            // MARK: text — wrap (#A74, 0.56.0 — uses existing wrap engine)
+            descriptor(id: "builtin.text.wrap_quotes",   title: "Wrap in “smart quotes”", engine: .wrap, params: ["prefix": "\u{201C}", "suffix": "\u{201D}"], types: [.text, .code, .markdown]),
+            descriptor(id: "builtin.text.wrap_parens",   title: "Wrap in (parens)",       engine: .wrap, params: ["prefix": "(", "suffix": ")"], types: [.text, .code, .markdown]),
 
-            // Code.
-            descriptor(id: "builtin.code_wrap",        title: "Wrap in code block", engine: .wrap,        params: ["prefix": "```\n", "suffix": "\n```"], types: [.text, .code, .markdown]),
-            descriptor(id: "builtin.tabs_to_spaces",   title: "Tabs → 4 spaces",    engine: .findReplace, params: ["find": "\t", "replace": "    ", "caseInsensitive": "false"], types: [.text, .code]),
-            descriptor(id: "builtin.spaces_to_tabs",   title: "4 spaces → tabs",    engine: .findReplace, params: ["find": "    ", "replace": "\t", "caseInsensitive": "false"], types: [.text, .code]),
+            // MARK: json
+            descriptor(id: "builtin.json.pretty",        title: "Pretty JSON",     engine: .jsonFormat,   params: ["operation": "pretty"],  types: [.json]),
+            descriptor(id: "builtin.json.minify",        title: "Minify JSON",     engine: .jsonFormat,   params: ["operation": "minify"],  types: [.json]),
+            descriptor(id: "builtin.json.extract_keys",  title: "Extract keys",    engine: .jsonFormat,   params: ["operation": "extractKeysRecursive"], types: [.json]),
 
-            // Markdown.
-            descriptor(id: "builtin.md_to_plain",        title: "Markdown → plain",   engine: .mdToPlain,         params: [:], types: [.markdown]),
-            descriptor(id: "builtin.md_headings",        title: "Extract headings",   engine: .mdExtractHeadings, params: [:], types: [.markdown, .text, .richText]),
-            descriptor(id: "builtin.md_links",           title: "Extract links",      engine: .mdExtractLinks,    params: [:], types: [.markdown, .text, .richText]),
+            // MARK: code
+            descriptor(id: "builtin.code.wrap_block",      title: "Wrap in code block", engine: .wrap,        params: ["prefix": "```\n", "suffix": "\n```"], types: [.text, .code, .markdown]),
+            descriptor(id: "builtin.code.tabs_to_spaces",  title: "Tabs → 4 spaces",    engine: .findReplace, params: ["find": "\t", "replace": "    ", "caseInsensitive": "false"], types: [.text, .code]),
+            descriptor(id: "builtin.code.spaces_to_tabs",  title: "4 spaces → tabs",    engine: .findReplace, params: ["find": "    ", "replace": "\t", "caseInsensitive": "false"], types: [.text, .code]),
 
-            // URL.
-            descriptor(id: "builtin.url_strip_tracking", title: "Clean URL",          engine: .urlStripTracking,  params: [:], types: [.url]),
+            // MARK: md
+            descriptor(id: "builtin.md.to_plain",          title: "Markdown → plain",   engine: .mdToPlain,         params: [:], types: [.markdown]),
+            descriptor(id: "builtin.md.extract_headings",  title: "Extract headings",   engine: .mdExtractHeadings, params: [:], types: [.markdown, .text, .richText]),
+            descriptor(id: "builtin.md.extract_links",     title: "Extract links",      engine: .mdExtractLinks,    params: [:], types: [.markdown, .text, .richText]),
+
+            // MARK: url
+            descriptor(id: "builtin.url.strip_tracking",   title: "Clean URL",          engine: .urlStripTracking,  params: [:], types: [.url]),
 
             // Unicode pseudo-fonts ("Fancy text"). Each action shows a
             // stylized capital A as the title prefix so the user sees at a
@@ -104,26 +128,26 @@ enum DefaultTransformationSeed {
             // glyph as a self-demonstrating preview. All restricted to .text
             // only (decorative styling is inappropriate for code / URLs /
             // markdown which need exact glyphs preserved).
-            unicodeFontDescriptor("builtin.font_bold",                  .bold,             prefix: "𝐀"),
-            unicodeFontDescriptor("builtin.font_italic",                .italic,           prefix: "𝐴"),
-            unicodeFontDescriptor("builtin.font_bold_italic",           .boldItalic,       prefix: "𝑨"),
-            unicodeFontDescriptor("builtin.font_script",                .script,           prefix: "𝒜"),
-            unicodeFontDescriptor("builtin.font_bold_script",           .boldScript,       prefix: "𝓐"),
-            unicodeFontDescriptor("builtin.font_fraktur",               .fraktur,          prefix: "𝔄"),
-            unicodeFontDescriptor("builtin.font_bold_fraktur",          .boldFraktur,      prefix: "𝕬"),
-            unicodeFontDescriptor("builtin.font_double_struck",         .doubleStruck,     prefix: "𝔸"),
-            unicodeFontDescriptor("builtin.font_sans",                  .sans,             prefix: "𝖠"),
-            unicodeFontDescriptor("builtin.font_sans_bold",             .sansBold,         prefix: "𝗔"),
-            unicodeFontDescriptor("builtin.font_sans_italic",           .sansItalic,       prefix: "𝘈"),
-            unicodeFontDescriptor("builtin.font_sans_bold_italic",      .sansBoldItalic,   prefix: "𝘼"),
-            unicodeFontDescriptor("builtin.font_monospace",             .monospace,        prefix: "𝙰"),
-            unicodeFontDescriptor("builtin.font_fullwidth",             .fullwidth,        prefix: "Ａ"),
-            unicodeFontDescriptor("builtin.font_small_caps",            .smallCaps,        prefix: "ᴀ"),
-            unicodeFontDescriptor("builtin.font_circled",               .circled,          prefix: "Ⓐ"),
-            unicodeFontDescriptor("builtin.font_filled_circled",        .filledCircled,    prefix: "🅐"),
-            unicodeFontDescriptor("builtin.font_squared",               .squared,          prefix: "🄰"),
-            unicodeFontDescriptor("builtin.font_filled_squared",        .filledSquared,    prefix: "🅰"),
-            unicodeFontDescriptor("builtin.font_upside_down",           .upsideDown,       prefix: "∀"),
+            unicodeFontDescriptor("builtin.text.font_bold",                  .bold,             prefix: "𝐀"),
+            unicodeFontDescriptor("builtin.text.font_italic",                .italic,           prefix: "𝐴"),
+            unicodeFontDescriptor("builtin.text.font_bold_italic",           .boldItalic,       prefix: "𝑨"),
+            unicodeFontDescriptor("builtin.text.font_script",                .script,           prefix: "𝒜"),
+            unicodeFontDescriptor("builtin.text.font_bold_script",           .boldScript,       prefix: "𝓐"),
+            unicodeFontDescriptor("builtin.text.font_fraktur",               .fraktur,          prefix: "𝔄"),
+            unicodeFontDescriptor("builtin.text.font_bold_fraktur",          .boldFraktur,      prefix: "𝕬"),
+            unicodeFontDescriptor("builtin.text.font_double_struck",         .doubleStruck,     prefix: "𝔸"),
+            unicodeFontDescriptor("builtin.text.font_sans",                  .sans,             prefix: "𝖠"),
+            unicodeFontDescriptor("builtin.text.font_sans_bold",             .sansBold,         prefix: "𝗔"),
+            unicodeFontDescriptor("builtin.text.font_sans_italic",           .sansItalic,       prefix: "𝘈"),
+            unicodeFontDescriptor("builtin.text.font_sans_bold_italic",      .sansBoldItalic,   prefix: "𝘼"),
+            unicodeFontDescriptor("builtin.text.font_monospace",             .monospace,        prefix: "𝙰"),
+            unicodeFontDescriptor("builtin.text.font_fullwidth",             .fullwidth,        prefix: "Ａ"),
+            unicodeFontDescriptor("builtin.text.font_small_caps",            .smallCaps,        prefix: "ᴀ"),
+            unicodeFontDescriptor("builtin.text.font_circled",               .circled,          prefix: "Ⓐ"),
+            unicodeFontDescriptor("builtin.text.font_filled_circled",        .filledCircled,    prefix: "🅐"),
+            unicodeFontDescriptor("builtin.text.font_squared",               .squared,          prefix: "🄰"),
+            unicodeFontDescriptor("builtin.text.font_filled_squared",        .filledSquared,    prefix: "🅰"),
+            unicodeFontDescriptor("builtin.text.font_upside_down",           .upsideDown,       prefix: "∀"),
             // Markdown-aware stylization. Parses **bold** / *italic* /
             // ***bold-italic*** / `code` / ~~strike~~ inline markdown
             // markup and applies the matching Unicode pseudo-font style
@@ -132,82 +156,111 @@ enum DefaultTransformationSeed {
             // Telegram bios, LinkedIn captions, Discord profiles,
             // anywhere markdown isn't rendered but emphasis matters.
             descriptor(
-                id: "builtin.font_markdown",
+                id: "builtin.text.font_markdown",
                 title: "**md** → 𝐦𝐝  Markdown styles → Unicode",
                 engine: .unicodeStyle,
                 params: ["style": UnicodeFontStyle.markdownAware.rawValue],
                 types: [.text, .markdown]
             ),
             // Reverse pass — strip any styled Unicode back to plain ASCII.
-            // Title visualises the direction: stylized A → plain ABC.
             descriptor(
-                id: "builtin.font_plain",
+                id: "builtin.text.font_plain",
                 title: "𝒜 → ABC  Plain ASCII",
                 engine: .unicodeStyle,
                 params: ["style": UnicodeFontStyle.plain.rawValue],
                 types: [.text]
             ),
 
-            // Cyrillic → Latin transliteration. Auto-detects script variant
-            // (Russian / Ukrainian / Belarusian / Bulgarian / Serbian /
-            // Macedonian) by marker letters and applies the appropriate
-            // scheme. Chains well into the fancy-font actions: paste a
-            // Cyrillic name → transliterate → ⌥⌘Space → "𝐀 Bold".
+            // MARK: text — transliteration
             descriptor(
-                id: "builtin.cyrillic_translit",
-                title: "К → K  Cyrillic transliteration",
+                id: "builtin.text.cyrillic_to_latin",
+                title: "Ћ → Ć  Cyrillic translit",
                 engine: .cyrillicToLatin,
                 params: [:],
                 types: [.text]
             ),
-
-            // Latin → Cyrillic (#A18). Reverse transliteration with target
-            // language parameter. Russian default; the editor lets users
-            // pick Ukrainian / Bulgarian / Serbian variants.
             descriptor(
-                id: "builtin.latin_to_cyrillic",
-                title: "K → К  Latin → Cyrillic",
+                id: "builtin.text.latin_to_cyrillic",
+                title: "Ć → Ћ  Latin translit",
                 engine: .latinToCyrillic,
                 params: ["target": "russian"],
                 types: [.text]
             ),
 
-            // Pretty Code Local (#A19). Auto-detects JSON / XML / HTML /
-            // CSS by leading chars, falls back to generic whitespace
-            // normalization. Offline, sub-50 ms. The AI counterpart
-            // ("Pretty Code: AI") ships separately in 0.54.0.
+            // MARK: code — Pretty Code Local
             descriptor(
-                id: "builtin.pretty_code_local",
+                id: "builtin.code.pretty_local",
                 title: "Pretty Code (local)",
                 engine: .prettyCodeLocal,
                 params: [:],
                 types: [.code, .json, .text]
             ),
 
-            // Fun / Internet Slang group (#A70). Three local deterministic
-            // novelties. The two AI counterparts (LOLspeak, Hacker
-            // Terminal) ship in 0.54.0 with the rest of the AI pairs.
+            // MARK: text — fun / Internet slang
             descriptor(
-                id: "builtin.leetspeak",
+                id: "builtin.text.leetspeak",
                 title: "Leetspeak / 1337",
                 engine: .leetspeak,
                 params: ["aggressive": "false"],
                 types: [.text, .code]
             ),
             descriptor(
-                id: "builtin.uwu_speak",
+                id: "builtin.text.uwu_speak",
                 title: "UwU speech",
                 engine: .uwuSpeak,
                 params: ["faces": "true"],
                 types: [.text, .markdown]
             ),
             descriptor(
-                id: "builtin.zalgo",
+                id: "builtin.text.zalgo",
                 title: "Zalgo corruption",
                 engine: .zalgo,
                 params: ["intensity": "medium"],
                 types: [.text]
-            )
+            ),
+
+            // MARK: html — strip / escape / unescape (operate on HTML markup;
+            //         content_kind = `html` per convention v2).
+            descriptor(id: "builtin.html.strip_tags",
+                       title: "Strip HTML tags",
+                       engine: .htmlStripTags,
+                       params: [:],
+                       types: [.text, .richText, .code]),
+            descriptor(id: "builtin.html.escape",
+                       title: "Escape HTML",
+                       engine: .htmlEscape,
+                       params: [:],
+                       types: [.text, .code]),
+            descriptor(id: "builtin.html.unescape",
+                       title: "Unescape HTML",
+                       engine: .htmlUnescape,
+                       params: [:],
+                       types: [.text, .code]),
+            descriptor(id: "builtin.json.validate",
+                       title: "Validate JSON",
+                       engine: .jsonValidate,
+                       params: [:],
+                       types: [.json, .text]),
+            descriptor(id: "builtin.text.normalize_spaces",
+                       title: "Normalize spaces",
+                       engine: .normalizeSpaces,
+                       params: [:],
+                       types: [.text, .markdown, .code]),
+            descriptor(id: "builtin.text.collapse_blank_lines",
+                       title: "Collapse blank lines",
+                       engine: .collapseBlankLines,
+                       params: [:],
+                       types: [.text, .markdown, .code]),
+            descriptor(id: "builtin.text.extract_emails",
+                       title: "Extract emails",
+                       engine: .extractEmails,
+                       params: [:],
+                       types: [.text, .markdown, .richText, .code]),
+            descriptor(id: "builtin.text.extract_links",
+                       title: "Extract links",
+                       engine: .extractLinks,
+                       params: [:],
+                       types: [.text, .markdown, .richText, .code])
         ]
     }
 

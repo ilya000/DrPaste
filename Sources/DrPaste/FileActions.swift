@@ -33,7 +33,7 @@ private func fileURLs(from item: ClipboardItem, store: ClipboardStore) -> [URL] 
 }
 
 struct FilesCopyPathsAction: ClipboardAction {
-    let id = "builtin.files_paths"; let title = "Copy paths as text"; let isLocal = true
+    let id = "builtin.files.copy_paths"; let title = "Copy paths as text"; let isLocal = true
     let store: ClipboardStore
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         context.contains(.files)
@@ -47,7 +47,7 @@ struct FilesCopyPathsAction: ClipboardAction {
 }
 
 struct FilesFilenamesAction: ClipboardAction {
-    let id = "builtin.files_names"; let title = "Filenames only"; let isLocal = true
+    let id = "builtin.files.copy_filenames"; let title = "Filenames only"; let isLocal = true
     let store: ClipboardStore
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         context.contains(.files)
@@ -63,7 +63,7 @@ struct FilesFilenamesAction: ClipboardAction {
 // (pasting file paths into `cp`/`mv`); zero marketing weight.
 
 struct FilesMarkdownLinksAction: ClipboardAction {
-    let id = "builtin.files_md_links"; let title = "Markdown links"; let isLocal = true
+    let id = "builtin.files.to_md_links"; let title = "Markdown links"; let isLocal = true
     let store: ClipboardStore
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         context.contains(.files)
@@ -85,7 +85,7 @@ struct FilesMarkdownLinksAction: ClipboardAction {
 // HUD never surfaces an action whose registration is gone.
 
 struct FilesRevealAction: ClipboardAction {
-    let id = "builtin.files_reveal"; let title = "Reveal in Finder"; let isLocal = true
+    let id = "builtin.files.reveal_in_finder"; let title = "Reveal in Finder"; let isLocal = true
     let store: ClipboardStore
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         context.contains(.files)
@@ -100,12 +100,75 @@ struct FilesRevealAction: ClipboardAction {
     }
 }
 
+// #A74 (0.56.0) — Copy shell-safe escaped paths. Default: single-quoted
+// (`'…'`) form, which survives every special character except literal
+// single quote. Multi-file → newline-separated.
+struct FilesShellSafePathsAction: ClipboardAction {
+    let id = "builtin.files.copy_shell_safe_paths"
+    let title = "Copy shell-safe paths"
+    let isLocal = true
+    let store: ClipboardStore
+    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
+        context.contains(.files)
+    }
+    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
+        let urls = fileURLs(from: item, store: store)
+        guard !urls.isEmpty else {
+            return .failed(original: item, reason: "No files", recovery: nil)
+        }
+        let escaped = urls.map { url -> String in
+            // POSIX-safe: wrap in single quotes, escape any internal
+            // single quotes via the `'\''` trick.
+            let p = url.path.replacingOccurrences(of: "'", with: "'\\''")
+            return "'\(p)'"
+        }.joined(separator: "\n")
+        return .preview(makeTextItem(escaped, from: item))
+    }
+}
+
+// #A74 (0.56.0) — Generate a rich-text representation: each file rendered
+// as Finder icon + filename. Pastes into Mail / Notes / Pages as a
+// visually-recognisable file list rather than raw paths.
+struct FilesRichRepresentationAction: ClipboardAction {
+    let id = "builtin.files.to_rich_icons"
+    let title = "Files as rich icons"
+    let isLocal = true
+    let store: ClipboardStore
+    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
+        context.contains(.files)
+    }
+    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
+        let urls = fileURLs(from: item, store: store)
+        guard !urls.isEmpty else {
+            return .failed(original: item, reason: "No files", recovery: nil)
+        }
+        let attr = NSMutableAttributedString()
+        let ws = NSWorkspace.shared
+        for (idx, url) in urls.enumerated() {
+            let icon = ws.icon(forFile: url.path)
+            icon.size = NSSize(width: 16, height: 16)
+            let attachment = NSTextAttachment()
+            attachment.image = icon
+            attachment.bounds = NSRect(x: 0, y: -3, width: 16, height: 16)
+            attr.append(NSAttributedString(attachment: attachment))
+            attr.append(NSAttributedString(string: " \(url.lastPathComponent)",
+                                           attributes: [.font: NSFont.systemFont(ofSize: 13)]))
+            if idx < urls.count - 1 {
+                attr.append(NSAttributedString(string: "\n"))
+            }
+        }
+        return .preview(makeRichTextItem(attr, from: item))
+    }
+}
+
 enum FileActionsPack {
     static func all(store: ClipboardStore) -> [ClipboardAction] {
         [
             FilesCopyPathsAction(store: store),
             FilesFilenamesAction(store: store),
+            FilesShellSafePathsAction(store: store),
             FilesMarkdownLinksAction(store: store),
+            FilesRichRepresentationAction(store: store),
             FilesRevealAction(store: store)
         ]
     }

@@ -136,6 +136,14 @@ struct GeneralTab: View {
                        isOn: cheatSheetEnabledBinding)
                 Text("The small corner panel that appears when you hold ⌥⌘ alone — lists global hotkeys and your custom action bindings. Disable if you find it distracting; the hotkeys themselves keep working.")
                     .font(.caption).foregroundStyle(.secondary)
+                // #A59 — always-on toggle for the release-to-paste
+                // discoverability hint. The hint auto-fades after 5
+                // successful commits; this toggle re-enables it
+                // permanently for users who want the prompt.
+                Toggle("Always show release-to-paste hint in BigHUD",
+                       isOn: releaseToPasteHintAlwaysOnBinding)
+                Text("The single-line reminder above the history strip in Gesture mode. Quiet by default after the gesture becomes routine; turn this on if you want it permanently visible.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("Sound feedback") {
@@ -149,6 +157,25 @@ struct GeneralTab: View {
                 ForEach([SoundCue.copySuccess, .copyFailure, .pasteSuccess, .pasteFailure, .appendCopy, .typeTick, .delete], id: \.rawValue) { cue in
                     Toggle(cueLabel(cue), isOn: cueBinding(cue))
                 }
+            }
+
+            // #A54 — Per-representation size cap for clipboard captures.
+            // Protects index.json + blob storage from massive paste
+            // payloads (huge PDFs, video frames, proprietary blobs).
+            // Default 16 MB; slider 1–256 MB.
+            Section("Capture limits") {
+                HStack {
+                    Text("Max clipboard item size:")
+                    Slider(value: clipboardCapBinding,
+                           in: ClipboardSizeCap.minMB...ClipboardSizeCap.maxMB,
+                           step: 1)
+                    Text("\(Int(clipboardCapBinding.wrappedValue)) MB")
+                        .font(.system(.body, design: .monospaced))
+                        .frame(width: 60, alignment: .trailing)
+                }
+                Text("Representations above this size are skipped when capturing from the clipboard. The preview text and thumbnail still appear in history; the raw payload is dropped so it doesn't accumulate on disk. Defaults to 16 MB.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             // #A60 — explainer for the colored dot on the menu-bar icon
@@ -290,6 +317,30 @@ struct GeneralTab: View {
         Binding(
             get: { !UserDefaults.standard.bool(forKey: "drpaste.cheatSheet.disabled") },
             set: { UserDefaults.standard.set(!$0, forKey: "drpaste.cheatSheet.disabled") }
+        )
+    }
+
+    /// #A59 — toggle binding for "always show release-to-paste hint".
+    /// Default off (auto-fade after 5 commits); explicit on forces
+    /// the hint permanently visible.
+    private var releaseToPasteHintAlwaysOnBinding: Binding<Bool> {
+        Binding(
+            get: { UserDefaults.standard.bool(forKey: "drpaste.hint.releaseToPaste.forceShow") },
+            set: { UserDefaults.standard.set($0, forKey: "drpaste.hint.releaseToPaste.forceShow") }
+        )
+    }
+
+    /// #A54 — slider binding for the per-representation clipboard cap.
+    /// Stored as MB (double) under `ClipboardSizeCap.key`. Live read —
+    /// the next `snapshotPasteboard` call picks up the new value
+    /// without restart.
+    private var clipboardCapBinding: Binding<Double> {
+        Binding(
+            get: {
+                let raw = UserDefaults.standard.double(forKey: ClipboardSizeCap.key)
+                return raw == 0 ? ClipboardSizeCap.defaultMB : raw
+            },
+            set: { UserDefaults.standard.set($0, forKey: ClipboardSizeCap.key) }
         )
     }
 

@@ -50,6 +50,17 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
     case leetspeak         = "leetspeak"            // a→4 e→3 ... aggressive flag
     case uwuSpeak          = "uwu_speak"            // r/l→w, n+vowel→ny+vowel, face injection
     case zalgo             = "zalgo"                // combining-mark corruption
+    // #A72 — Missing actions audit (0.55.0)
+    case htmlStripTags     = "html_strip_tags"      // strip tags + decode entities
+    case htmlEscape        = "html_escape"          // &/</>/" → entities
+    case htmlUnescape      = "html_unescape"        // entities → chars
+    case jsonValidate      = "json_validate"        // emit "Valid" or error message
+    case normalizeSpaces   = "normalize_spaces"     // collapse multi-space, tabs → space
+    case collapseBlankLines = "collapse_blank_lines" // 3+ blank → 1 blank
+    case extractEmails     = "extract_emails"       // regex unique sorted
+    case extractLinks      = "extract_links"        // http(s) URL extraction
+    // #A74 (0.56.0)
+    case removeLineBreaks  = "remove_line_breaks"   // soft-wrap join, preserve paragraphs
 
     var id: String { rawValue }
 
@@ -80,12 +91,21 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
         case .mdExtractLinks:    return "Extract Markdown links"
         case .urlStripTracking:  return "Strip URL tracking params"
         case .unicodeStyle:      return "Stylize (Unicode font)"
-        case .cyrillicToLatin:   return "Cyrillic → Latin transliteration"
-        case .latinToCyrillic:   return "Latin → Cyrillic transliteration"
+        case .cyrillicToLatin:   return "Cyrillic → Latin translit"
+        case .latinToCyrillic:   return "Latin → Cyrillic translit"
         case .prettyCodeLocal:   return "Pretty Code (local)"
         case .leetspeak:         return "Leetspeak / 1337"
         case .uwuSpeak:          return "UwU speech"
         case .zalgo:             return "Zalgo corruption"
+        case .htmlStripTags:     return "Strip HTML tags"
+        case .htmlEscape:        return "Escape HTML"
+        case .htmlUnescape:      return "Unescape HTML"
+        case .jsonValidate:      return "Validate JSON"
+        case .normalizeSpaces:   return "Normalize spaces"
+        case .collapseBlankLines: return "Collapse blank lines"
+        case .extractEmails:     return "Extract emails"
+        case .extractLinks:      return "Extract links"
+        case .removeLineBreaks:  return "Remove line breaks"
         }
     }
 
@@ -122,6 +142,15 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
         case .leetspeak:         return "number.square"
         case .uwuSpeak:          return "face.smiling"
         case .zalgo:             return "tornado"
+        case .htmlStripTags:     return "chevron.left.forwardslash.chevron.right"
+        case .htmlEscape:        return "lock.shield"
+        case .htmlUnescape:      return "lock.open"
+        case .jsonValidate:      return "checkmark.seal"
+        case .normalizeSpaces:   return "space"
+        case .collapseBlankLines: return "line.3.horizontal.decrease"
+        case .extractEmails:     return "envelope"
+        case .extractLinks:      return "link"
+        case .removeLineBreaks:  return "text.justify"
         }
     }
 
@@ -189,6 +218,24 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
             return "Convert text to UwU speech: r and l become w (preserving case), n followed by a vowel becomes ny+vowel, hops, and faces (UwU / OwO / nya~) inject after sentence-ending punctuation when Faces is on. Idempotent-ish — re-running compounds the cuteness rather than mangling the text."
         case .zalgo:
             return "Corrupt text with overlapping Unicode combining marks (the \"Zalgo\" effect). Intensity parameter controls density: Light adds 1 mark above and 1 below per character; Medium adds up to 3 above, 3 below, 1 middle; Heavy adds up to 8 above, 8 below, 2 middle. Whitespace stays clean. Use sparingly — heavy Zalgo breaks line wrapping in some apps."
+        case .htmlStripTags:
+            return "Remove HTML tags from the input and decode common entities (&amp;amp; → &amp;, &amp;lt; → &lt;, &amp;nbsp; → space, etc.). Leaves text content untouched. Useful for cleaning up rich-text pastes that arrive as HTML markup."
+        case .htmlEscape:
+            return "Escape characters with HTML special meaning so they paste safely into HTML source: & → &amp;amp;, < → &amp;lt;, > → &amp;gt;, \" → &amp;quot;, ' → &amp;#39;."
+        case .htmlUnescape:
+            return "Decode HTML entities back into their literal characters. Handles the standard set (&amp;amp;, &amp;lt;, &amp;gt;, &amp;quot;, &amp;#39;, &amp;nbsp;, &amp;mdash;, &amp;ndash;, &amp;hellip;) and numeric forms (&amp;#NNN; / &amp;#xHHHH;)."
+        case .jsonValidate:
+            return "Validate the input as JSON. Returns \"Valid JSON\" or \"Invalid JSON: <error message>\" — the original text is replaced with the verdict. Pair with Pretty JSON to fix + format in two steps."
+        case .normalizeSpaces:
+            return "Collapse runs of 2+ spaces into a single space, convert tabs to single spaces, and trim trailing whitespace per line. Newlines are preserved. Use to clean up text scraped from PDFs / OCR output."
+        case .collapseBlankLines:
+            return "Reduce runs of 3 or more consecutive blank lines to a single blank line. Preserves paragraph structure while collapsing visual padding. Use after copying text from heavily-spaced documents."
+        case .extractEmails:
+            return "Extract every email address from the input, deduplicate, and lowercase. Output: one address per line, sorted alphabetically."
+        case .extractLinks:
+            return "Extract every http:// and https:// URL from the input, deduplicate, and sort. Output: one URL per line. Handles URLs embedded in markdown or plain text."
+        case .removeLineBreaks:
+            return "Join soft-wrapped lines into continuous paragraphs. Single newlines become spaces; double-or-more newlines (paragraph boundaries) are preserved. Useful after copying from PDFs / OCR / web that wraps text at fixed widths."
         }
     }
 
@@ -217,7 +264,12 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
              .mdToPlain, .mdExtractHeadings, .mdExtractLinks,
              .urlStripTracking,
              .cyrillicToLatin,
-             .prettyCodeLocal:
+             .prettyCodeLocal,
+             .htmlStripTags, .htmlEscape, .htmlUnescape,
+             .jsonValidate,
+             .normalizeSpaces, .collapseBlankLines,
+             .extractEmails, .extractLinks,
+             .removeLineBreaks:
             return [:]
         }
     }
@@ -247,7 +299,12 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
              .cyrillicToLatin,
              .latinToCyrillic,
              .prettyCodeLocal,
-             .leetspeak, .uwuSpeak, .zalgo:
+             .leetspeak, .uwuSpeak, .zalgo,
+             .htmlStripTags, .htmlEscape, .htmlUnescape,
+             .jsonValidate,
+             .normalizeSpaces, .collapseBlankLines,
+             .extractEmails, .extractLinks,
+             .removeLineBreaks:
             return false
         }
     }
@@ -287,7 +344,16 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
              // multiply char counts and per-attributed-run application
              // would visually misalign the marks with their base chars.
              // Keep the plain-text path.
-             .zalgo:
+             .zalgo,
+             // #A72 — all 8 new engines restructure or extract text,
+             // so per-run application is semantically wrong (HTML
+             // strip drops characters, extracts collect new lines,
+             // validate returns a verdict). Keep the plain path.
+             .htmlStripTags, .htmlEscape, .htmlUnescape,
+             .jsonValidate,
+             .normalizeSpaces, .collapseBlankLines,
+             .extractEmails, .extractLinks,
+             .removeLineBreaks:
             return false
         }
     }
@@ -444,6 +510,15 @@ enum TransformationRuntime {
         case .leetspeak:         return leetspeak(input, params: params)
         case .uwuSpeak:          return uwuSpeak(input, params: params)
         case .zalgo:             return zalgo(input, params: params)
+        case .htmlStripTags:     return htmlStripTags(input)
+        case .htmlEscape:        return htmlEscape(input)
+        case .htmlUnescape:      return htmlUnescape(input)
+        case .jsonValidate:      return jsonValidate(input)
+        case .normalizeSpaces:   return normalizeSpaces(input)
+        case .collapseBlankLines: return collapseBlankLines(input)
+        case .extractEmails:     return extractEmails(input)
+        case .extractLinks:      return extractLinks(input)
+        case .removeLineBreaks:  return removeLineBreaks(input)
         }
     }
 
@@ -1383,5 +1458,224 @@ enum TransformationRuntime {
             }
         }
         return out
+    }
+
+    // MARK: - #A72 missing actions (HTML / JSON validate / text cleanup / extractors)
+
+    /// Map of common HTML entities — shared by strip-tags and unescape.
+    private static let htmlEntities: [(String, String)] = [
+        ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+        ("&quot;", "\""), ("&apos;", "'"), ("&#39;", "'"),
+        ("&nbsp;", " "), ("&mdash;", "—"), ("&ndash;", "–"),
+        ("&hellip;", "…"), ("&laquo;", "«"), ("&raquo;", "»"),
+        ("&copy;", "©"), ("&reg;", "®"), ("&trade;", "™")
+    ]
+
+    /// Strip HTML tags and decode common entities. Regex drops anything
+    /// between angle brackets; the entity pass turns `&amp;nbsp;` →
+    /// space, `&amp;amp;` → &, etc.
+    private static func htmlStripTags(_ input: String) -> String {
+        var out = input.replacingOccurrences(of: "<[^>]+>",
+                                             with: "",
+                                             options: .regularExpression)
+        for (entity, char) in htmlEntities {
+            out = out.replacingOccurrences(of: entity, with: char)
+        }
+        // Numeric entities — &#NNN; and &#xHHHH;
+        out = decodeNumericEntities(out)
+        return out
+    }
+
+    /// Escape the five "dangerous" HTML characters so the result can
+    /// land inside an HTML document without injecting markup. & must
+    /// be first or it eats the entity sequences we add for the others.
+    private static func htmlEscape(_ input: String) -> String {
+        var out = input
+        out = out.replacingOccurrences(of: "&", with: "&amp;")
+        out = out.replacingOccurrences(of: "<", with: "&lt;")
+        out = out.replacingOccurrences(of: ">", with: "&gt;")
+        out = out.replacingOccurrences(of: "\"", with: "&quot;")
+        out = out.replacingOccurrences(of: "'", with: "&#39;")
+        return out
+    }
+
+    /// Reverse of htmlEscape — decode named entities + numeric entities.
+    private static func htmlUnescape(_ input: String) -> String {
+        var out = input
+        for (entity, char) in htmlEntities {
+            out = out.replacingOccurrences(of: entity, with: char)
+        }
+        out = decodeNumericEntities(out)
+        return out
+    }
+
+    /// Decode numeric character references — `&#NNN;` (decimal) and
+    /// `&#xHHHH;` (hex). Used by both htmlStripTags and htmlUnescape.
+    private static func decodeNumericEntities(_ source: String) -> String {
+        let re = try? NSRegularExpression(pattern: "&#(x[0-9A-Fa-f]+|[0-9]+);",
+                                          options: [])
+        guard let re = re else { return source }
+        let ns = source as NSString
+        let matches = re.matches(in: source, options: [],
+                                 range: NSRange(location: 0, length: ns.length))
+        var result = ""
+        var cursor = 0
+        for m in matches {
+            let codeRange = m.range(at: 1)
+            let fullRange = m.range
+            if cursor < fullRange.location {
+                result += ns.substring(with: NSRange(location: cursor,
+                                                     length: fullRange.location - cursor))
+            }
+            let codeStr = ns.substring(with: codeRange)
+            let codepoint: UInt32? = {
+                if codeStr.hasPrefix("x") || codeStr.hasPrefix("X") {
+                    return UInt32(codeStr.dropFirst(), radix: 16)
+                }
+                return UInt32(codeStr, radix: 10)
+            }()
+            if let cp = codepoint, let scalar = Unicode.Scalar(cp) {
+                result.append(Character(scalar))
+            } else {
+                result += ns.substring(with: fullRange)
+            }
+            cursor = fullRange.location + fullRange.length
+        }
+        if cursor < ns.length {
+            result += ns.substring(with: NSRange(location: cursor,
+                                                 length: ns.length - cursor))
+        }
+        return result
+    }
+
+    /// Validate JSON. Replaces the source text with "Valid JSON" or
+    /// the error message — this is an information-producing action,
+    /// not a content-preserving transformation.
+    private static func jsonValidate(_ input: String) -> String {
+        guard let data = input.data(using: .utf8) else {
+            return "Invalid JSON: input is not UTF-8"
+        }
+        do {
+            _ = try JSONSerialization.jsonObject(with: data, options: [.allowFragments])
+            return "Valid JSON"
+        } catch let error as NSError {
+            // NSError userInfo on JSON failures contains the byte
+            // offset under "NSDebugDescription" when present.
+            let desc = error.userInfo["NSDebugDescription"] as? String
+                    ?? error.localizedDescription
+            return "Invalid JSON: \(desc)"
+        }
+    }
+
+    /// Collapse runs of whitespace to single spaces inside each line,
+    /// preserving line breaks. Tabs and other horizontal whitespace
+    /// become single spaces; multiple spaces become one. Trailing
+    /// whitespace per line is trimmed.
+    private static func normalizeSpaces(_ input: String) -> String {
+        let lines = input.split(separator: "\n", omittingEmptySubsequences: false)
+        return lines.map { line -> String in
+            // Replace tabs and other horizontal whitespace with single
+            // spaces, then collapse runs of 2+ to a single space.
+            var s = String(line)
+            // ICU regex unicode escapes are \uHHHH (4 hex digits), NOT the
+            // Swift \u{...} form — the latter makes the whole pattern invalid,
+            // silently turning this replacement into a no-op so tabs / NBSP
+            // were never normalized. Covers tab + NBSP + en/em/thin spaces.
+            s = s.replacingOccurrences(of: "[\\t\\u00A0\\u2000-\\u200A\\u202F\\u205F]",
+                                       with: " ",
+                                       options: .regularExpression)
+            s = s.replacingOccurrences(of: " {2,}",
+                                       with: " ",
+                                       options: .regularExpression)
+            return s.trimmingCharacters(in: .init(charactersIn: " "))
+        }.joined(separator: "\n")
+    }
+
+    /// Reduce runs of 3+ consecutive blank lines to a single blank
+    /// line. Preserves paragraph structure (single blank between
+    /// paragraphs survives).
+    private static func collapseBlankLines(_ input: String) -> String {
+        return input.replacingOccurrences(of: "\\n{3,}",
+                                          with: "\n\n",
+                                          options: .regularExpression)
+    }
+
+    /// Extract every email address, deduplicate, lowercase, sort.
+    /// Output one per line — empty string when nothing matches.
+    private static func extractEmails(_ input: String) -> String {
+        // RFC-5322 simplified — local @ domain with at least one dot
+        // in the domain. Won't catch every legal address (quoted
+        // locals, IP-literal domains) but covers the 99% case.
+        let pattern = "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"
+        return extractMatches(input, pattern: pattern, lowercase: true)
+    }
+
+    /// Extract every http(s) URL, deduplicate, sort. Output one per
+    /// line — empty string when nothing matches.
+    private static func extractLinks(_ input: String) -> String {
+        // Greedy match up to whitespace / common terminators. Strips
+        // trailing punctuation that's almost certainly sentence-
+        // boundary rather than URL.
+        let pattern = "https?://[^\\s<>\"'\\)]+"
+        var matches = extractMatchList(input, pattern: pattern)
+        matches = matches.map { url -> String in
+            var s = url
+            while let last = s.last, ".,;:!?)\"'".contains(last) {
+                s.removeLast()
+            }
+            return s
+        }
+        let unique = Array(Set(matches)).sorted()
+        return unique.joined(separator: "\n")
+    }
+
+    /// Shared regex-match extractor. Returns deduplicated +
+    /// alphabetically sorted lines joined by `\n`.
+    private static func extractMatches(_ input: String,
+                                       pattern: String,
+                                       lowercase: Bool) -> String {
+        var list = extractMatchList(input, pattern: pattern)
+        if lowercase { list = list.map { $0.lowercased() } }
+        let unique = Array(Set(list)).sorted()
+        return unique.joined(separator: "\n")
+    }
+
+    private static func extractMatchList(_ input: String,
+                                         pattern: String) -> [String] {
+        guard let re = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return []
+        }
+        let ns = input as NSString
+        let matches = re.matches(in: input, options: [],
+                                 range: NSRange(location: 0, length: ns.length))
+        return matches.map { ns.substring(with: $0.range) }
+    }
+
+    /// Join soft-wrapped lines into continuous paragraphs (#A74, 0.56.0).
+    /// Strategy:
+    ///   1. Normalize CRLF → LF.
+    ///   2. Mark paragraph boundaries (2+ consecutive newlines) with a
+    ///      placeholder.
+    ///   3. Collapse single newlines into spaces.
+    ///   4. Restore paragraph boundaries.
+    ///   5. Collapse multiple spaces produced by step 3.
+    private static func removeLineBreaks(_ input: String) -> String {
+        // Sentinel never appears in normal text.
+        let sentinel = "\u{0000}PARAGRAPH_BREAK\u{0000}"
+        var s = input.replacingOccurrences(of: "\r\n", with: "\n")
+        s = s.replacingOccurrences(of: "\r", with: "\n")
+        // Two-or-more newlines → sentinel.
+        s = s.replacingOccurrences(of: "\\n{2,}",
+                                   with: sentinel,
+                                   options: .regularExpression)
+        // Single remaining newline → space.
+        s = s.replacingOccurrences(of: "\n", with: " ")
+        // Collapse runs of 2+ spaces to single.
+        s = s.replacingOccurrences(of: " {2,}",
+                                   with: " ",
+                                   options: .regularExpression)
+        // Restore paragraph breaks (double newline).
+        s = s.replacingOccurrences(of: sentinel, with: "\n\n")
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

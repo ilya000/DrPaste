@@ -113,22 +113,12 @@ enum AppendAccumulator {
     /// to PNG so the embedded blob is a single deterministic format
     /// (RTFD doesn't care, but predictable size accounting matters
     /// when several images stack up in one accumulator).
+    ///
+    /// #A47 — Migrated from NSImage.lockFocus → ImageRenderer.downscale
+    /// (CGContext-backed). Background-thread safe; pixel-deterministic
+    /// across Retina / non-Retina displays.
     static func downscale(_ image: NSImage, maxSide: CGFloat) -> NSImage {
-        let size = image.size
-        let longSide = max(size.width, size.height)
-        guard longSide > maxSide else { return image }
-        let ratio = maxSide / longSide
-        let newSize = NSSize(width: floor(size.width * ratio),
-                             height: floor(size.height * ratio))
-        let resized = NSImage(size: newSize)
-        resized.lockFocus()
-        NSGraphicsContext.current?.imageInterpolation = .high
-        image.draw(in: NSRect(origin: .zero, size: newSize),
-                   from: NSRect(origin: .zero, size: size),
-                   operation: .copy,
-                   fraction: 1.0)
-        resized.unlockFocus()
-        return resized
+        return ImageRenderer.downscale(image, maxSide: maxSide)
     }
 
     // MARK: - Append

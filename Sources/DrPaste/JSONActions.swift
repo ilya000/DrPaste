@@ -19,7 +19,7 @@
 import Foundation
 
 struct JSONFlattenAction: ClipboardAction {
-    let id = "builtin.json_flatten"; let title = "Flatten"; let isLocal = true
+    let id = "builtin.json.flatten"; let title = "Flatten"; let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         context.contains(.json)
     }
@@ -49,7 +49,7 @@ struct JSONFlattenAction: ClipboardAction {
 }
 
 struct JSONRemoveNullsAction: ClipboardAction {
-    let id = "builtin.json_remove_nulls"; let title = "Remove null values"; let isLocal = true
+    let id = "builtin.json.remove_nulls"; let title = "Remove null values"; let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         context.contains(.json)
     }

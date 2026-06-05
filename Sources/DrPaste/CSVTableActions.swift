@@ -112,7 +112,7 @@ enum CSVParser {
 /// is the first parsed row; remaining rows are body rows. Cells are
 /// pipe-escaped where needed (rare) and stripped of outer whitespace.
 struct CSVToWikiTableAction: ClipboardAction {
-    let id = "builtin.csv_to_wiki_table"
+    let id = "builtin.table.to_wiki"
     let title = "CSV → Wiki table"
     let isLocal = true
 
@@ -170,7 +170,7 @@ struct CSVToWikiTableAction: ClipboardAction {
 /// fall through to the plain-text representation — acceptable per the
 /// product spec (user confirmed in design discussion).
 struct CSVToRichTableAction: ClipboardAction {
-    let id = "builtin.csv_to_rtfd_table"
+    let id = "builtin.table.to_rich"
     let title = "CSV → Rich table"
     let isLocal = true
 
@@ -252,8 +252,60 @@ struct CSVToRichTableAction: ClipboardAction {
 
 // MARK: - Registry pack
 
+// #A74 (0.56.0) — CSV → HTML <table>. Clean output ready for CMS / email.
+struct CSVToHTMLTableAction: ClipboardAction {
+    let id = "builtin.table.to_html"
+    let title = "CSV → HTML table"
+    let isLocal = true
+
+    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
+        switch item.semantic {
+        case .text, .table, .code, .markdown:
+            return CSVParser.looksLikeCSV(item.previewText ?? "")
+        default:
+            return false
+        }
+    }
+
+    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
+        guard let source = item.previewText, !source.isEmpty else {
+            return .failed(original: item,
+                           reason: "CSV → HTML: empty input.",
+                           recovery: nil)
+        }
+        let rows = CSVParser.parse(source)
+        guard rows.count >= 1, let header = rows.first else {
+            return .failed(original: item,
+                           reason: "CSV → HTML: no rows parsed.",
+                           recovery: nil)
+        }
+        var html = "<table>\n  <thead>\n    <tr>"
+        for cell in header {
+            html += "<th>\(escape(cell))</th>"
+        }
+        html += "</tr>\n  </thead>\n  <tbody>\n"
+        for row in rows.dropFirst() {
+            html += "    <tr>"
+            for cell in row {
+                html += "<td>\(escape(cell))</td>"
+            }
+            html += "</tr>\n"
+        }
+        html += "  </tbody>\n</table>"
+        return .preview(makeTextItem(html, from: item))
+    }
+
+    private func escape(_ s: String) -> String {
+        var out = s.trimmingCharacters(in: .whitespaces)
+        out = out.replacingOccurrences(of: "&", with: "&amp;")
+        out = out.replacingOccurrences(of: "<", with: "&lt;")
+        out = out.replacingOccurrences(of: ">", with: "&gt;")
+        return out
+    }
+}
+
 enum CSVTableActionsPack {
     static var all: [ClipboardAction] {
-        [CSVToWikiTableAction(), CSVToRichTableAction()]
+        [CSVToWikiTableAction(), CSVToRichTableAction(), CSVToHTMLTableAction()]
     }
 }

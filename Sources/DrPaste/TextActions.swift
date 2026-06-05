@@ -27,7 +27,7 @@ import CoreImage.CIFilterBuiltins
 // MARK: - Generate QR (highlight feature)
 
 struct GenerateQRAction: ClipboardAction {
-    let id = "builtin.generate_qr"
+    let id = "builtin.text.generate_qr"
     let title = "Generate QR code"
     let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {

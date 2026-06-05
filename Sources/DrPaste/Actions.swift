@@ -108,26 +108,18 @@ func makePlainText(_ item: ClipboardItem) -> ClipboardItem {
 
 // MARK: - Basic text actions
 
-struct CleanFormattingAction: ClipboardAction {
-    let id = "builtin.clean_formatting"
-    let title = "Plain text"
-    let isLocal = true
-    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        context.contains(.richText)
-    }
-    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        .preview(makePlainText(item))
-    }
-}
+// CleanFormattingAction merged with PasteAsTextAction in 0.56.0 (#A74)
+// into single `builtin.rich.strip_formatting` (MoreActions.swift).
+// Both old IDs migrate to the unified new ID via IDMigration056.
 
 // UppercaseAction / LowercaseAction / TrimWhitespaceAction migrated to
-// DefaultTransformationSeed under the same `builtin.uppercase`,
-// `builtin.lowercase`, `builtin.trim` IDs.
+// DefaultTransformationSeed under the new convention v2 IDs
+// (builtin.text.uppercase / .lowercase / .trim).
 
 // MARK: - Layout repair
 
 struct LayoutRepairAction: ClipboardAction {
-    let id = "builtin.layout_repair"
+    let id = "builtin.text.layout_repair"
     let title = "Fix keyboard layout"
     let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
@@ -148,10 +140,24 @@ struct LayoutRepairAction: ClipboardAction {
 final class ActionRegistry: ObservableObject {
 
     @Published private(set) var actions: [ClipboardAction] = []
+
+    /// #A46 (0.57.0) — debounced `actions.json` writer. Settings
+    /// thrash (toggle a checkbox, drag a row, edit a hotkey) used
+    /// to rewrite the pretty-printed JSON synchronously on every
+    /// change; now the last edit in a 200 ms window wins and the
+    /// disk hit moves off-main. The other side-effects in
+    /// `config.didSet` (rebuilds, hotkey reload) run immediately —
+    /// they are pure in-memory operations and the user wants them
+    /// instant.
+    private let configSaver = PersistenceDebouncer(label: "ActionConfig")
+
     @Published var config: ActionConfig = .load() {
         didSet {
             if oldValue != config {
-                config.save()
+                let snapshot = config
+                configSaver.schedule {
+                    snapshot.save()
+                }
                 rebuildCustomAI()
                 rebuildCustomTransformations()
                 // Drop hotkeys whose action no longer exists (descriptor removed,
@@ -197,8 +203,9 @@ final class ActionRegistry: ObservableObject {
         // Everything else lives in DefaultTransformationSeed.
         actions = [
             IdentityAction(),
-            LayoutRepairAction(),
-            CleanFormattingAction()
+            LayoutRepairAction()
+            // CleanFormattingAction merged with PasteAsTextAction in 0.56.0;
+            // single `builtin.rich.strip_formatting` lives in MoreActions.swift.
         ]
     }
 
@@ -210,249 +217,28 @@ final class ActionRegistry: ObservableObject {
         var copy = config
         var changed = false
 
-        // Run BEFORE seedTransformations: re-key any user state still
-        // attached to legacy action IDs onto current IDs, so the seed
-        // step doesn't end up creating a fresh default entry next to
-        // an orphaned user-customised entry under the old ID. Without
-        // this, an upgrading user with hotkey ⌥⌘K bound to
-        // `builtin.json_extract_keys` (legacy) sees the new
-        // `builtin.json_keys` (current) appear with default state, and
-        // their hotkey silently no longer targets the visible action.
-        if remapLegacyActionIDs(into: &copy) { changed = true }
+        // #A74 (0.56.0) — Pre-distribution ID consolidation. Runs
+        // BEFORE every other migration / seed step so all downstream
+        // logic operates on the new naming convention. Single-shot
+        // guarded by `seedTransformationVersion < 9`.
+        if copy.seedTransformationVersion < 9 {
+            let rewrites = IDMigration056.apply(to: &copy)
+            if rewrites > 0 {
+                NSLog("DrPaste: #A74 ID migration to 0.56.0 — rewrote \(rewrites) entries")
+                changed = true
+            }
+        }
 
+        // The pre-v2 one-shot migrations (remapLegacyActionIDs,
+        // rebrandFancyTextIfNeeded, expandMarkdownExtractTypesIfNeeded,
+        // renameCyrillicActionsIfNeeded) were retired in 0.56.0: IDMigration056
+        // above now rewrites every legacy ID to the v2 convention in a single
+        // pass, so those chained renames are dead. Removed pre-distribution
+        // (#A74 clean slate — no shipped users to migrate through the old chain).
         if seedAI(into: &copy)             { changed = true }
         if seedTransformations(into: &copy) { changed = true }
-        if rebrandFancyTextIfNeeded(into: &copy) { changed = true }
-        if expandMarkdownExtractTypesIfNeeded(into: &copy) { changed = true }
 
         if changed { config = copy }
-    }
-
-    /// Re-key user state from legacy action IDs onto the IDs currently
-    /// seeded by `DefaultTransformationSeed`. Idempotent. Runs before
-    /// every other seed step so the rest of `runFirstLaunchSeeds`
-    /// operates on already-migrated keys.
-    ///
-    /// Why this exists (shipped in 0.50.0, surfaced by an adversarial
-    /// review pass): in 0.42.4 the seed switched to the current names
-    /// (`builtin.json_keys`, `builtin.md_headings`, `builtin.md_links`)
-    /// and `CuratedDefaults` followed. Legacy IDs (`builtin.json_extract_keys`,
-    /// `builtin.md_extract_headings`, `builtin.md_extract_links`) were
-    /// kept as metadata / icon aliases on the assumption that older
-    /// saved configs would gracefully degrade. That assumption was wrong:
-    /// existing users with custom titles / hotkeys / enabled flags
-    /// attached to the legacy IDs would see the freshly-seeded current
-    /// IDs appear *next to* their orphaned customisation. The hotkey
-    /// looks like it stopped working; the renamed action looks like
-    /// it disappeared.
-    ///
-    /// The migration scans every per-id collection in `ActionConfig`
-    /// and re-keys legacy → current. **Conflict policy:** if both
-    /// keys exist (e.g. the new seed somehow landed before this
-    /// migration ran on a partial-migration install), **current
-    /// wins** uniformly across every field. The legacy entry is
-    /// removed without overwriting the existing current value. This
-    /// is the safer rule: if the user has already interacted with
-    /// the new seeded action (set a title, bound a hotkey,
-    /// disabled it), that intent post-dates whatever was attached
-    /// to the legacy ID and must not be silently displaced.
-    ///
-    /// Custom descriptors (`customTransformations.id`) are
-    /// intentionally NOT remapped here because the legacy IDs
-    /// (`json_extract_keys` / `md_extract_*`) were never seeded as
-    /// descriptors prior to current-ID migration — they only
-    /// existed as side-table keys (enabledFlags / customTitles /
-    /// etc.). A historical pass that seeded descriptors under
-    /// legacy IDs would need a separate migration step here.
-    private func remapLegacyActionIDs(into copy: inout ActionConfig) -> Bool {
-        // Source of truth for legacy → current mapping. Keep this map
-        // append-only: future renames should add a new pair, never
-        // delete an existing one (a one-machine-once-migrated install
-        // running an older build would otherwise re-stick on the old ID).
-        let mapping: [String: String] = [
-            "builtin.json_extract_keys":     "builtin.json_keys",
-            "builtin.md_extract_headings":   "builtin.md_headings",
-            "builtin.md_extract_links":      "builtin.md_links"
-        ]
-
-        var didChange = false
-
-        // enabledFlags: user-intent for new wins if both keys present.
-        for (legacy, current) in mapping {
-            if let legacyValue = copy.enabledFlags[legacy] {
-                if copy.enabledFlags[current] == nil {
-                    copy.enabledFlags[current] = legacyValue
-                }
-                copy.enabledFlags.removeValue(forKey: legacy)
-                didChange = true
-            }
-        }
-
-        // customTitles: user customisation on legacy wins, never
-        // silently overwrite the new key if the user already renamed
-        // the seeded current one.
-        for (legacy, current) in mapping {
-            if let legacyValue = copy.customTitles[legacy] {
-                if copy.customTitles[current] == nil {
-                    copy.customTitles[current] = legacyValue
-                }
-                copy.customTitles.removeValue(forKey: legacy)
-                didChange = true
-            }
-        }
-
-        // actionHotkeys: same rule as customTitles — user-bound chord
-        // is sacred, never silently displaced.
-        for (legacy, current) in mapping {
-            if let legacyValue = copy.actionHotkeys[legacy] {
-                if copy.actionHotkeys[current] == nil {
-                    copy.actionHotkeys[current] = legacyValue
-                }
-                copy.actionHotkeys.removeValue(forKey: legacy)
-                didChange = true
-            }
-        }
-
-        // actionOrder: per-kind arrays. Replace legacy entry with
-        // current; if current already appears later in the array,
-        // remove the now-duplicate later occurrence so the order is
-        // anchored on where the user originally placed it.
-        for (legacy, current) in mapping {
-            for kindKey in copy.actionOrder.keys {
-                guard var order = copy.actionOrder[kindKey] else { continue }
-                guard let legacyIdx = order.firstIndex(of: legacy) else { continue }
-                order[legacyIdx] = current
-                // Drop a second occurrence of current (would mean the
-                // new seed had also been recorded somewhere later).
-                if let dupIdx = order.lastIndex(of: current), dupIdx != legacyIdx {
-                    order.remove(at: dupIdx)
-                }
-                copy.actionOrder[kindKey] = order
-                didChange = true
-            }
-        }
-
-        // actionTestSamples: per-action playground sample text. Migrate
-        // legacy entries onto current keys.
-        for (legacy, current) in mapping {
-            if let legacyValue = copy.actionTestSamples[legacy] {
-                if copy.actionTestSamples[current] == nil {
-                    copy.actionTestSamples[current] = legacyValue
-                }
-                copy.actionTestSamples.removeValue(forKey: legacy)
-                didChange = true
-            }
-        }
-
-        if didChange {
-            NSLog("DrPaste: remapped legacy action IDs to current names — \(mapping.count) mappings, see Actions.swift remapLegacyActionIDs")
-        }
-        return didChange
-    }
-
-    /// One-shot migration that brings existing installs (which already have
-    /// `builtin.font_*` descriptors seeded under the old "Font: <Style>"
-    /// naming) onto the new stylized-letter title scheme, restricts them
-    /// to .text only, and removes the regional-indicator entry. Runs once
-    /// per install, gated by `seedTransformationVersion >= 3`. Skips any
-    /// descriptor whose title the user has manually edited (anything not
-    /// starting with "Font: ").
-    private func rebrandFancyTextIfNeeded(into copy: inout ActionConfig) -> Bool {
-        // Mapping from id → (old-default-title-prefix, new-title) for the
-        // descriptors that need rebrand. The "old prefix" is checked so we
-        // only overwrite titles still on the factory default.
-        let oldTitles: [String: String] = [
-            "builtin.font_bold":               "Font: Bold",
-            "builtin.font_italic":             "Font: Italic",
-            "builtin.font_bold_italic":        "Font: Bold Italic",
-            "builtin.font_script":             "Font: Script",
-            "builtin.font_bold_script":        "Font: Bold Script",
-            "builtin.font_fraktur":            "Font: Fraktur",
-            "builtin.font_bold_fraktur":       "Font: Bold Fraktur",
-            "builtin.font_double_struck":      "Font: Double-struck",
-            "builtin.font_sans":               "Font: Sans-serif",
-            "builtin.font_sans_bold":          "Font: Sans-serif Bold",
-            "builtin.font_sans_italic":        "Font: Sans-serif Italic",
-            "builtin.font_sans_bold_italic":   "Font: Sans-serif Bold Italic",
-            "builtin.font_monospace":          "Font: Monospace",
-            "builtin.font_fullwidth":          "Font: Fullwidth",
-            "builtin.font_small_caps":         "Font: Small Caps",
-            "builtin.font_circled":            "Font: Circled",
-            "builtin.font_filled_circled":     "Font: Filled Circled",
-            "builtin.font_squared":            "Font: Squared",
-            "builtin.font_filled_squared":     "Font: Filled Squared",
-            "builtin.font_upside_down":        "Font: Upside Down",
-            "builtin.font_plain":              "Font: Plain (strip styling)"
-        ]
-        // Look up new title + applicableTypes directly from the seed table
-        // so we have a single source of truth.
-        let newDefaults: [String: CustomTransformationDescriptor] = {
-            var dict: [String: CustomTransformationDescriptor] = [:]
-            for desc in DefaultTransformationSeed.defaults() {
-                dict[desc.id] = desc
-            }
-            return dict
-        }()
-
-        var didChange = false
-        // Drop the discontinued regional-indicator entry — readability of the
-        // boxed-letter glyphs is too poor to keep as a curated default.
-        if let idx = copy.customTransformations.firstIndex(where: { $0.id == "builtin.font_regional_indicator" }) {
-            copy.customTransformations.remove(at: idx)
-            copy.actionHotkeys.removeValue(forKey: "builtin.font_regional_indicator")
-            didChange = true
-        }
-        for idx in copy.customTransformations.indices {
-            let d = copy.customTransformations[idx]
-            guard oldTitles[d.id] != nil, let new = newDefaults[d.id] else { continue }
-            // Rebrand title only if the user hasn't edited it (still matches the
-            // factory default for this version of the seed).
-            if d.title == oldTitles[d.id] {
-                copy.customTransformations[idx].title = new.title
-                didChange = true
-            }
-            // Narrow applicableTypes from the legacy seeded set [text,
-            // markdown, code] to [text] only — these decorative styles
-            // don't belong in code / URLs / markdown. ONLY runs when the
-            // descriptor still has the exact legacy set so that any user
-            // customization (added or removed types after the migration)
-            // is preserved across subsequent launches.
-            let legacy: Set<String> = ["text", "markdown", "code"]
-            let currentTypes = Set(copy.customTransformations[idx].applicableTypes)
-            if currentTypes == legacy {
-                copy.customTransformations[idx].applicableTypes = ["text"]
-                didChange = true
-            }
-        }
-        return didChange
-    }
-
-    /// Migration v5: expand applicableTypes of `builtin.md_headings` and
-    /// `builtin.md_links` from the legacy single `[markdown]` to
-    /// `[markdown, text, richText]`. The handlers can now process rich-text
-    /// clips via NSAttributedString → markdown reconstruction
-    /// (`RichTextHelpers.attributedStringToMarkdown`) in
-    /// `CustomTransformationAction.apply`. Without this migration the action
-    /// chip stays inapplicable on rich text and the user can't see why links
-    /// they can clearly see in a rich-text email don't get extracted.
-    ///
-    /// Idempotent: runs only when the descriptor's applicableTypes EXACTLY
-    /// equals the legacy `[markdown]` set, so any user customization
-    /// (extra types added, markdown removed) is preserved.
-    private func expandMarkdownExtractTypesIfNeeded(into copy: inout ActionConfig) -> Bool {
-        let targetIDs: Set<String> = ["builtin.md_headings", "builtin.md_links"]
-        let legacyTypes: Set<String> = ["markdown"]
-        let newTypes: [String] = ["markdown", "text", "richText"]
-        var didChange = false
-        for idx in copy.customTransformations.indices {
-            let d = copy.customTransformations[idx]
-            guard targetIDs.contains(d.id) else { continue }
-            if Set(d.applicableTypes) == legacyTypes {
-                copy.customTransformations[idx].applicableTypes = newTypes
-                didChange = true
-            }
-        }
-        return didChange
     }
 
     /// Returns true if any AI seeds were appended or migrated.
@@ -1063,6 +849,14 @@ final class ActionRegistry: ObservableObject {
     /// status string to the UI.
     /// `@MainActor` because it touches `AIProviderRegistry.shared` (main-actor
     /// isolated). All callers are SwiftUI button actions, already on main.
+    /// #A46 (0.57.0) — synchronously drain the pending debounced
+    /// save. Called from `applicationWillTerminate` and the Factory
+    /// Reset path so a Settings edit made 50 ms before quit / wipe
+    /// never strands. Idempotent.
+    func flushPendingConfigSave() {
+        configSaver.flushSync()
+    }
+
     @MainActor
     func factoryReset() {
         // Wipe provider configs + Keychain keys.
@@ -1098,24 +892,37 @@ final class ActionRegistry: ObservableObject {
         return try? encoder.encode(config)
     }
 
-    /// Imports config: .replace overwrites everything; .merge adds unique entries.
+    /// Imports config. `.replace` overwrites every field wholesale;
+    /// `.merge` applies the per-field policy table documented in
+    /// `ImportReport.swift` (#A41, 0.57.0).
     enum ImportStrategy { case replace, merge }
 
+    /// Boolean-only entry point — preserved for existing call sites
+    /// that don't yet consume the audit report.
+    @discardableResult
     func importJSON(_ data: Data, strategy: ImportStrategy) -> Bool {
+        importJSONWithReport(data, strategy: strategy) != nil
+    }
+
+    /// Report-returning entry point. nil means the JSON failed to
+    /// decode at all (caller should surface a parse error); a
+    /// non-nil `ImportReport` is the audit summary — pass it to the
+    /// Settings sheet so the user can see what changed.
+    ///
+    /// `.replace` mode returns an empty report because there's no
+    /// per-field conflict to surface — the entire file took over.
+    func importJSONWithReport(_ data: Data, strategy: ImportStrategy) -> ImportReport? {
         guard let incoming = try? JSONDecoder().decode(ActionConfig.self, from: data) else {
-            return false
+            return nil
         }
         switch strategy {
         case .replace:
             config = incoming
+            return ImportReport()
         case .merge:
-            var copy = config
-            for (k, v) in incoming.enabledFlags { copy.enabledFlags[k] = v }
-            for desc in incoming.customAI where !copy.customAI.contains(where: { $0.id == desc.id }) {
-                copy.customAI.append(desc)
-            }
-            config = copy
+            let (merged, report) = config.merging(incoming)
+            config = merged
+            return report
         }
-        return true
     }
 }

@@ -25,7 +25,7 @@ import AppKit
 import PDFKit
 
 struct FileToImageAction: ClipboardAction {
-    let id = "builtin.file_to_image"
+    let id = "builtin.files.extract_image"
     let title = "Extract image"
     let isLocal = true
 
@@ -71,21 +71,19 @@ struct FileToImageAction: ClipboardAction {
         // for typical PDFs (US Letter / A4 → ~1700×2200 px).
         let scale: CGFloat = 2
         let pixelSize = NSSize(width: bounds.width * scale, height: bounds.height * scale)
-        let image = NSImage(size: pixelSize)
-        image.lockFocus()
-        if let ctx = NSGraphicsContext.current?.cgContext {
+        // #A47 — Use ImageRenderer.render (CGContext-backed) so the
+        // PDF page draws into a thread-safe, pixel-deterministic
+        // bitmap. The closure receives a CGContext flipped to the
+        // NSGraphicsContext stack convention that `page.draw(...)`
+        // expects, so the existing draw call stays unchanged.
+        guard let image = ImageRenderer.render(size: pixelSize, opaque: true,
+                                               draw: { ctx in
             ctx.saveGState()
             ctx.scaleBy(x: scale, y: scale)
             page.draw(with: .mediaBox, to: ctx)
             ctx.restoreGState()
-        }
-        image.unlockFocus()
-        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            return (nil, nil)
-        }
-        let rep = NSBitmapImageRep(cgImage: cg)
-        guard let data = rep.representation(using: .png, properties: [:]) else { return (nil, nil) }
-        return (data, "PNG")
+        }) else { return (nil, nil) }
+        return (ImageRenderer.pngData(from: image), "PNG")
     }
 
     // MARK: re-encode HEIC / TIFF / BMP / GIF as PNG

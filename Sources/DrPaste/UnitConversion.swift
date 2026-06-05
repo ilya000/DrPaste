@@ -347,7 +347,7 @@ enum UnitConversion {
 // MARK: - ClipboardAction wrapper
 
 struct UnitConversionAction: ClipboardAction {
-    let id = "builtin.unit_conversion"
+    let id = "builtin.text.unit_conversion"
     let title = "Convert units"
     let isLocal = true
 

@@ -31,6 +31,17 @@ struct ContentContext: OptionSet, Hashable {
     static let files        = ContentContext(rawValue: 1 << 12)
     static let pdf          = ContentContext(rawValue: 1 << 13)
     static let qrEligible   = ContentContext(rawValue: 1 << 14)  // text short enough to encode as QR
+
+    // #A75 traits — cheap content signals computed eagerly, used to gate
+    // action visibility ("Show this action when…"). All derived from
+    // previewText; none require provenance or expensive detection.
+    static let containsEmails   = ContentContext(rawValue: 1 << 15)  // ≥1 email address embedded
+    static let containsURLs     = ContentContext(rawValue: 1 << 16)  // ≥1 http(s)/www link embedded
+    static let containsCyrillic = ContentContext(rawValue: 1 << 17)  // any Cyrillic letter
+    static let containsLatin    = ContentContext(rawValue: 1 << 18)  // any Latin letter
+    static let uppercaseHeavy   = ContentContext(rawValue: 1 << 19)  // mostly UPPERCASE prose
+    static let messySpacing     = ContentContext(rawValue: 1 << 20)  // tabs / NBSP / 2+ spaces
+    static let wrappedLines     = ContentContext(rawValue: 1 << 21)  // hard-wrapped (PDF-style) lines
 }
 
 enum ContextDetector {
@@ -72,9 +83,55 @@ enum ContextDetector {
             if hasCyr && hasLat { break }
         }
         if hasCyr && hasLat { ctx.insert(.mixedScript) }
+        if hasCyr { ctx.insert(.containsCyrillic) }
+        if hasLat { ctx.insert(.containsLatin) }
 
         // Wrong layout
         if KeyboardLayoutRepair.looksWrongLayout(trimmed) { ctx.insert(.layoutWrong) }
+
+        // #A75 cheap content traits.
+
+        // Embedded email addresses / links (distinct from the whole-clip
+        // .email / .url semantic kinds — these fire on text that merely
+        // *contains* one).
+        if trimmed.range(of: #"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}"#,
+                         options: [.regularExpression, .caseInsensitive]) != nil {
+            ctx.insert(.containsEmails)
+        }
+        if trimmed.range(of: #"(https?://|www\.)\S"#,
+                         options: [.regularExpression, .caseInsensitive]) != nil {
+            ctx.insert(.containsURLs)
+        }
+
+        // Messy spacing — a tab, a non-breaking space, or a run of 2+ spaces.
+        if trimmed.range(of: "[\\t\\u00A0]|  ", options: .regularExpression) != nil {
+            ctx.insert(.messySpacing)
+        }
+
+        // Uppercase-heavy prose — ≥8 cased letters and ≥70% uppercase. The
+        // floor avoids flagging short acronyms / single SHOUTED words.
+        var upper = 0, cased = 0
+        for ch in trimmed where ch.isLetter {
+            cased += 1
+            if ch.isUppercase { upper += 1 }
+        }
+        if cased >= 8 && Double(upper) / Double(cased) >= 0.7 {
+            ctx.insert(.uppercaseHeavy)
+        }
+
+        // Hard-wrapped lines — 3+ lines, a majority not ending in sentence
+        // punctuation (the signature of text reflowed out of a PDF / email).
+        let lines = trimmed.split(separator: "\n", omittingEmptySubsequences: true)
+        if lines.count >= 3 {
+            let terminal: Set<Character> = [".", "!", "?", ":", ";", "\"", ")"]
+            let unterminated = lines.filter { line in
+                guard let last = line.trimmingCharacters(in: .whitespaces).last else { return false }
+                return !terminal.contains(last)
+            }.count
+            if Double(unterminated) / Double(lines.count) >= 0.6 {
+                ctx.insert(.wrappedLines)
+            }
+        }
 
         return ctx
     }

@@ -73,6 +73,13 @@ final class BigHUDState: ObservableObject {
     /// when the view is created.
     var actionTitleProvider: ((String, String) -> String)? = nil
 
+    /// #A13 — In-HUD inline search. nil = inactive; "" = active but
+    /// empty (prompt visible, all rows still shown); non-empty = active
+    /// + filter rows by `previewText` substring (case-insensitive).
+    /// `F` opens, `esc` clears + closes the field. Survives across
+    /// session navigation; reset on `openHUD`.
+    @Published var searchQuery: String? = nil
+
     private static let fontScaleKey = "drpaste.hud.fontScale"
     @Published var fontScale: CGFloat = {
         let v = UserDefaults.standard.double(forKey: BigHUDState.fontScaleKey)
@@ -415,16 +422,55 @@ struct BigHUDView: View {
         if state.items.isEmpty {
             emptyHistoryOnboarding
         } else {
-            HStack(spacing: 12) {
-                historyColumn.frame(width: 260, alignment: .leading)
-                Divider().opacity(0.2)
-                VStack(alignment: .leading, spacing: 4) {
-                    contentMetaRow                  // meta row above the preview pane
-                    previewPane
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            VStack(alignment: .leading, spacing: 4) {
+                // #A59 — release-to-paste discoverability hint. Shows
+                // until the user has visibly internalised the gesture
+                // (5 successful commits in the current reset
+                // generation), or re-shows once after a 90-day
+                // dormancy gap. Only paints in Gesture mode — the
+                // Limited mode banner already covers the gesture
+                // story there.
+                if state.mode == .gesture && ReleaseToPasteHint.shouldShow {
+                    releaseToPasteHintRow
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                HStack(spacing: 12) {
+                    historyColumn.frame(width: 260, alignment: .leading)
+                    Divider().opacity(0.2)
+                    VStack(alignment: .leading, spacing: 4) {
+                        contentMetaRow                  // meta row above the preview pane
+                        previewPane
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
             }
+        }
+    }
+
+    // MARK: release-to-paste hint (#A59)
+
+    /// Single-line discoverability strip surfacing the core gesture
+    /// of the product. Quiet by design — secondary foreground,
+    /// monospaced 10pt so it doesn't compete with the main content
+    /// strip. Auto-fades from `ReleaseToPasteHint.shouldShow` once
+    /// the user has visibly internalised the gesture.
+    private var releaseToPasteHintRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "hand.tap")
+                .font(.system(size: sz(9)))
+                .foregroundStyle(.secondary)
+            Text("hold ⌥⌘V to browse · release to paste · esc to cancel")
+                .font(.system(size: sz(10), design: .monospaced))
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 3)
+        .onAppear {
+            // Acknowledge stale-reshow inside .onAppear so the next
+            // open after a 90-day dormancy gap sees `shouldShow ==
+            // false` again until the counter is fresh.
+            ReleaseToPasteHint.acknowledgeStaleReshow()
         }
     }
 
@@ -490,8 +536,29 @@ struct BigHUDView: View {
     /// visible to the user.
     private var visibleIndices: [Int] {
         let consumed = state.accumulator?.consumed ?? []
-        if consumed.isEmpty { return Array(state.items.indices) }
-        return state.items.indices.filter { !consumed.contains($0) }
+        var base: [Int]
+        if consumed.isEmpty {
+            base = Array(state.items.indices)
+        } else {
+            base = state.items.indices.filter { !consumed.contains($0) }
+        }
+        // #A13 — apply substring filter when search is active and
+        // non-empty. Case-insensitive; matches previewText only.
+        // Image / files clips without a previewText filter out
+        // unless their semantic name matches — keeps the list
+        // sensible for mixed history.
+        if let q = state.searchQuery, !q.isEmpty {
+            let needle = q.lowercased()
+            base = base.filter { idx in
+                let item = state.items[idx]
+                if let text = item.previewText,
+                   text.lowercased().contains(needle) {
+                    return true
+                }
+                return item.semantic.displayName.lowercased().contains(needle)
+            }
+        }
+        return base
     }
 
     private var visibleRowCount: Int {
@@ -718,12 +785,26 @@ struct BigHUDView: View {
             ImagePreview(item: item)
                 .padding(.horizontal, 6)
         case .files:
-            VStack(alignment: .leading, spacing: 2) {
+            // #A17 — show NSWorkspace icon next to each filename so
+            // the user can tell folders / symlinks / regular files
+            // apart visually. Folder = standard blue folder, symlinks
+            // get the system arrow overlay automatically, regular
+            // files get their UTI-resolved icon (.txt vs .pdf vs
+            // .docx etc.). Falls back to a generic doc icon if
+            // NSWorkspace can't resolve.
+            VStack(alignment: .leading, spacing: 3) {
                 if let urls = filesList(item) {
                     ForEach(urls, id: \.self) { path in
-                        Text(URL(fileURLWithPath: path).lastPathComponent)
-                            .font(.system(size: sz(11), design: .monospaced))
-                            .lineLimit(1)
+                        HStack(spacing: 6) {
+                            Image(nsImage: fileRowIcon(forPath: path))
+                                .resizable()
+                                .interpolation(.medium)
+                                .frame(width: sz(16), height: sz(16))
+                            Text(URL(fileURLWithPath: path).lastPathComponent)
+                                .font(.system(size: sz(11), design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
                     }
                 }
             }
@@ -745,6 +826,25 @@ struct BigHUDView: View {
             return s.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
         }
         return nil
+    }
+
+    /// #A17 — Resolve the system icon for a file row in the HUD.
+    /// Uses NSWorkspace which handles folders, symlinks (with arrow
+    /// overlay), regular files (UTI-resolved), and gracefully
+    /// degrades to a generic doc icon when the file no longer
+    /// exists or sits behind a hardened sandbox boundary.
+    private func fileRowIcon(forPath path: String) -> NSImage {
+        let trimmed = path.trimmingCharacters(in: .whitespaces)
+        let ws = NSWorkspace.shared
+        if FileManager.default.fileExists(atPath: trimmed) {
+            return ws.icon(forFile: trimmed)
+        }
+        // File doesn't exist (deleted between copy and display, or
+        // sandboxed away). Fall back to a generic doc icon so we
+        // don't render a blank slot.
+        return NSImage(systemSymbolName: "doc",
+                       accessibilityDescription: "Document")
+            ?? ws.icon(for: .data)
     }
 
     @ViewBuilder
@@ -896,6 +996,23 @@ struct BigHUDView: View {
         }
         .onTapGesture(count: 1) {
             onPick(state.itemIndex, idx)
+        }
+        // #A62 — right-click / Ctrl-click on an action chip surfaces
+        // the two power-user routes that previously cost 5 clicks
+        // through Settings: "Assign hotkey…" (opens the Edit Action
+        // sheet at the action's hotkey field), "Open in Settings…"
+        // (same sheet, neutral entry point). Inline-recorder popover
+        // anchored to the chip itself is a follow-up polish item;
+        // the Edit Action sheet is the canonical path today.
+        .contextMenu {
+            Button("Assign hotkey…") {
+                (NSApp.delegate as? AppDelegate)?
+                    .openActionEditorFromHUD(actionID: a.id, focusHotkey: true)
+            }
+            Button("Open in Settings…") {
+                (NSApp.delegate as? AppDelegate)?
+                    .openActionEditorFromHUD(actionID: a.id, focusHotkey: false)
+            }
         }
     }
 

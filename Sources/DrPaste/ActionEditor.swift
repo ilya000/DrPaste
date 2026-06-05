@@ -34,6 +34,12 @@ import AppKit
 /// upward if `.center()` would put the bottom edge underneath the Dock.
 @MainActor
 final class ActionEditorWindowController {
+    /// Process-wide controller used by menu-bar / hotkey-triggered edits
+    /// (see `main.swift`). The Settings window keeps its own instance for
+    /// edits launched from the action list; both share the same windowing
+    /// logic, just different owners.
+    static let shared = ActionEditorWindowController()
+
     /// Multiple editor windows can be open simultaneously — opened
     /// either from the Settings list (one per Edit click on a
     /// different action) or from a Duplicate-button click inside an
@@ -864,7 +870,10 @@ struct ActionEditor: View {
              .mdToPlain, .mdExtractHeadings, .mdExtractLinks,
              .urlStripTracking,
              .cyrillicToLatin,
-             .prettyCodeLocal:
+             .prettyCodeLocal,
+             .htmlStripTags, .htmlEscape, .htmlUnescape,
+             .jsonValidate, .normalizeSpaces, .collapseBlankLines,
+             .extractEmails, .extractLinks, .removeLineBreaks:
             Text("This engine has no parameters.")
                 .font(.caption).foregroundStyle(.tertiary)
         }
@@ -2314,22 +2323,25 @@ private enum BuiltinHandlerCategory: String, CaseIterable, Identifiable {
 
     /// IDs that don't follow the namespace prefix get mapped explicitly.
     /// Anything else falls back to prefix detection in `of(_:)`.
+    ///
+    /// Convention v2 (#A74, 0.56.0): the prefix is
+    /// `builtin.<content_kind>.` so the dispatch below maps content_kind
+    /// directly to the category. The only overrides are special-purpose
+    /// actions whose category in the editor differs from their content
+    /// kind (e.g. `text.generate_qr` produces an image so it edits in the
+    /// Image category panel).
     private static let overrides: [String: BuiltinHandlerCategory] = [
-        "builtin.layout_repair":    .text,
-        "builtin.paste_as_text":    .richText,
-        "builtin.clean_formatting": .richText,
-        "builtin.generate_qr":      .image,
-        "builtin.type_slowly":      .text
+        "builtin.text.generate_qr": .image
     ]
 
     static func of(_ actionID: String) -> BuiltinHandlerCategory {
         if let override = overrides[actionID] { return override }
-        if actionID.hasPrefix("builtin.image_") { return .image }
-        if actionID.hasPrefix("builtin.rich_")  { return .richText }
-        if actionID.hasPrefix("builtin.url_")   { return .url }
-        if actionID.hasPrefix("builtin.table_") { return .table }
-        if actionID.hasPrefix("builtin.json_")  { return .json }
-        if actionID.hasPrefix("builtin.files_") { return .files }
+        if actionID.hasPrefix("builtin.image.") { return .image }
+        if actionID.hasPrefix("builtin.rich.")  { return .richText }
+        if actionID.hasPrefix("builtin.url.")   { return .url }
+        if actionID.hasPrefix("builtin.table.") { return .table }
+        if actionID.hasPrefix("builtin.json.")  { return .json }
+        if actionID.hasPrefix("builtin.files.") { return .files }
         return .text
     }
 }

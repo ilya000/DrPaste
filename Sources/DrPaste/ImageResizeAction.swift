@@ -33,7 +33,7 @@ import AppKit
 import CoreImage
 
 struct ImageResizeAction: ClipboardAction {
-    let id = "builtin.image_resize_universal"
+    let id = "builtin.image.resize"
     let title = "Resize Images"
     let isLocal = true
 

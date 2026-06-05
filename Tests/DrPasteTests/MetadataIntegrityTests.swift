@@ -20,13 +20,13 @@ final class MetadataIntegrityTests: XCTestCase {
     }
 
     func testMetadataDoesNotDescribeRemovedRegionalIndicatorAction() {
-        XCTAssertNil(BuiltinActionMetadata.descriptions["builtin.font_regional_indicator"])
+        XCTAssertNil(BuiltinActionMetadata.descriptions["builtin.text.font_regional_indicator"])
     }
 
     func testImportantNewActionsHaveDescriptions() {
-        XCTAssertNotNil(BuiltinActionMetadata.descriptions["builtin.md_to_rich"])
-        XCTAssertNotNil(BuiltinActionMetadata.descriptions["builtin.image_ascii_art"])
-        XCTAssertNotNil(BuiltinActionMetadata.descriptions["builtin.type_slowly"])
+        XCTAssertNotNil(BuiltinActionMetadata.descriptions["builtin.md.to_rich"])
+        XCTAssertNotNil(BuiltinActionMetadata.descriptions["builtin.image.to_ascii_art"])
+        XCTAssertNotNil(BuiltinActionMetadata.descriptions["builtin.text.type_slowly"])
     }
 
     func testDescriptionsAreHumanReadableSentences() {

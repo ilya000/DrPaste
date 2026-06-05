@@ -9,6 +9,30 @@
 //  Welcome window shown on first launch. Lists logo, name, key features,
 //  hotkeys, and a "Don't show again" checkbox plus an OK button.
 //
+//  #241 — POLICY: Keep this window FOCUSED. The structure is:
+//    1. Logo + name + tagline
+//    2. 4 core basics:
+//         • Press-and-hold ⌥⌘V
+//         • Append Copy ⌥⌘S
+//         • Quick Copy ⌥⌘C
+//         • Region capture ⌥⌘+drag
+//    3. AX permission CTA (when not yet granted)
+//    4. Per-action hotkey hint section (when user has set any)
+//    5. "Don't show again" + OK
+//
+//  Do NOT add:
+//    • Per-feature deep-dive panels (those belong in HELP.md /
+//      User Guide window)
+//    • Provider setup steps (Settings → AI handles that)
+//    • Marketing copy beyond the tagline
+//    • Changelog highlights — Welcome is for first-launch
+//      orientation, not version-difference education
+//
+//  If a feature warrants in-product introduction, surface it
+//  contextually in BigHUD / MiniHUD / Settings rather than
+//  growing this window. The 4-basics rule keeps the screen
+//  scannable in under 5 seconds.
+//
 
 import AppKit
 import SwiftUI

@@ -2,7 +2,7 @@
 
 DrPaste is a clipboard manager for macOS. Clipboard history, smart actions over content, AI transformations straight from any application — all behind a single gesture: **⌥⌘V**.
 
-Current version: **0.53.0** (alpha).
+Current version: **0.57.0** (alpha).
 
 This document describes every feature in plain language, with concrete real-world scenarios. If something's unclear, send feedback via the thumbs-down button.
 
@@ -11,22 +11,23 @@ This document describes every feature in plain language, with concrete real-worl
 ## Table of contents
 
 1. [What it is and why](#what-it-is-and-why)
-2. [Installation and permissions](#installation-and-permissions)
-3. [The main gesture: ⌥⌘V](#the-main-gesture-v)
-4. [Two modes: Gesture vs Limited](#two-modes-gesture-vs-limited)
-5. [Global hotkeys](#global-hotkeys)
-6. [Inside the HUD](#inside-the-hud)
-7. [Actions](#actions)
-8. [Custom actions](#custom-actions)
-9. [AI providers](#ai-providers)
-10. [AI image actions](#ai-image-actions)
-11. [Cyrillic transliteration — 14 languages](#cyrillic-transliteration--14-languages)
-12. [⌥⌘S Append Copy — merging clips](#s-append-copy--merging-clips)
-13. [Region Capture — screen-region screenshots](#region-capture--screen-region-screenshots)
-14. [Settings](#settings)
-15. [Sounds and themes](#sounds-and-themes)
-16. [Tips and tricks](#tips-and-tricks)
-17. [Troubleshooting](#troubleshooting)
+2. [Smart, context-aware actions](#smart-context-aware-actions)
+3. [Installation and permissions](#installation-and-permissions)
+4. [The main gesture: ⌥⌘V](#the-main-gesture-v)
+5. [Two modes: Gesture vs Limited](#two-modes-gesture-vs-limited)
+6. [Global hotkeys](#global-hotkeys)
+7. [Inside the HUD](#inside-the-hud)
+8. [Actions](#actions)
+9. [Custom actions](#custom-actions)
+10. [AI providers](#ai-providers)
+11. [AI image actions](#ai-image-actions)
+12. [Cyrillic transliteration — 14 languages](#cyrillic-transliteration--14-languages)
+13. [⌥⌘S Append Copy — merging clips](#s-append-copy--merging-clips)
+14. [Region Capture — screen-region screenshots](#region-capture--screen-region-screenshots)
+15. [Settings](#settings)
+16. [Sounds and themes](#sounds-and-themes)
+17. [Tips and tricks](#tips-and-tricks)
+18. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -39,6 +40,34 @@ Stock macOS only remembers the last copied fragment. Copy something new — the 
 - **Gesture instead of window.** No separate application to open and scroll. Hold ⌥⌘V, see history and available actions, release to paste the result.
 
 It's a gesture like ⌘V, just more powerful. No standalone window to remember switching to.
+
+---
+
+## Smart, context-aware actions
+
+DrPaste doesn't show you everything it can do. It shows what makes sense for what you just copied.
+
+Most clipboard tools are smart lists — they help you get *back* what you copied. DrPaste goes one step further: it reads the **content** of the clip and surfaces the actions that fit it, right where your thumb already rests.
+
+A few everyday moments:
+
+- Copy a block of text with **email addresses** in it → **Extract emails** is the first chip, not buried in a row of twenty.
+- Paste a paragraph from a **PDF** with broken line-wraps → **Remove line breaks** and **Normalize spaces** lead the strip.
+- Copy text shouting in **ALL CAPS** → **Sentence case** jumps to the top.
+- Copy gibberish typed in the **wrong keyboard layout** (`Ghbdtn` instead of `Привет`) → **Fix keyboard layout** appears.
+- Copy **Cyrillic** text → **Cyrillic → Latin** is offered; copy plain English and it quietly stays out of the way.
+- Screenshot some **uncopyable text** → **Extract text (OCR)**, and the instant you have the text, **Clean OCR text** is already there to tidy it. The steps chain themselves.
+
+Why it matters:
+
+- **Less hunting.** The obvious next step is already in front of you, so the press-and-hold gesture stays instant — a few relevant chips, not a wall of options.
+- **"Messy in, clean out" becomes literally true.** "I copied something messy and DrPaste knew what to do" only works because it actually understands the content, instead of offering you twenty things you *could* theoretically do.
+- **You discover the depth by using it.** DrPaste ships 100+ actions. You meet the powerful ones — Decode QR, Validate JSON, Preview card — exactly the first time they're useful, instead of scrolling a giant list to find them.
+- **Every chip feels intentional.** Showing irrelevant actions signals a tool that doesn't get you; showing the right ones signals one that does.
+
+This is what separates DrPaste from a clipboard *history*. A history helps you reach back. DrPaste **understands the clip and acts on it** — that's the whole point of the name: a paste that's done its homework.
+
+You always stay in control. Context only decides the **default** — what appears first, before you touch anything. Any action can be pinned on, switched off, reordered, or given its own `⌥⌘`-letter hotkey in **Settings → Actions**.
 
 ---
 

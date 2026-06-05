@@ -88,4 +88,48 @@ final class ContextDetectorTests: XCTestCase {
         XCTAssertTrue(ctx.contains(.files))
         XCTAssertFalse(ctx.contains(.plain))
     }
+
+    // MARK: #A75 cheap content traits
+
+    func testContainsEmails() {
+        let yes = ContextDetector.detect(item(.text, text: "ping me at a.b+x@Example.co.uk please"))
+        XCTAssertTrue(yes.contains(.containsEmails))
+        let no = ContextDetector.detect(item(.text, text: "no address here, just a@ and @b"))
+        XCTAssertFalse(no.contains(.containsEmails))
+    }
+
+    func testContainsURLs() {
+        XCTAssertTrue(ContextDetector.detect(item(.text, text: "see https://x.com/y now")).contains(.containsURLs))
+        XCTAssertTrue(ContextDetector.detect(item(.text, text: "go to www.x.com")).contains(.containsURLs))
+        XCTAssertFalse(ContextDetector.detect(item(.text, text: "no link here")).contains(.containsURLs))
+    }
+
+    func testContainsCyrillicAndLatin() {
+        let cyr = ContextDetector.detect(item(.text, text: "привет"))
+        XCTAssertTrue(cyr.contains(.containsCyrillic))
+        XCTAssertFalse(cyr.contains(.containsLatin))
+        let lat = ContextDetector.detect(item(.text, text: "hello"))
+        XCTAssertTrue(lat.contains(.containsLatin))
+        XCTAssertFalse(lat.contains(.containsCyrillic))
+    }
+
+    func testUppercaseHeavy() {
+        XCTAssertTrue(ContextDetector.detect(item(.text, text: "PLEASE STOP SHOUTING")).contains(.uppercaseHeavy))
+        XCTAssertFalse(ContextDetector.detect(item(.text, text: "Normal sentence case here")).contains(.uppercaseHeavy))
+        // Short acronym must not trip it.
+        XCTAssertFalse(ContextDetector.detect(item(.text, text: "FBI")).contains(.uppercaseHeavy))
+    }
+
+    func testMessySpacing() {
+        XCTAssertTrue(ContextDetector.detect(item(.text, text: "a\tb")).contains(.messySpacing))
+        XCTAssertTrue(ContextDetector.detect(item(.text, text: "a  b")).contains(.messySpacing))
+        XCTAssertFalse(ContextDetector.detect(item(.text, text: "a b c")).contains(.messySpacing))
+    }
+
+    func testWrappedLines() {
+        let pdf = "The quick brown fox jumps over\nthe lazy dog and then keeps\nrunning down the road forever"
+        XCTAssertTrue(ContextDetector.detect(item(.text, text: pdf)).contains(.wrappedLines))
+        let prose = "First sentence.\nSecond sentence.\nThird sentence."
+        XCTAssertFalse(ContextDetector.detect(item(.text, text: prose)).contains(.wrappedLines))
+    }
 }

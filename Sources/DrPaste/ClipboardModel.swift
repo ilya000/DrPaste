@@ -345,13 +345,34 @@ final class ClipboardStore: ObservableObject {
 
     // MARK: persistence
 
+    /// #A46 (0.57.0) — debounced write coalescer. Rapid burst saves
+    /// (Append Copy session, batch import) used to rewrite
+    /// `index.json` per copy; now the last call within 200 ms wins
+    /// and the actual disk hit runs off the main thread. Immediate
+    /// callers (terminate, Factory Reset) use `flushPendingSave()`.
+    private let saver = PersistenceDebouncer(label: "ClipboardStore")
+
     private func save() {
-        do {
-            let data = try JSONEncoder().encode(items)
-            try data.write(to: indexURL, options: .atomic)
-        } catch {
-            NSLog("DrPaste save failed: \(error)")
+        // Snapshot the items array up front so the background queue
+        // encodes a stable value; otherwise a concurrent mutation
+        // would race the encoder.
+        let snapshot = items
+        let url = indexURL
+        saver.schedule {
+            do {
+                let data = try JSONEncoder().encode(snapshot)
+                try data.write(to: url, options: .atomic)
+            } catch {
+                NSLog("DrPaste save failed: \(error)")
+            }
         }
+    }
+
+    /// Flush any pending save synchronously. Called from
+    /// `applicationWillTerminate` and Factory Reset so an in-flight
+    /// 200 ms window never strands a write.
+    func flushPendingSave() {
+        saver.flushSync()
     }
 
     private func load() {
@@ -543,17 +564,47 @@ final class ClipboardWatcher {
     /// Universal snapshot: walks every pasteboard.type, saves each
     /// representation to blob storage, classifies the semantic kind, and
     /// generates a preview.
+    ///
+    /// #A54 — Per-representation size cap. The user-configurable limit
+    /// (default 16 MB, range 1–256 MB in Settings → General) protects
+    /// `index.json` + blob storage from runaway growth when something
+    /// huge lands on the pasteboard (100 MB+ PDFs, video frames,
+    /// proprietary binary payloads). Above the limit:
+    ///   - `.files` representations always go through (URL only, not
+    ///     the file's content) — file lists are never gigantic.
+    ///   - everything else is skipped silently from the representations
+    ///     map, NSLog summary so the truncation is visible.
+    /// previewImage + previewText still get computed from the in-memory
+    /// pasteboard so the clip is recognisable in history even with the
+    /// raw blob omitted.
     private func snapshotPasteboard() -> ClipboardItem? {
         guard let types = pasteboard.types, !types.isEmpty else { return nil }
 
         var representations: [String: String] = [:]
         var ordered: [String] = []
+        let cap = ClipboardSizeCap.maxBytesPerRepresentation
+        var droppedCount = 0
+        var droppedBytes = 0
 
         for t in types {
             guard let data = pasteboard.data(forType: t) else { continue }
+            // File URLs are always cheap (path strings) — skip the cap.
+            // Everything else is gated.
+            let isFileURL = t.rawValue == "public.file-url"
+            if !isFileURL && data.count > cap {
+                droppedCount += 1
+                droppedBytes += data.count
+                continue
+            }
             let rel = store.writeRawBlob(data, type: t.rawValue)
             representations[t.rawValue] = rel
             ordered.append(t.rawValue)
+        }
+        if droppedCount > 0 {
+            NSLog("DrPaste size cap: dropped %d representation(s) totaling %.1f MB (cap %.0f MB)",
+                  droppedCount,
+                  Double(droppedBytes) / 1_048_576,
+                  Double(cap) / 1_048_576)
         }
 
         guard !representations.isEmpty else { return nil }
@@ -586,6 +637,38 @@ final class ClipboardWatcher {
             sourceWindowTitle: src.window,
             tags: []
         )
+    }
+}
+
+// MARK: - Size cap (#A54)
+
+/// Per-representation pasteboard payload cap. User-configurable via
+/// Settings → General → "Max clipboard item size (MB)". Stored as
+/// MB in `UserDefaults` under `drpaste.clipboard.maxMB`; default 16 MB,
+/// range 1–256 MB.
+///
+/// Lives in its own namespace so callers (snapshotPasteboard,
+/// future Diagnostics report) can share the read path without
+/// duplicating the unit math.
+enum ClipboardSizeCap {
+
+    /// Storage key. Bare double in MB.
+    static let key = "drpaste.clipboard.maxMB"
+
+    /// Default size cap in MB when the user hasn't picked one.
+    static let defaultMB: Double = 16
+
+    /// Min / max bounds for the Settings slider.
+    static let minMB: Double = 1
+    static let maxMB: Double = 256
+
+    /// Live cap in bytes — read on every snapshot so a Settings change
+    /// applies to the very next ⌘C without restart.
+    static var maxBytesPerRepresentation: Int {
+        let raw = UserDefaults.standard.double(forKey: key)
+        let mb = raw == 0 ? defaultMB : raw
+        let clamped = max(minMB, min(maxMB, mb))
+        return Int(clamped * 1_048_576)
     }
 }
 
@@ -818,21 +901,14 @@ enum PreviewSynthesizer {
 
     /// Lanczos-quality downscale so the larger side fits within maxDimension pt.
     /// Returns the original image if it is already smaller.
+    ///
+    /// #A47 — Migrated from NSImage.lockFocus → ImageRenderer.downscale
+    /// (CGContext-backed). Output dimensions are now deterministic
+    /// (lockFocus path scaled them by the focused view's contentsScale,
+    /// which surprises callers on Retina vs non-Retina displays).
     static func makeThumbnail(_ source: NSImage, maxDimension: CGFloat) -> NSImage {
         let originalSize = source.size
         guard originalSize.width > 0, originalSize.height > 0 else { return source }
-        let scale = min(maxDimension / originalSize.width,
-                        maxDimension / originalSize.height,
-                        1.0)
-        if scale >= 1.0 { return source }
-        let newSize = NSSize(width: originalSize.width * scale,
-                             height: originalSize.height * scale)
-        let thumb = NSImage(size: newSize)
-        thumb.lockFocus()
-        NSGraphicsContext.current?.imageInterpolation = .high
-        source.draw(in: NSRect(origin: .zero, size: newSize),
-                    from: .zero, operation: .copy, fraction: 1.0)
-        thumb.unlockFocus()
-        return thumb
+        return ImageRenderer.downscale(source, maxSide: maxDimension)
     }
 }

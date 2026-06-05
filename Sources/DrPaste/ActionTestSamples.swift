@@ -44,19 +44,92 @@ enum ActionTestSamples {
         switch actionID {
 
         // MARK: Translation
-        case "user.translate", "user.translate_rich":
+        case "ai.text.translate", "ai.rich.translate":
             return "Hello! How are you doing today? I hope the weather is nice where you are."
 
         // MARK: Grammar / tone
-        case "user.fix_grammar", "user.fix_grammar_rich":
+        case "ai.text.fix_grammar", "ai.rich.fix_grammar":
             return "their going too the store later, me and him beleive its allready to late, " +
                    "but we will sea what happens"
 
-        case "user.formal_tone":
+        case "ai.text.formal_tone":
             return "hey, just wanted to give u a quick heads up that the report's gonna be late. " +
                    "ran into some stuff i didn't expect. lmk if that's a problem."
 
-        case "user.summarize":
+        case "ai.text.make_friendly":
+            return "Per our previous discussion, kindly note that the deliverable has been completed and is awaiting review. Please advise at your earliest convenience."
+
+        case "ai.text.make_shorter":
+            return """
+            In a recent extended internal discussion concerning the timeline and overall scope \
+            of the upcoming product launch, the cross-functional team reached the broad \
+            consensus that a number of secondary features that had originally been planned \
+            for inclusion in the initial release should, given current resource constraints, \
+            be deferred to a subsequent follow-up release scheduled for later in the quarter.
+            """
+
+        case "ai.text.improve_clarity":
+            return "The thing we did with the stuff that you sent over earlier when you were trying to figure out what to do about it didn't really work out the way we thought it would because of some issues."
+
+        case "ai.text.draft_email_reply":
+            return """
+            From: Sarah Chen <sarah@example.com>
+            Subject: Project Atlas — timeline check
+
+            Hi,
+
+            Just checking in on the Atlas milestone we discussed last week. Are we still on track \
+            for the Friday demo? Also wanted to confirm whether the new design assets you mentioned \
+            are ready to share.
+
+            Thanks,
+            Sarah
+            """
+
+        case "ai.text.generate_email_subject":
+            return """
+            Hi team — just a quick note that we're moving the standup from Monday 10am to Tuesday \
+            11am next week to make room for the architecture review. Please update your calendars. \
+            Let me know if this clashes with anything on your end.
+            """
+
+        case "ai.text.clean_ocr":
+            return "lhe quick brown fOx jvmps over l:he laz9 dog. T h i s   text\nwas extracted frorn a low- quality scan and has typical 0CR\nartifacts: split words, mis read characters, ragged   spacing,\nand  rn  vs  m  confusion."
+
+        case "ai.code.explain":
+            return """
+            func fibonacci(_ n: Int) -> Int {
+                guard n > 1 else { return n }
+                var a = 0, b = 1
+                for _ in 2...n {
+                    (a, b) = (b, a + b)
+                }
+                return b
+            }
+            """
+
+        case "ai.code.find_bugs":
+            return """
+            func average(_ nums: [Double]) -> Double {
+                var sum = 0
+                for n in nums {
+                    sum += n
+                }
+                return sum / nums.count
+            }
+            """
+
+        case "ai.code.translate":
+            return """
+            def filter_even(numbers):
+                result = []
+                for n in numbers:
+                    if n % 2 == 0:
+                        result.append(n)
+                return result
+            """
+
+        case "ai.text.summarize":
             return """
             DrPaste is a macOS clipboard manager built around a press-and-hold gesture. \
             When the user holds ⌥⌘V, a heads-up display appears showing their recent \
@@ -69,143 +142,184 @@ enum ActionTestSamples {
             """
 
         // MARK: Case
-        case "builtin.uppercase", "builtin.lowercase",
-             "builtin.title_case", "builtin.sentence_case":
+        case "builtin.text.uppercase", "builtin.text.lowercase",
+             "builtin.text.title_case", "builtin.text.sentence_case":
             return "The quick brown fox jumps over the lazy dog."
 
-        case "builtin.camel_case", "builtin.snake_case", "builtin.kebab_case":
+        case "builtin.text.camel_case", "builtin.text.snake_case", "builtin.text.kebab_case":
             return "user account email address"
 
         // MARK: Whitespace / lines
-        case "builtin.trim":
+        case "builtin.text.trim":
             return "   leading and trailing whitespace here   \n\n"
 
-        case "builtin.sort_lines":
+        case "builtin.text.sort_lines":
             return "banana\napple\ncherry\ndate\nblueberry"
 
-        case "builtin.unique_lines":
+        case "builtin.text.unique_lines":
             return "apple\nbanana\napple\ncherry\nbanana\ndate"
 
+        case "builtin.text.normalize_spaces":
+            return "The   quick    brown\tfox  jumps  over    the lazy dog."
+
+        case "builtin.text.collapse_blank_lines":
+            return "first paragraph\n\n\n\nsecond paragraph after lots of empty lines\n\n\n\n\nthird paragraph"
+
+        case "builtin.text.remove_line_breaks":
+            return """
+            This paragraph from a PDF has hard
+            wrapping at every line which makes
+            it hard to read after pasting.
+
+            But this is a real paragraph break
+            that should survive the transform.
+            """
+
+        case "builtin.text.wrap_quotes", "builtin.text.wrap_parens":
+            return "the entire phrase goes inside"
+
+        case "builtin.text.extract_emails":
+            return "Email Ada at ada@example.com or Grace at grace@hopper.org. Also CC bob@example.com and bob@example.com (the second one is a duplicate)."
+
+        case "builtin.text.extract_links":
+            return "Visit https://example.com/docs and also https://github.com/ilya000/DrPaste for the source. The dup https://example.com/docs should be deduped."
+
         // MARK: Encoding
-        case "builtin.base64_encode":
+        case "builtin.text.base64_encode":
             return "Hello, DrPaste!"
 
-        case "builtin.base64_decode":
+        case "builtin.text.base64_decode":
             return "SGVsbG8sIERyUGFzdGUh"
 
-        case "builtin.url_encode":
+        case "builtin.url.encode":
             return "https://example.com/search?q=hello world&lang=en-US"
 
-        case "builtin.url_decode":
+        case "builtin.url.decode":
             return "https://example.com/search?q=hello%20world&lang=en-US"
 
         // MARK: Derived
-        case "builtin.slugify":
+        case "builtin.text.slugify":
             return "My Awesome Blog Post! (Draft v2)"
 
-        case "builtin.word_count":
+        case "builtin.text.word_count":
             return "The quick brown fox jumps over the lazy dog."
 
         // MARK: JSON
-        case "builtin.json_pretty", "builtin.json_minify":
+        case "builtin.json.pretty", "builtin.json.minify", "builtin.json.validate":
             return #"{"name":"Ada Lovelace","born":1815,"contributions":["analytical engine","first algorithm"],"address":{"city":"London","country":"UK"}}"#
 
-        case "builtin.json_extract_keys", "builtin.json_keys",
-             "builtin.json_flatten", "builtin.json_remove_nulls":
+        case "builtin.json.extract_keys",
+             "builtin.json.flatten", "builtin.json.remove_nulls":
             return #"{"user":{"id":42,"name":"Ada","email":null,"prefs":{"theme":"dark","notify":true}}}"#
 
         // MARK: Code
-        case "builtin.code_wrap":
+        case "builtin.code.wrap_block":
             return "let answer = 42"
 
-        case "builtin.tabs_to_spaces":
+        case "builtin.code.tabs_to_spaces":
             return "func greet() {\n\tprint(\"hello\")\n}"
 
-        case "builtin.spaces_to_tabs":
+        case "builtin.code.spaces_to_tabs":
             return "func greet() {\n    print(\"hello\")\n}"
 
+        // MARK: HTML
+        case "builtin.html.strip_tags":
+            return "<p>This <strong>bold</strong> sentence has a <a href=\"https://example.com\">link</a> and <em>italics</em>.</p>"
+
+        case "builtin.html.escape":
+            return "if (x < 10 && y > 5) { print(\"hi\"); }"
+
+        case "builtin.html.unescape":
+            return "&lt;div class=&quot;quote&quot;&gt;He said &amp; she said&lt;/div&gt;"
+
         // MARK: Markdown
-        case "builtin.md_to_plain":
+        case "builtin.md.to_plain":
             return "# Title\n\nSome **bold** and *italic* text with a [link](https://example.com).\n\n- bullet one\n- bullet two"
 
-        case "builtin.md_to_rich":
+        case "builtin.md.to_rich":
             return "A line with **bold**, *italic*, and `inline code`.\n\nFollowed by a [linked phrase](https://example.com)."
 
-        case "builtin.unit_conversion":
+        case "builtin.text.unit_conversion":
             return "It's 75°F outside, the road sign said 5 miles to the exit, and I weigh 180 lb. My height is 6 feet 2 inches and the bottle holds 16 fl oz."
 
         // 0.53.0 batch — #A15 / #A18 / #A19 / #A70
-        case "builtin.csv_to_wiki_table", "builtin.csv_to_rtfd_table":
+        case "builtin.table.to_wiki", "builtin.table.to_rich", "builtin.table.to_html":
             return "Name,Role,City\n\"Anna Smith\",Engineer,Lisbon\n\"Bob Tan, Jr.\",Designer,Singapore\nCarla,Manager,\"São Paulo\""
 
-        case "builtin.latin_to_cyrillic":
+        case "builtin.text.latin_to_cyrillic":
             return "Privet, Ilya! Skol'ko sejchas vremeni? Kak dela?"
 
-        case "builtin.pretty_code_local":
-            return "{\"name\":\"DrPaste\",\"version\":\"0.53.0\",\"features\":[\"clipboard\",\"transforms\",\"actions\"],\"settings\":{\"theme\":\"auto\",\"appearance\":{\"opacity\":0.95}}}"
+        case "builtin.code.pretty_local":
+            return "{\"name\":\"DrPaste\",\"version\":\"0.56.0\",\"features\":[\"clipboard\",\"transforms\",\"actions\"],\"settings\":{\"theme\":\"auto\",\"appearance\":{\"opacity\":0.95}}}"
 
-        case "builtin.leetspeak":
+        case "builtin.text.leetspeak":
             return "Hello hacker world, this is some elite leet text!"
 
-        case "builtin.uwu_speak":
+        case "builtin.text.uwu_speak":
             return "Really cool friend! How are you today? Look at the lovely flowers."
 
-        case "builtin.zalgo":
+        case "builtin.text.zalgo":
             return "The void looks back into you"
 
-        case "builtin.md_headings", "builtin.md_extract_headings":
+        case "builtin.url.preview_card":
+            return "https://www.apple.com/macbook-pro/"
+
+        case "builtin.md.extract_headings":
             return "# Introduction\n\nSome intro text.\n\n## Background\n\nMore text.\n\n## Goals\n\n### Short-term\n\nDetail.\n\n## Conclusion"
 
-        case "builtin.md_links", "builtin.md_extract_links":
+        case "builtin.md.extract_links":
             return "See the [docs](https://example.com/docs) and the [API reference](https://example.com/api) for details. Also check [GitHub](https://github.com/example/repo)."
 
         // MARK: URL
-        case "builtin.url_strip_tracking", "builtin.url_clean":
+        case "builtin.url.strip_tracking":
             return "https://example.com/article?utm_source=newsletter&utm_medium=email&utm_campaign=launch&fbclid=abc123&id=42"
 
-        case "builtin.url_just_domain", "builtin.url_domain":
+        case "builtin.url.extract_domain":
             return "https://docs.example.com/path/to/page?ref=home"
 
-        case "builtin.url_markdown_link", "builtin.url_html_link":
+        case "builtin.url.to_md_link", "builtin.url.to_html_link":
             return "https://www.apple.com"
 
         // MARK: Layout repair
-        case "builtin.layout_repair":
+        case "builtin.text.layout_repair":
             // Russian phrase typed with English keyboard layout — Cyrillic
             // glyphs produced by the wrong-layout mapping. Repair should
             // convert these back to Russian: "Привет, мир!"
             return "Ghbdtn, vbh!"
 
         // MARK: Cyrillic transliteration
-        case "builtin.cyrillic_translit":
-            return "Привет, как дела? Меня зовут Анна."
+        // Serbian sample (note ј / џ-family letters) so the playground shows
+        // the auto-detector picking Serbian and applying Gaj's romanization,
+        // not the Russian default. RU "Привет, как дела? Меня зовут Анна."
+        case "builtin.text.cyrillic_to_latin":
+            return "Здраво, како си? Ја се зовем Ана."
 
         // MARK: Unicode pseudo-fonts — show the alphabet so the user
         // immediately sees the styling effect.
-        case "builtin.font_bold", "builtin.font_italic", "builtin.font_bold_italic",
-             "builtin.font_script", "builtin.font_bold_script",
-             "builtin.font_fraktur", "builtin.font_bold_fraktur",
-             "builtin.font_double_struck",
-             "builtin.font_sans", "builtin.font_sans_bold",
-             "builtin.font_sans_italic", "builtin.font_sans_bold_italic",
-             "builtin.font_monospace", "builtin.font_fullwidth",
-             "builtin.font_small_caps",
-             "builtin.font_circled", "builtin.font_filled_circled",
-             "builtin.font_squared", "builtin.font_filled_squared",
-             "builtin.font_upside_down":
+        case "builtin.text.font_bold", "builtin.text.font_italic", "builtin.text.font_bold_italic",
+             "builtin.text.font_script", "builtin.text.font_bold_script",
+             "builtin.text.font_fraktur", "builtin.text.font_bold_fraktur",
+             "builtin.text.font_double_struck",
+             "builtin.text.font_sans", "builtin.text.font_sans_bold",
+             "builtin.text.font_sans_italic", "builtin.text.font_sans_bold_italic",
+             "builtin.text.font_monospace", "builtin.text.font_fullwidth",
+             "builtin.text.font_small_caps",
+             "builtin.text.font_circled", "builtin.text.font_filled_circled",
+             "builtin.text.font_squared", "builtin.text.font_filled_squared",
+             "builtin.text.font_upside_down":
             return "The quick brown fox 123"
 
-        case "builtin.font_plain":
+        case "builtin.text.font_plain":
             // Stylized input that the action collapses back to plain ASCII.
             return "𝐓𝐡𝐞 𝐪𝐮𝐢𝐜𝐤 𝐛𝐫𝐨𝐰𝐧 𝐟𝐨𝐱 𝟏𝟐𝟑"
 
-        case "builtin.font_markdown":
+        case "builtin.text.font_markdown":
             // Markdown markup that the action converts span-by-span into
             // Unicode pseudo-fonts. Plain text outside markup stays as-is.
             return "Today's update: **important news** in *italic* with `inline code` and ~~struck text~~. Use ***this***  for bold-italic."
 
         // MARK: Tables
-        case "builtin.table_to_json", "builtin.table_to_md":
+        case "builtin.table.to_json", "builtin.table.to_md":
             return "name,role,city\nAda,engineer,London\nGrace,admiral,New York\nKatherine,mathematician,Hampton"
 
         // MARK: Rich text — markdown source. The Test panel keeps a
@@ -220,7 +334,7 @@ enum ActionTestSamples {
         // concentrate on inline elements that demonstrably round-trip
         // through each target format.
 
-        case "builtin.rich_to_wiki":
+        case "builtin.rich.to_wiki":
             // MediaWiki output preview: '''bold''', ''italic'',
             // [https://… label], '''''both''''', <code>code</code>.
             return "MediaWiki converts **bold** to ''​'​bold​'​''​, " +
@@ -229,7 +343,7 @@ enum ActionTestSamples {
                    "[Wikipedia](https://en.wikipedia.org) turn into " +
                    "[https://en.wikipedia.org Wikipedia]."
 
-        case "builtin.rich_to_md":
+        case "builtin.rich.to_md":
             // Markdown round-trip — the output looks similar to the
             // input but normalises whitespace and emits canonical
             // syntax (always **bold** not __bold__, always *italic*
@@ -238,14 +352,14 @@ enum ActionTestSamples {
                    "`inline code`, and [hyperlinks](https://example.com) " +
                    "in their canonical Markdown form."
 
-        case "builtin.rich_to_html":
+        case "builtin.rich.to_html":
             // HTML output preview: <strong>, <em>, <code>, <a href=...>.
             return "HTML conversion emits **bold** as <strong>, " +
                    "*italic* as <em>, `inline code` as <code>, and " +
                    "[hyperlinks](https://example.com) as " +
                    "<a href=\"https://example.com\">…</a>."
 
-        case "builtin.rich_to_unicode_style":
+        case "builtin.rich.to_unicode_styled":
             // Maps **bold** / *italic* to Unicode pseudo-fonts:
             // 𝐛𝐨𝐥𝐝, 𝑖𝑡𝑎𝑙𝑖𝑐. Useful for Twitter / Telegram where
             // markup is stripped but Unicode survives.
@@ -253,8 +367,8 @@ enum ActionTestSamples {
                    "useful when you need formatted-looking text in " +
                    "places that strip HTML / Markdown markup."
 
-        case "builtin.clean_formatting", "builtin.paste_as_text":
-            // Strip-formatting actions — show fancy formatting that
+        case "builtin.rich.strip_formatting":
+            // Strip-formatting action — show fancy formatting that
             // gets flattened to plain text in the Output.
             return "Pasting **bold**, *italic*, `inline code`, and " +
                    "[hyperlinks](https://example.com) here would " +
@@ -262,7 +376,7 @@ enum ActionTestSamples {
                    "flattens everything to plain text."
 
         // MARK: Type slowly
-        case "builtin.type_slowly":
+        case "builtin.text.type_slowly":
             return "This text will type one character at a time into the target app."
 
         // MARK: AI image styles — testInput is unused (sample image is
@@ -270,9 +384,9 @@ enum ActionTestSamples {
         // sentence avoids confusion when the user looks at the empty
         // Input field. Returning a non-nil string also tells
         // loadInitialState to populate the field.
-        case "user.ai_image_sketch",
-             "user.ai_image_watercolor",
-             "user.ai_image_cartoon":
+        case "ai.image.sketch",
+             "ai.image.watercolor",
+             "ai.image.cartoon":
             return "(Image action — Run test will use a generated sample image)"
 
         // MARK: AI text → image (Whiteboard sketch) — testInput IS
@@ -284,7 +398,7 @@ enum ActionTestSamples {
         // shape is recognizable, it's domain-neutral, and the
         // result is visually obviously "a whiteboard sketch" not
         // "a generic illustration".
-        case "user.ai_text_to_image_whiteboard":
+        case "ai.text.image_whiteboard":
             return """
             Build → measure → learn loop:
             1. Build a small experiment
@@ -298,38 +412,38 @@ enum ActionTestSamples {
         // PNG and feeds it to the action. The Input field text is
         // informational; the user can keep these placeholders or
         // override them via the persisted-sample mechanism.
-        case "builtin.image_ocr":
+        case "builtin.image.ocr":
             return "(Image action — Run test will OCR a sample image with the word \"DrPaste sample\")"
 
-        case "builtin.image_decode_qr":
+        case "builtin.image.decode_qr":
             return "(Image action — Run test will try to decode a sample image; the procedural sample has no QR, so the action will report \"no QR code\")"
 
-        case "builtin.image_grayscale":
+        case "builtin.image.to_grayscale":
             return "(Image action — Run test will desaturate a colourful sample sunset image)"
 
-        case "builtin.image_invert":
+        case "builtin.image.invert_colors":
             return "(Image action — Run test will invert colours of a sample sunset image)"
 
-        case "builtin.image_rotate":
+        case "builtin.image.rotate_right":
             return "(Image action — Run test will rotate a sample image 90° clockwise)"
 
-        case "builtin.image_rotate_left":
+        case "builtin.image.rotate_left":
             return "(Image action — Run test will rotate a sample image 90° counter-clockwise)"
 
-        case "builtin.image_strip_meta":
+        case "builtin.image.strip_metadata":
             return "(Image action — Run test will strip EXIF / metadata from a sample image)"
 
-        case "builtin.image_resize_1920":
+        case "builtin.image.resize_max_1920", "builtin.image.resize":
             return "(Image action — Run test will resize a sample 512×512 image; already under 1920, action returns as-is)"
 
-        case "builtin.image_compress_jpeg":
+        case "builtin.image.compress_jpeg":
             return "(Image action — Run test will re-encode the sample PNG as JPEG)"
 
-        case "builtin.image_ascii_art":
+        case "builtin.image.to_ascii_art":
             return "(Image action — Run test will tone-map a sample image to ASCII art)"
 
         // MARK: QR generation — text → QR image
-        case "builtin.generate_qr":
+        case "builtin.text.generate_qr":
             return "https://github.com/ilya000/DrPaste"
 
         // MARK: Files — sample as comma-separated paths. `fileURLs()`
@@ -337,16 +451,21 @@ enum ActionTestSamples {
         // previewText as a fallback when no file-URL representation
         // exists, so this works end-to-end in runTest without needing
         // to fabricate a file-URL pasteboard representation.
-        case "builtin.files_paths",
-             "builtin.files_names",
-             "builtin.files_md_links":
+        case "builtin.files.copy_paths",
+             "builtin.files.copy_filenames",
+             "builtin.files.to_md_links",
+             "builtin.files.copy_shell_safe_paths",
+             "builtin.files.to_rich_icons":
             return "/Users/example/Documents/Q4-report.pdf, " +
                    "/Users/example/Pictures/team-photo.jpg, " +
-                   "/Users/example/Desktop/notes.txt"
+                   "/Users/example/Desktop/notes with spaces.txt"
 
-        case "builtin.files_reveal":
+        case "builtin.files.reveal_in_finder":
             return "(Side-effect action — Run test would reveal the file in Finder; " +
                    "test panel skips the side effect to avoid surprising the user)"
+
+        case "builtin.files.extract_image":
+            return "(Files action — Run test would extract page 1 of a PDF / re-encode HEIC as PNG)"
 
         // MARK: Identity (Paste as-is) — no transformation, so any
         // sample text demonstrates the round-trip.
@@ -510,29 +629,29 @@ enum ActionTestSamples {
     @MainActor
     private static func makeSFSymbolSampleItem() -> ClipboardItem? {
         let size = NSSize(width: 256, height: 256)
-        let image = NSImage(size: size)
-        image.lockFocus()
-        defer { image.unlockFocus() }
-        NSColor(srgbRed: 0.92, green: 0.94, blue: 0.98, alpha: 1).setFill()
-        NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
-        if let symbol = NSImage(systemSymbolName: "photo.on.rectangle.angled",
-                                accessibilityDescription: nil) {
-            let cfg = NSImage.SymbolConfiguration(pointSize: 96, weight: .regular)
-                .applying(.init(paletteColors: [
-                    NSColor(srgbRed: 0.30, green: 0.45, blue: 0.70, alpha: 1)
-                ]))
-            let glyph = symbol.withSymbolConfiguration(cfg) ?? symbol
-            let rect = NSRect(x: (size.width - glyph.size.width) / 2,
-                              y: (size.height - glyph.size.height) / 2,
-                              width: glyph.size.width,
-                              height: glyph.size.height)
-            glyph.draw(in: rect)
-        }
-        guard let tiff = image.tiffRepresentation,
-              let bmp = NSBitmapImageRep(data: tiff),
-              let png = bmp.representation(using: .png, properties: [:]) else {
-            return nil
-        }
+        // #A47 — Render via ImageRenderer (CGContext) instead of
+        // lockFocus. The bridged NSGraphicsContext stack lets the
+        // existing NSColor / NSBezierPath / NSImage.draw code stay
+        // unchanged.
+        guard let image = ImageRenderer.render(size: size, opaque: true,
+                                               draw: { _ in
+            NSColor(srgbRed: 0.92, green: 0.94, blue: 0.98, alpha: 1).setFill()
+            NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
+            if let symbol = NSImage(systemSymbolName: "photo.on.rectangle.angled",
+                                    accessibilityDescription: nil) {
+                let cfg = NSImage.SymbolConfiguration(pointSize: 96, weight: .regular)
+                    .applying(.init(paletteColors: [
+                        NSColor(srgbRed: 0.30, green: 0.45, blue: 0.70, alpha: 1)
+                    ]))
+                let glyph = symbol.withSymbolConfiguration(cfg) ?? symbol
+                let rect = NSRect(x: (size.width - glyph.size.width) / 2,
+                                  y: (size.height - glyph.size.height) / 2,
+                                  width: glyph.size.width,
+                                  height: glyph.size.height)
+                glyph.draw(in: rect)
+            }
+        }) else { return nil }
+        guard let png = ImageRenderer.pngData(from: image) else { return nil }
         return persistSample(pngData: png,
                              image: image,
                              stableFilename: "drpaste-test-sfsymbol.png")
@@ -541,19 +660,11 @@ enum ActionTestSamples {
     /// Lanczos-quality downscale to fit within `maxSide` pixels on the
     /// longest edge, preserving aspect ratio. Skipped if the source is
     /// already within bounds — no needless re-encode.
+    ///
+    /// #A47 — Delegates to ImageRenderer.downscale; the legacy
+    /// lockFocus path had backing-scale issues.
     private static func downscaleToFit(_ image: NSImage, maxSide: CGFloat) -> NSImage {
-        let s = image.size
-        guard s.width > maxSide || s.height > maxSide else { return image }
-        let scale = min(maxSide / s.width, maxSide / s.height)
-        let target = NSSize(width: s.width * scale, height: s.height * scale)
-        let out = NSImage(size: target)
-        out.lockFocus()
-        defer { out.unlockFocus() }
-        image.draw(in: NSRect(origin: .zero, size: target),
-                   from: NSRect(origin: .zero, size: s),
-                   operation: .copy,
-                   fraction: 1.0)
-        return out
+        return ImageRenderer.downscale(image, maxSide: maxSide)
     }
 
     /// Build a ClipboardItem from the cached Mandrill PNG if it's on
@@ -661,10 +772,12 @@ enum ActionTestSamples {
     @MainActor
     private static func makeProceduralPortraitSampleItem() -> ClipboardItem? {
         let size = NSSize(width: 512, height: 512)
-        let image = NSImage(size: size)
-        image.lockFocus()
-        defer { image.unlockFocus() }
-
+        // #A47 — Render via ImageRenderer (CGContext-backed) instead of
+        // lockFocus. The bridged NSGraphicsContext stack inside the
+        // closure lets the existing NSColor / NSBezierPath / NSImage /
+        // NSAttributedString.draw code stay unchanged.
+        guard let image = ImageRenderer.render(size: size, opaque: true,
+                                               draw: { _ in
         // === Background — soft warm gradient (peach → rose → twilight).
         // Bottom-up so the warm tones sit behind the figure's torso
         // and the cooler dusk colour frames the hat.
@@ -785,13 +898,12 @@ enum ActionTestSamples {
         let captionSize = caption.size(withAttributes: captionAttrs)
         caption.draw(at: NSPoint(x: (size.width - captionSize.width) / 2, y: 28),
                      withAttributes: captionAttrs)
+        }) else { return nil }   // end ImageRenderer.render closure
 
-        // Encode to PNG.
-        guard let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let png = rep.representation(using: .png, properties: [:]) else {
-            return nil
-        }
+        // Encode to PNG via the shared helper — same end result as the
+        // legacy `tiffRepresentation → NSBitmapImageRep → PNG` chain
+        // but factored through one function for the whole project.
+        guard let png = ImageRenderer.pngData(from: image) else { return nil }
         return persistSample(pngData: png,
                              image: image,
                              stableFilename: "drpaste-test-portrait.png")

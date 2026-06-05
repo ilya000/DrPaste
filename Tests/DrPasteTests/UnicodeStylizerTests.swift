@@ -43,4 +43,52 @@ final class UnicodeStylizerTests: XCTestCase {
             XCTAssertFalse(style.sample.isEmpty, "\(style.rawValue) sample is empty")
         }
     }
+
+    // MARK: #A33 — denormalize-then-restyle invariants
+
+    /// Italic-on-bold previously returned the bold input untouched (the
+    /// Italic table is keyed on a-z/A-Z and the bold glyphs aren't in
+    /// those ranges). After #A33, every non-`.plain` style denormalizes
+    /// the input first, so the output is genuinely italic.
+    func testStylingAlreadyStyledTextDenormalizesFirst() {
+        let bold = UnicodeStylizer.apply(to: "Hello", style: .bold)
+        let italicFromBold = UnicodeStylizer.apply(to: bold, style: .italic)
+        let italicFromPlain = UnicodeStylizer.apply(to: "Hello", style: .italic)
+        XCTAssertEqual(italicFromBold, italicFromPlain)
+    }
+
+    /// Round-trip through several styles. Every staged style flips fully,
+    /// no residue from earlier stages.
+    func testStyleChainsAreIndependentOfPriorStyle() {
+        let input = "Aa Zz 09"
+        let stages: [UnicodeFontStyle] = [.bold, .italic, .script, .monospace, .smallCaps]
+        var current = input
+        for stage in stages {
+            current = UnicodeStylizer.apply(to: current, style: stage)
+            let fromPlain = UnicodeStylizer.apply(to: input, style: stage)
+            XCTAssertEqual(current, fromPlain, "stage \(stage.rawValue) did not denormalize prior styling")
+        }
+    }
+
+    /// Plain ASCII input must still flow through every styled table —
+    /// the denormalize-first fast path can't drop or transform pure ASCII.
+    func testStylingPlainInputUnchangedByDenormalizeFastPath() {
+        XCTAssertEqual(
+            UnicodeStylizer.apply(to: "Hello", style: .bold),
+            "𝐇𝐞𝐥𝐥𝐨"
+        )
+        XCTAssertEqual(
+            UnicodeStylizer.apply(to: "Hello", style: .italic),
+            "𝐻𝑒𝑙𝑙𝑜"
+        )
+    }
+
+    /// Upside-down should also rewind first: flipping bold text returns
+    /// the flipped ASCII letters, not the original bold glyphs.
+    func testUpsideDownDenormalizesBeforeFlip() {
+        let bold = UnicodeStylizer.apply(to: "Hello", style: .bold)
+        let flippedFromBold = UnicodeStylizer.apply(to: bold, style: .upsideDown)
+        let flippedFromPlain = UnicodeStylizer.apply(to: "Hello", style: .upsideDown)
+        XCTAssertEqual(flippedFromBold, flippedFromPlain)
+    }
 }

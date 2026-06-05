@@ -33,6 +33,8 @@
 //
 
 import Foundation
+import CryptoKit   // #A56 — SHA256 anchor fingerprint
+import IOKit       // #A56 — IOPlatformUUID for machine-switch detection
 
 // MARK: - Snapshot
 
@@ -231,7 +233,8 @@ struct OpenRouterUsageProbe: UsageProbe {
         // reading at first-fetch-of-the-day as an anchor and
         // report `current − anchor` on subsequent reads.
         let todayUSD = computeTodayDelta(providerID: provider.id,
-                                         lifetimeUsage: lifetimeUsage)
+                                         lifetimeUsage: lifetimeUsage,
+                                         apiKey: apiKey)
         return UsageSnapshot(costUSD: todayUSD,
                              requestCount: 0,
                              tokenCount: 0,
@@ -264,38 +267,169 @@ struct OpenRouterUsageProbe: UsageProbe {
     ///      machine-switch easily looks like tens-to-hundreds of
     ///      dollars of "growth" since the stale anchor.
     private func computeTodayDelta(providerID: String,
-                                    lifetimeUsage: Double) -> Double {
-        let prefix = OpenRouterUsageProbe.todayKey(providerID: providerID)
+                                    lifetimeUsage: Double,
+                                    apiKey: String) -> Double {
         let defaults = UserDefaults.standard
-        let anchorUSD = defaults.double(forKey: prefix + ".anchorUSD")
-        let anchorDateTS = defaults.double(forKey: prefix + ".anchorDate")
         let cal = Calendar(identifier: .gregorian)
-        let startOfDay = cal.startOfDay(for: Date()).timeIntervalSince1970
+        let startOfDay = cal.startOfDay(for: Date())
+        let now = Date()
+        let storedAnchor = OpenRouterAnchor.load(providerID: providerID,
+                                                 defaults: defaults)
+        // Re-key detection now goes through the SHA-256 fingerprint of
+        // the API key (#A56) instead of relying solely on "lifetime
+        // went backwards" — a re-key to a different account that
+        // happens to have higher lifetime usage was undetectable
+        // under the legacy logic.
+        let currentFingerprint = OpenRouterAnchor.fingerprint(forKey: apiKey)
+        // Machine-switch detection (#A56). The machineUUID is the
+        // hardware UUID of the boot drive — same across reboots,
+        // different across machines. A mismatch means an exported /
+        // synced anchor moved to a new host; reset cleanly.
+        let currentMachineUUID = OpenRouterAnchor.currentMachineUUID()
 
         let needsReset: Bool = {
-            // 1. New day or no anchor yet.
-            if anchorDateTS < startOfDay || anchorUSD <= 0 { return true }
-            // 2. Lifetime went backwards (account reset / re-keyed).
-            if lifetimeUsage < anchorUSD { return true }
-            // 3. Implausibly large jump (machine switch / extended
-            //    offline activity on another device). $50 threshold
-            //    catches the "I worked yesterday on the laptop with
-            //    a different DrPaste install" pattern without
-            //    triggering on legitimate within-day spend.
-            if lifetimeUsage - anchorUSD > 50.0 { return true }
+            guard let anchor = storedAnchor else { return true }
+            // 1. Stored from a previous day → daily rollover.
+            if anchor.date < startOfDay { return true }
+            // 2. Lifetime went backwards.
+            if lifetimeUsage < anchor.credits { return true }
+            // 3. API key changed → user re-keyed; old anchor belongs
+            //    to a different OpenRouter account.
+            if anchor.keyFingerprint != currentFingerprint { return true }
+            // 4. Machine UUID changed → anchor moved to a different
+            //    host (config import / iCloud sync). Local "today"
+            //    counter starts fresh.
+            if anchor.machineUUID != currentMachineUUID { return true }
+            // 5. Implausibly large jump (extended offline activity on
+            //    a parallel install hitting the same key).
+            if lifetimeUsage - anchor.credits > 50.0 { return true }
             return false
         }()
 
         if needsReset {
-            defaults.set(lifetimeUsage, forKey: prefix + ".anchorUSD")
-            defaults.set(startOfDay, forKey: prefix + ".anchorDate")
+            let fresh = OpenRouterAnchor(providerID: providerID,
+                                         date: startOfDay,
+                                         credits: lifetimeUsage,
+                                         machineUUID: currentMachineUUID,
+                                         keyFingerprint: currentFingerprint,
+                                         updatedAt: now)
+            fresh.save(defaults: defaults)
             return 0
         }
-        return max(0, lifetimeUsage - anchorUSD)
+        return max(0, lifetimeUsage - (storedAnchor?.credits ?? 0))
+    }
+}
+
+// MARK: - OpenRouter anchor (#A56)
+
+/// Codable per-provider anchor for the OpenRouter "today" delta
+/// computation. Replaces the legacy split-double pair
+/// (`anchorUSD` + `anchorDate`) with one JSON blob that also carries
+/// the machine UUID + key fingerprint, so re-key and machine-switch
+/// detection can happen explicitly instead of relying on
+/// "lifetime went backwards" heuristics.
+///
+/// Storage: one key per providerID,
+/// `drpaste.usage.openrouter.<providerID>.anchor.v2`, JSON-encoded.
+/// Legacy double keys are migrated on first load and then deleted.
+struct OpenRouterAnchor: Codable {
+    let providerID: String
+    let date: Date          // start-of-day when the anchor was set
+    let credits: Double     // lifetime usage at anchor time, USD
+    let machineUUID: String // hardware UUID of the boot drive
+    let keyFingerprint: String // SHA-256 of the API key (hex, short)
+    let updatedAt: Date     // last save — useful for diagnostics
+
+    static func key(providerID: String) -> String {
+        "drpaste.usage.openrouter.\(providerID).anchor.v2"
     }
 
-    private static func todayKey(providerID: String) -> String {
-        "drpaste.usage.openrouter.\(providerID)"
+    /// Legacy keys used by the pre-#A56 split-double storage. Read
+    /// once during migration, then deleted so we don't pay the
+    /// migration cost on every load.
+    private static func legacyKeyUSD(providerID: String) -> String {
+        "drpaste.usage.openrouter.\(providerID).anchorUSD"
+    }
+    private static func legacyKeyDate(providerID: String) -> String {
+        "drpaste.usage.openrouter.\(providerID).anchorDate"
+    }
+
+    static func load(providerID: String,
+                     defaults: UserDefaults = .standard) -> OpenRouterAnchor? {
+        // 1. Try the v2 (Codable) layout.
+        if let data = defaults.data(forKey: key(providerID: providerID)),
+           let decoded = try? JSONDecoder().decode(OpenRouterAnchor.self, from: data) {
+            return decoded
+        }
+        // 2. Fall back to legacy doubles. Build a partial anchor and
+        //    let the caller decide whether to reset — this is mostly
+        //    useful for the "lifetime backwards" check to keep
+        //    behaving sensibly during the upgrade window.
+        let legacyUSD = defaults.double(forKey: legacyKeyUSD(providerID: providerID))
+        let legacyDateTS = defaults.double(forKey: legacyKeyDate(providerID: providerID))
+        guard legacyUSD > 0 || legacyDateTS > 0 else { return nil }
+        // Migrate inline: build a v2 record from the legacy fields +
+        // current machine UUID + a placeholder fingerprint that will
+        // mismatch any real key, forcing a clean reset on the next
+        // delta compute. Saves the v2 record, removes the legacy
+        // keys — one-time cost per provider.
+        let migrated = OpenRouterAnchor(
+            providerID: providerID,
+            date: Date(timeIntervalSince1970: legacyDateTS),
+            credits: legacyUSD,
+            machineUUID: currentMachineUUID(),
+            keyFingerprint: "",
+            updatedAt: Date()
+        )
+        migrated.save(defaults: defaults)
+        defaults.removeObject(forKey: legacyKeyUSD(providerID: providerID))
+        defaults.removeObject(forKey: legacyKeyDate(providerID: providerID))
+        return migrated
+    }
+
+    func save(defaults: UserDefaults = .standard) {
+        guard let data = try? JSONEncoder().encode(self) else { return }
+        defaults.set(data, forKey: Self.key(providerID: providerID))
+    }
+
+    /// Hardware UUID of the host's boot drive — reasonably stable
+    /// across reboots, deterministic per-machine. Used to detect
+    /// "the user moved DrPaste config to a different Mac" so we
+    /// reset the local-today counter to 0 rather than reporting a
+    /// fake delta from the imported anchor.
+    ///
+    /// Reads `IOPlatformUUID` from `IOPlatformExpertDevice` via the
+    /// canonical IOKit recipe. Cached after the first call —
+    /// hardware UUID can't change without a reboot.
+    private static var cachedMachineUUID: String?
+    static func currentMachineUUID() -> String {
+        if let cached = cachedMachineUUID { return cached }
+        let service = IOServiceGetMatchingService(
+            kIOMainPortDefault,
+            IOServiceMatching("IOPlatformExpertDevice")
+        )
+        guard service != 0 else {
+            cachedMachineUUID = "unknown"
+            return "unknown"
+        }
+        defer { IOObjectRelease(service) }
+        let cfString = IORegistryEntryCreateCFProperty(
+            service, "IOPlatformUUID" as CFString, kCFAllocatorDefault, 0
+        )?.takeRetainedValue() as? String
+        let resolved = cfString ?? "unknown"
+        cachedMachineUUID = resolved
+        return resolved
+    }
+
+    /// Stable short fingerprint of an API key — SHA-256 first 12 hex
+    /// chars. Long enough to make collisions astronomically unlikely
+    /// for the small number of keys a single user holds, short
+    /// enough that the persisted JSON stays compact.
+    static func fingerprint(forKey key: String) -> String {
+        guard !key.isEmpty else { return "" }
+        let data = Data(key.utf8)
+        let digest = SHA256.hash(data: data)
+        return digest.prefix(6).map { String(format: "%02x", $0) }.joined()
     }
 }
 

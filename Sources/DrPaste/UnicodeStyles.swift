@@ -98,12 +98,26 @@ enum UnicodeFontStyle: String, CaseIterable, Codable, Identifiable {
 enum UnicodeStylizer {
 
     /// Apply a style transformation to the input. Pure function; thread-safe.
+    ///
+    /// #A33 (0.57.0) — Every non-`.plain` style now denormalizes the input
+    /// to ASCII before applying its own table. Previous behaviour stacked
+    /// styles silently: applying Italic to already-Bold text returned the
+    /// Bold text unchanged because the Italic table is keyed on a-z / A-Z
+    /// and the Bold glyphs aren't in those ranges, so the per-character
+    /// lookup fell through to "pass it as-is". Now the input is rewound to
+    /// plain ASCII first, so user expectation "this button changes the
+    /// style" matches what happens.
+    ///
+    /// Performance: `normalize` is cheap on plain-ASCII inputs (NFKC is
+    /// near-no-op for un-styled text; `customReverse` lookup is a single
+    /// dictionary probe per character). Worth paying unconditionally to
+    /// keep the contract simple.
     static func apply(to input: String, style: UnicodeFontStyle) -> String {
         switch style {
         case .plain:          return normalize(input)
-        case .upsideDown:     return upsideDown(input)
         case .markdownAware:  return applyMarkdown(to: input)
-        default:              return mapped(input, table: table(for: style))
+        case .upsideDown:     return upsideDown(normalize(input))
+        default:              return mapped(normalize(input), table: table(for: style))
         }
     }
 

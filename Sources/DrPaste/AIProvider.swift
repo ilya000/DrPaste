@@ -1511,7 +1511,25 @@ enum DefaultAISeed {
     ///     never got the Quality: low line). Migration in
     ///     `Actions.swift:seedAI` now keys on `< 6` so those
     ///     installs run the prompt-append step on their next launch.
-    static let currentSeedVersion: Int = 6
+    /// v7 — added two AI counterparts to the 0.53.0 local actions:
+    ///     `user.ai_latin_to_cyrillic` (mirrors the deterministic
+    ///     #A18 with context-aware proper-noun handling) and
+    ///     `user.ai_pretty_code` (mirrors #A19 with arbitrary-
+    ///     language idiomatic format + language autodetect). Seeded
+    ///     via the normal new-entry path in `seedAI`; no migration
+    ///     beyond the standard new-descriptor insert.
+    /// v8 — #A74 pre-distribution ID consolidation (0.56.0). All
+    ///     seeded IDs renamed from `user.*` to `ai.<content_kind>.*`
+    ///     convention. Migration in IDMigration056 rewrites every
+    ///     dict-keyed-by-ID. Bundles 9 new AI seeds:
+    ///       ai.text.make_shorter, .improve_clarity, .make_friendly,
+    ///       ai.code.explain, .find_bugs, .translate,
+    ///       ai.text.draft_email_reply, .generate_email_subject,
+    ///       ai.text.clean_ocr.
+    ///     The OCR action enables the screenshot → OCR → AI clean
+    ///     → paste workflow which is one of DrPaste's flagship
+    ///     stories.
+    static let currentSeedVersion: Int = 8
 
     /// Sentinel for `providerID`: empty string means "use whatever provider is currently default".
     /// Action follows the user's default selection — change the default in Settings → AI and
@@ -1521,46 +1539,94 @@ enum DefaultAISeed {
     static func defaults() -> [CustomAIDescriptor] {
         return [
             CustomAIDescriptor(
-                id: "user.summarize",
+                id: "ai.text.summarize",
                 title: "Summarize",
                 promptTemplate: "Summarize the user's input in 1–3 sentences. Reply with the summary only, no preamble.",
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText", "markdown", "code"]
             ),
             CustomAIDescriptor(
-                id: "user.translate",
+                id: "ai.text.translate",
                 title: "Translate",
                 promptTemplate: "Translate the input to Spanish. If the user provides text in Spanish, translate to English instead. Reply with the translation only.",
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText", "markdown"]
             ),
             CustomAIDescriptor(
-                id: "user.translate_rich",
+                id: "ai.rich.translate",
                 title: "Translate (rich)",
                 promptTemplate: "Translate the input to Spanish. If the user provides text in Spanish, translate to English instead. Reply with the translation only.",
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["richText"]
             ),
             CustomAIDescriptor(
-                id: "user.fix_grammar",
+                id: "ai.text.fix_grammar",
                 title: "Fix grammar",
                 promptTemplate: "Fix grammar, spelling, and punctuation. Preserve the original language and voice. Reply with the corrected text only.",
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText", "markdown"]
             ),
             CustomAIDescriptor(
-                id: "user.fix_grammar_rich",
+                id: "ai.rich.fix_grammar",
                 title: "Fix grammar (rich)",
                 promptTemplate: "Fix grammar, spelling, and punctuation. Preserve the original language and voice. Reply with the corrected text only.",
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["richText"]
             ),
             CustomAIDescriptor(
-                id: "user.formal_tone",
+                id: "ai.text.formal_tone",
                 title: "Formal tone",
                 promptTemplate: "Rewrite the input in a more formal, professional tone. Preserve language and meaning. Reply with the rewritten text only.",
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText", "markdown"]
+            ),
+
+            // #A18-AI Latin → Cyrillic. The deterministic local sibling
+            // (`builtin.latin_to_cyrillic`) handles 80% of cases via a
+            // greedy digraph table; this AI version exists for the
+            // long tail — context-aware proper-noun handling
+            // ("Tchaikovsky" → "Чайковский" not "Тчайковский"),
+            // dialectal targets, established spellings for borrowed
+            // words. Defaults to Russian; user edits the prompt to
+            // pick Ukrainian / Bulgarian / Serbian.
+            CustomAIDescriptor(
+                id: "ai.text.latin_to_cyrillic",
+                title: "AI: Latin → Cyrillic",
+                promptTemplate: """
+                Transliterate the input from Latin script into Russian \
+                Cyrillic. Use accepted Russian spellings for proper \
+                nouns and borrowed words (e.g. Tchaikovsky → Чайковский, \
+                not Тчайковский; Cherry → Черри; Apple → Эппл). \
+                Preserve case structure — UPPERCASE stays uppercase, \
+                Title Case stays Title Case, lowercase stays lowercase. \
+                Pass non-Latin characters through unchanged. \
+                Reply with the Cyrillic text only, no preamble.
+                """,
+                providerID: defaultProviderSentinel,
+                applicableTypes: ["text", "richText", "markdown"]
+            ),
+
+            // #A19-AI Pretty Code. The local sibling
+            // (`builtin.pretty_code_local`) handles JSON / XML / HTML /
+            // CSS deterministically; this AI version handles arbitrary
+            // languages with idiomatic style + language autodetect.
+            // Common use: format Python / Rust / Go / Swift / Ruby
+            // snippets pasted from messy contexts (Slack, chat, OCR).
+            CustomAIDescriptor(
+                id: "ai.code.pretty",
+                title: "AI: Pretty Code",
+                promptTemplate: """
+                Detect the programming language of the input and \
+                reformat it idiomatically: clean indentation (2 spaces \
+                unless the language convention is different — Go tabs, \
+                Python 4), tidy whitespace, sensible line breaks, \
+                consistent quote style. Preserve semantics exactly. \
+                Do not add comments or commentary. Do not change \
+                identifiers or rewrite logic. Reply with the formatted \
+                code only — no preamble, no language fence, no notes.
+                """,
+                providerID: defaultProviderSentinel,
+                applicableTypes: ["text", "code"]
             ),
 
             // Image-AI seeds — v3 of the seed table. Each ships as a
@@ -1582,7 +1648,7 @@ enum DefaultAISeed {
             // take OpenAI's default (medium), or change to `Quality:
             // high` for gallery-grade output.
             CustomAIDescriptor(
-                id: "user.ai_image_sketch",
+                id: "ai.image.sketch",
                 title: "AI: Pencil sketch",
                 promptTemplate: """
                 Convert this image into a hand-drawn pencil sketch. \
@@ -1600,7 +1666,7 @@ enum DefaultAISeed {
                 kind: .image
             ),
             CustomAIDescriptor(
-                id: "user.ai_image_watercolor",
+                id: "ai.image.watercolor",
                 title: "AI: Watercolor",
                 promptTemplate: """
                 Transform this image into a soft watercolor painting. \
@@ -1618,7 +1684,7 @@ enum DefaultAISeed {
                 kind: .image
             ),
             CustomAIDescriptor(
-                id: "user.ai_image_cartoon",
+                id: "ai.image.cartoon",
                 title: "AI: Cartoon",
                 promptTemplate: """
                 Convert this image into a clean cartoon illustration. \
@@ -1648,7 +1714,7 @@ enum DefaultAISeed {
             // result reads as "I sketched this on a whiteboard"
             // rather than "AI made this for me".
             CustomAIDescriptor(
-                id: "user.ai_text_to_image_whiteboard",
+                id: "ai.text.image_whiteboard",
                 title: "AI: Whiteboard sketch",
                 promptTemplate: """
                 Create a clean black-and-white whiteboard-style \
@@ -1666,19 +1732,107 @@ enum DefaultAISeed {
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "markdown", "richText", "code"],
                 kind: .textToImage
+            ),
+
+            // MARK: #A74 (0.56.0) — new AI writing seeds (3)
+
+            CustomAIDescriptor(
+                id: "ai.text.make_shorter",
+                title: "AI: Make shorter",
+                promptTemplate: "Shorten the input while preserving the key meaning. Do not add new facts. Reply with the shortened text only.",
+                providerID: defaultProviderSentinel,
+                applicableTypes: ["text", "richText", "markdown"]
+            ),
+            CustomAIDescriptor(
+                id: "ai.text.improve_clarity",
+                title: "AI: Improve clarity",
+                promptTemplate: "Improve clarity, readability, and flow while preserving the original meaning and tone. Do not add new facts. Reply with the improved text only.",
+                providerID: defaultProviderSentinel,
+                applicableTypes: ["text", "richText", "markdown"]
+            ),
+            CustomAIDescriptor(
+                id: "ai.text.make_friendly",
+                title: "AI: Make friendly",
+                promptTemplate: "Rewrite the input in a warmer, friendlier tone while preserving the meaning. Do not add new facts. Reply with the rewritten text only.",
+                providerID: defaultProviderSentinel,
+                applicableTypes: ["text", "richText", "markdown"]
+            ),
+
+            // MARK: #A74 (0.56.0) — new AI code seeds (3)
+
+            CustomAIDescriptor(
+                id: "ai.code.explain",
+                title: "AI: Explain code",
+                promptTemplate: "Explain what this code does in practical terms. Be concise. Mention important assumptions, side effects, or risks if relevant. Reply with the explanation only.",
+                providerID: defaultProviderSentinel,
+                applicableTypes: ["code", "text"]
+            ),
+            CustomAIDescriptor(
+                id: "ai.code.find_bugs",
+                title: "AI: Find bugs",
+                promptTemplate: "Review this code for bugs, unsafe behavior, edge cases, and maintainability problems. Return a concise list of findings with suggested fixes.",
+                providerID: defaultProviderSentinel,
+                applicableTypes: ["code", "text"]
+            ),
+            CustomAIDescriptor(
+                id: "ai.code.translate",
+                title: "AI: Translate code",
+                promptTemplate: """
+                Translate this code to the target programming language. \
+                Preserve behavior. Keep the result idiomatic for the \
+                target language. Add comments only where necessary. \
+                Target language: <FILL IN: e.g. TypeScript, Python, Swift, Rust>.
+                """,
+                providerID: defaultProviderSentinel,
+                applicableTypes: ["code"]
+            ),
+
+            // MARK: #A74 (0.56.0) — new AI email seeds (2)
+
+            CustomAIDescriptor(
+                id: "ai.text.draft_email_reply",
+                title: "AI: Draft email reply",
+                promptTemplate: "Draft a polite email reply to the message below. Keep it concise, practical, and professional. Do not invent commitments or facts. Reply with the draft only.",
+                providerID: defaultProviderSentinel,
+                applicableTypes: ["text", "richText"]
+            ),
+            CustomAIDescriptor(
+                id: "ai.text.generate_email_subject",
+                title: "AI: Generate email subject",
+                promptTemplate: "Generate a concise email subject line for this message. Reply with the subject only.",
+                providerID: defaultProviderSentinel,
+                applicableTypes: ["text", "richText"]
+            ),
+
+            // MARK: #A74 (0.56.0) — flagship OCR cleanup workflow
+
+            // Closes the "screenshot → OCR → AI clean → paste" loop.
+            // Strong semantic clipboard story — one of DrPaste's
+            // marquee workflows. Curated-on so users discover the
+            // chain naturally after running OCR.
+            CustomAIDescriptor(
+                id: "ai.text.clean_ocr",
+                title: "AI: Clean OCR text",
+                promptTemplate: "Clean up OCR text. Fix broken line breaks, spacing, punctuation, and obvious recognition errors while preserving the original meaning. Do not add new facts. Reply with the cleaned text only.",
+                providerID: defaultProviderSentinel,
+                applicableTypes: ["text", "richText"]
             )
         ]
     }
 
-    /// Hotkey migration map: old factory action IDs → new seeded IDs.
-    /// Used in ActionRegistry to transfer per-action hotkeys after seed.
+    /// Hotkey migration map: legacy factory action IDs → current
+    /// seeded IDs. Used in ActionRegistry to transfer per-action
+    /// hotkeys after seed. Kept for very-old installs that pre-date
+    /// the `user.*` prefix; the modern path goes through
+    /// `IDMigration056` (#A74) which handles `user.*` → `ai.*`.
     static let hotkeyIDMigration: [String: String] = [
-        "ai.summarize": "user.summarize",
-        "ai.translate_es_en": "user.translate",
-        "ai.translate_es_en_rich": "user.translate_rich",
-        "ai.fix_grammar": "user.fix_grammar",
-        "ai.fix_grammar_rich": "user.fix_grammar_rich",
-        "ai.formal_tone": "user.formal_tone"
+        // Legacy 0.7-era short IDs → 0.56 convention
+        "ai.summarize_legacy":      "ai.text.summarize",
+        "ai.translate_es_en":       "ai.text.translate",
+        "ai.translate_es_en_rich":  "ai.rich.translate",
+        "ai.fix_grammar_legacy":    "ai.text.fix_grammar",
+        "ai.fix_grammar_rich_legacy": "ai.rich.fix_grammar",
+        "ai.formal_tone_legacy":    "ai.text.formal_tone"
     ]
 }
 

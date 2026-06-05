@@ -67,12 +67,12 @@ final class ActionConfigCodableTests: XCTestCase {
         var config = ActionConfig()
         config.enabledFlags = ["builtin.identity": true]
         config.customTitles = ["builtin.identity": "Paste Exactly"]
-        config.actionOrder = ["text": ["builtin.identity", "builtin.uppercase"]]
+        config.actionOrder = ["text": ["builtin.identity", "builtin.text.uppercase"]]
         config.actionHotkeys = [
-            "builtin.uppercase": ActionHotkey(keyCode: 15, modifiers: 0)
+            "builtin.text.uppercase": ActionHotkey(keyCode: 15, modifiers: 0)
         ]
-        config.actionTestSamples = ["builtin.uppercase": "hello"]
-        config.actionTestImageBlobs = ["builtin.image_ocr": "sample.png"]
+        config.actionTestSamples = ["builtin.text.uppercase": "hello"]
+        config.actionTestImageBlobs = ["builtin.image.ocr": "sample.png"]
         config.playgroundSamples = ["text": "sample"]
         config.playgroundImageBlobs = ["image": "image.png"]
         config.preferences.fontScale = 1.2

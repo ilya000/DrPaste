@@ -4,6 +4,8 @@
 //
 //  Contract tests for bundled transformation descriptors and curated defaults.
 //
+//  IDs follow convention v2 (#A74, 0.56.0): `builtin.<content_kind>.<verb_noun>`.
+//
 
 import XCTest
 @testable import DrPaste
@@ -16,7 +18,7 @@ final class SeedIntegrityTests: XCTestCase {
 
         XCTAssertEqual(Set(ids).count, ids.count, "Bundled transformation IDs must be unique.")
         XCTAssertTrue(ids.allSatisfy { $0.hasPrefix("builtin.") })
-        XCTAssertEqual(DefaultTransformationSeed.currentSeedVersion, 7)
+        XCTAssertEqual(DefaultTransformationSeed.currentSeedVersion, 9)
     }
 
     func testDefaultTransformationsReferenceValidEnginesAndSemanticKinds() {
@@ -38,61 +40,95 @@ final class SeedIntegrityTests: XCTestCase {
     func testSeedContainsCurrentMigrationAnchors() {
         let byID = Dictionary(uniqueKeysWithValues: DefaultTransformationSeed.defaults().map { ($0.id, $0) })
 
-        XCTAssertNil(byID["builtin.font_regional_indicator"])
-        XCTAssertEqual(byID["builtin.font_markdown"]?.engine, .unicodeStyle)
-        XCTAssertEqual(byID["builtin.font_markdown"]?.parameters["style"], UnicodeFontStyle.markdownAware.rawValue)
-        XCTAssertEqual(Set(byID["builtin.md_headings"]?.applicableTypes ?? []), ["markdown", "text", "richText"])
-        XCTAssertEqual(Set(byID["builtin.md_links"]?.applicableTypes ?? []), ["markdown", "text", "richText"])
+        // Discontinued descriptor stays out.
+        XCTAssertNil(byID["builtin.text.font_regional_indicator"])
+        // Markdown-aware fancy font still present and engine-consistent.
+        XCTAssertEqual(byID["builtin.text.font_markdown"]?.engine, .unicodeStyle)
+        XCTAssertEqual(byID["builtin.text.font_markdown"]?.parameters["style"], UnicodeFontStyle.markdownAware.rawValue)
+        // Markdown extract handlers process rich text too.
+        XCTAssertEqual(Set(byID["builtin.md.extract_headings"]?.applicableTypes ?? []), ["markdown", "text", "richText"])
+        XCTAssertEqual(Set(byID["builtin.md.extract_links"]?.applicableTypes ?? []), ["markdown", "text", "richText"])
+    }
+
+    /// IDs of hardcoded standalone actions registered in main.swift —
+    /// those that don't go through DefaultTransformationSeed. Kept as a
+    /// shared list so both the curated-defaults check and the phantom-
+    /// metadata check below agree on the universe of real action IDs.
+    static let standaloneActionIDs: Set<String> = [
+        "builtin.identity",
+        "builtin.text.layout_repair",
+        "builtin.text.type_slowly",
+        "builtin.text.generate_qr",
+        "builtin.text.unit_conversion",
+        "builtin.rich.strip_formatting",
+        "builtin.rich.to_md",
+        "builtin.rich.to_html",
+        "builtin.rich.to_wiki",
+        "builtin.rich.to_unicode_styled",
+        "builtin.url.extract_domain",
+        "builtin.url.to_md_link",
+        "builtin.url.to_html_link",
+        "builtin.url.preview_card",
+        "builtin.table.to_json",
+        "builtin.table.to_md",
+        "builtin.table.to_wiki",
+        "builtin.table.to_rich",
+        "builtin.table.to_html",
+        "builtin.md.to_rich",
+        "builtin.json.flatten",
+        "builtin.json.remove_nulls",
+        "builtin.image.ocr",
+        "builtin.image.decode_qr",
+        "builtin.image.strip_metadata",
+        "builtin.image.resize_max_1920",
+        "builtin.image.resize",
+        "builtin.image.compress_jpeg",
+        "builtin.image.to_grayscale",
+        "builtin.image.invert_colors",
+        "builtin.image.rotate_right",
+        "builtin.image.rotate_left",
+        "builtin.image.to_ascii_art",
+        "builtin.files.copy_paths",
+        "builtin.files.copy_filenames",
+        "builtin.files.to_md_links",
+        "builtin.files.reveal_in_finder",
+        "builtin.files.copy_shell_safe_paths",
+        "builtin.files.to_rich_icons",
+        "builtin.files.extract_image"
+    ]
+
+    /// Every action ID known to be real: seeded transformations + the
+    /// hardcoded standalone registrations.
+    static var knownActionIDs: Set<String> {
+        Set(DefaultTransformationSeed.defaults().map(\.id)).union(standaloneActionIDs)
     }
 
     func testCuratedDefaultsContainOnlyKnownActions() {
-        let seeded = Set(DefaultTransformationSeed.defaults().map(\.id))
-        let hardcoded: Set<String> = [
-            "builtin.identity",
-            "builtin.paste_as_text",
-            "builtin.clean_formatting",
-            "builtin.layout_repair",
-            "builtin.rich_to_md",
-            "builtin.rich_to_html",
-            "builtin.rich_to_wiki",
-            "builtin.rich_to_unicode_style",
-            "builtin.url_just_domain",
-            "builtin.url_md_link",
-            "builtin.url_html_link",
-            "builtin.table_to_json",
-            "builtin.table_to_md",
-            "builtin.md_to_rich",
-            "builtin.generate_qr",
-            "builtin.image_ocr",
-            "builtin.image_decode_qr",
-            "builtin.image_strip_metadata",
-            "builtin.image_resize_1920",
-            "builtin.image_grayscale",
-            "builtin.image_rotate",
-            "builtin.image_rotate_left",
-            "builtin.image_ascii_art",
-            "builtin.files_paths",
-            "builtin.files_names",
-            "builtin.files_md_links",
-            "builtin.files_reveal",
-            "builtin.type_slowly",
-            "builtin.csv_to_wiki_table",
-            "builtin.csv_to_rtfd_table",
-            "builtin.file_to_image",
-            "builtin.image_resize_universal",
-            "builtin.unit_conversion"
-        ]
-        let known = seeded.union(hardcoded)
-        let unknown = CuratedDefaults.enabledByDefault.subtracting(known)
-
+        let unknown = CuratedDefaults.enabledByDefault.subtracting(Self.knownActionIDs)
         XCTAssertTrue(unknown.isEmpty, "Curated defaults reference unknown action IDs: \(unknown.sorted())")
+    }
+
+    /// Reverse-direction invariant: no built-in description may be keyed on
+    /// an action ID that isn't actually registered. This catches the
+    /// rename-drift class of bug (e.g. a description left under the old
+    /// `builtin.image_strip_metadata` after the action became
+    /// `builtin.image.strip_metadata`) that the curated-defaults check
+    /// alone misses — there the metadata silently fails to resolve and the
+    /// action shows with no description / wrong icon. Note: built-in icons
+    /// live in a `switch` (not enumerable), so only descriptions are
+    /// machine-checkable here.
+    func testNoPhantomBuiltinDescriptions() {
+        let phantom = Set(BuiltinActionMetadata.descriptions.keys)
+            .subtracting(Self.knownActionIDs)
+        XCTAssertTrue(phantom.isEmpty,
+                      "Descriptions keyed on unknown/phantom action IDs: \(phantom.sorted())")
     }
 
     func testCuratedDefaultsKeepCoreGestureActionsEnabled() {
         XCTAssertTrue(CuratedDefaults.isEnabledByDefault("builtin.identity"))
-        XCTAssertTrue(CuratedDefaults.isEnabledByDefault("builtin.paste_as_text"))
-        XCTAssertTrue(CuratedDefaults.isEnabledByDefault("builtin.url_strip_tracking"))
-        XCTAssertTrue(CuratedDefaults.isEnabledByDefault("builtin.image_ocr"))
-        XCTAssertTrue(CuratedDefaults.isEnabledByDefault("builtin.type_slowly"))
+        XCTAssertTrue(CuratedDefaults.isEnabledByDefault("builtin.rich.strip_formatting"))
+        XCTAssertTrue(CuratedDefaults.isEnabledByDefault("builtin.url.strip_tracking"))
+        XCTAssertTrue(CuratedDefaults.isEnabledByDefault("builtin.image.ocr"))
+        XCTAssertTrue(CuratedDefaults.isEnabledByDefault("builtin.text.type_slowly"))
     }
 }

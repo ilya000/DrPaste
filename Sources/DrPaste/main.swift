@@ -21,6 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     // AI provider is resolved through AIProviderRegistry.shared (multi-provider).
 
     var engine: HotkeyEngine!
+    /// #A23 — macOS Services provider. Retained on the AppDelegate
+    /// so NSApp.servicesProvider has a live target.
+    var servicesProvider: DrPasteServicesProvider?
     var bigHUDPanel: BigHUDPanel?
     var bigHUDState: BigHUDState!
     var statusItem: NSStatusItem!
@@ -224,7 +227,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             WelcomeWindowController.shared.showIfNeeded()
         }
+        // #A53 — Orphan blob garbage collection. Debounced (12-hour
+        // minimum between runs) and the actual filesystem walk happens
+        // off-main, so the launch path doesn't pay for it. Scheduled
+        // a couple seconds after launch so the disk IO doesn't compete
+        // with the BigHUD's first-summon path.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            BlobGC.runIfDue()
+        }
+        // #A23 — Register the macOS Services menu provider. The
+        // provider class handles "Add to DrPaste history",
+        // "DrPaste: Translate", and "DrPaste: Quick Copy". The
+        // Services menu only lists entries declared in the host
+        // app's Info.plist NSServices array, which lands when
+        // DrPaste ships as a signed .app bundle (depends on #A1).
+        // Until then the provider is registered but no entries
+        // appear in the menu — wiring is correct, deployment isn't.
+        servicesProvider = DrPasteServicesProvider()
+        servicesProvider?.appDelegate = self
+        NSApp.servicesProvider = servicesProvider
         NSLog("DrPaste: launch complete")
+    }
+
+    /// #A46 (0.57.0) — flush any pending debounced writes before quit.
+    /// `ActionConfig` and `ClipboardStore` both queue saves on a
+    /// 200 ms debouncer; without this drain a Settings edit made
+    /// 50 ms before ⌘Q would never hit disk. Idempotent — flushing
+    /// when nothing is queued returns immediately.
+    func applicationWillTerminate(_ notification: Notification) {
+        registry.flushPendingConfigSave()
+        store.flushPendingSave()
+        NSLog("DrPaste: terminate — flushed pending persistence writes")
     }
 
     // MARK: engine bootstrap
@@ -362,6 +395,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         menu.addItem(withTitle: "Settings…", action: #selector(menuOpenSettings), keyEquivalent: ",")
         menu.addItem(withTitle: "About DrPaste…", action: #selector(menuShowAbout), keyEquivalent: "")
         menu.addItem(withTitle: "Welcome / Hotkeys…", action: #selector(menuShowWelcome), keyEquivalent: "")
+        // #240 — User Guide is the full HELP.md, surfaced from the status
+        // menu so a user who's been "wondering about that colored dot"
+        // can read about it without hunting through the repo.
+        menu.addItem(withTitle: "User Guide…", action: #selector(menuOpenUserGuide), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit DrPaste", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         statusItem.menu = menu
@@ -441,6 +478,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
 
     @objc private func menuShowWelcome() {
         WelcomeWindowController.shared.show()
+    }
+
+    /// #240 — Open HELP.md inside DrPaste's own user-guide window.
+    /// Original approach handed the .md file to NSWorkspace.open, which
+    /// depended on a third-party Markdown viewer (MacDown / Typora /
+    /// Marked 2) being installed — most users don't have one, and the
+    /// system fallback (TextEdit) renders the file as raw markdown
+    /// markup. The current implementation parses the markdown via
+    /// macOS 12+'s built-in `NSAttributedString(markdown:)` and
+    /// renders inside an NSTextView. Zero external dependencies,
+    /// works offline, looks consistent with the rest of the app.
+    @objc private func menuOpenUserGuide() {
+        UserGuideWindowController.shared.show()
+    }
+
+    /// #A62 — Open the Edit Action sheet for the given action ID,
+    /// invoked from the HUD action-chip context menu. Resolves the
+    /// action to a CustomTransformationDescriptor / CustomAIDescriptor
+    /// / built-in editor context and routes through the existing
+    /// `ActionEditorWindowController.show(context:)`. The
+    /// `focusHotkey` flag is reserved for a future inline-focus
+    /// patch — current Edit Action sheet doesn't expose a "focus
+    /// hotkey field on open" affordance yet, but this entry point
+    /// lets us add it without re-plumbing the call sites.
+    @MainActor
+    func openActionEditorFromHUD(actionID: String, focusHotkey: Bool) {
+        let cfg = registry.config
+        if let descriptor = cfg.customTransformations.first(where: { $0.id == actionID }) {
+            ActionEditorWindowController.shared.show(
+                context: .editTransformation(descriptor),
+                registry: registry,
+                onClose: {}
+            )
+            return
+        }
+        if let descriptor = cfg.customAI.first(where: { $0.id == actionID }) {
+            ActionEditorWindowController.shared.show(
+                context: .editAI(descriptor),
+                registry: registry,
+                onClose: {}
+            )
+            return
+        }
+        // Built-in fallback — resolve title from the registry's
+        // current title provider and pass the canonical bundled
+        // description.
+        let action = registry.actions.first(where: { $0.id == actionID })
+        let defaultTitle = action?.title ?? actionID
+        let description = BuiltinActionMetadata.descriptions[actionID] ?? ""
+        ActionEditorWindowController.shared.show(
+            context: .editBuiltin(actionID: actionID,
+                                  defaultTitle: defaultTitle,
+                                  description: description),
+            registry: registry,
+            onClose: {}
+        )
     }
 
     @objc private func recentItemSelected(_ sender: NSMenuItem) {
@@ -1025,41 +1118,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                 try? await Task.sleep(nanoseconds: 600_000_000)
             }
             MiniHUDController.shared.hideIfOwner(hudToken)
-            switch outcome {
-            case .preview(let result):
-                self.performStandardPaste(result, savedApp: frontmost)
-            case .alternativeCommit(let result, .standardPaste):
-                self.performStandardPaste(result, savedApp: frontmost)
-            case .alternativeCommit(let result, .typeSlowly(let delay, let jitter)):
-                // Respect the action's chosen commit style. Earlier this
-                // case fell through into `performStandardPaste`, which
-                // meant a per-action hotkey bound to Type Slowly would
-                // ⌘V-paste the whole text instead of typing it
-                // character-by-character — defeating the action's
-                // entire purpose. Direct-trigger and HUD commit paths
-                // must agree on what "commit" means for each style.
-                self.performTypeSlowly(result, savedApp: frontmost,
-                                       delay: delay, jitter: jitter)
-            case .alternativeCommit(let result, .typeFast):
-                self.performTypeSlowly(result, savedApp: frontmost,
-                                       delay: 0.05, jitter: 0)
-            case .sideEffect(_, let perform):
-                perform()
-                SoundFeedback.play(.pasteSuccess)
-            case .failed(_, let reason, _):
-                SoundFeedback.play(.pasteFailure)
+            // #A39 (0.57.0) — direct-trigger commit routes through
+            // `PasteCommitter.commit(..., mode: .directHotkey)`. The
+            // mode's policy table preserves the 0.42.x Type Slowly
+            // patch (alternativeCommit dispatches by style) and the
+            // "failure chime only, never paste original" rule for
+            // direct triggers. The explicit `.failed` MiniHUD surface
+            // and NSLog stay here because they need the `reason`
+            // string that the committer's policy table doesn't carry.
+            if case .failed(_, let reason, _) = outcome {
                 NSLog("DrPaste hotkey action failed: \(reason)")
-                // #A69 — replace the silent disappear with an explicit
-                // failure surface so the user sees the reason instead of
-                // having to re-run the action through BigHUD just to read
-                // it. Auto-dismisses after 4 s (MiniHUDController handles
-                // the timer), or sooner via the X button. Action title +
-                // reason gives "what failed and why" in two lines.
                 MiniHUDController.shared.showFailure(
                     label: action.title,
                     reason: reason
                 )
             }
+            PasteCommitter.commit(outcome,
+                                  into: frontmost,
+                                  mode: .directHotkey,
+                                  performer: self)
         }
     }
 
@@ -1068,6 +1145,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     /// runs against a snapshot of what the user just highlighted.
     /// Writes raw blob copies of each representation through the store
     /// so Paste-as-is can still restore them losslessly downstream.
+    ///
+    /// #A40 (0.57.0) — `SelectionCaptureService.capture(...)` is the
+    /// preferred entry point for new surfaces: it pairs the synthetic
+    /// ⌘C with snapshot building, AX precondition, source-app capture,
+    /// and typed errors. The inline helper below is kept as the
+    /// snapshot half so existing call sites in `main.swift` don't have
+    /// to fan out into the service in a single patch; migration of the
+    /// remaining inline sites lands with `#A39` (PasteCommitter) because
+    /// that work also touches the post-capture commit branches.
     @MainActor
     private func snapshotPasteboardAsItem(pb: NSPasteboard,
                                           sourceApp: NSRunningApplication) -> ClipboardItem {
@@ -1876,6 +1962,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         }
 
         guard let outcome = outcome else { return }
+        // #A59 — record this as a successful release-to-paste so the
+        // discoverability hint fades after 5 commits. Only fires in
+        // Gesture mode (the only mode where release-to-paste is the
+        // active gesture); Limited mode users commit via Enter and
+        // would mis-train the counter.
+        if engine.bigHUDMode == .gesture {
+            ReleaseToPasteHint.recordCommit()
+        }
         commitOutcome(outcome, savedApp: savedApp)
     }
 
@@ -1968,24 +2062,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     /// Single-place ApplyOutcome → side-effect mapping. Called by both the
     /// synchronous HUD commit path and the deferred AI-completion path so
     /// they produce identical user-visible behaviour for the same outcome.
+    ///
+    /// #A39 (0.57.0) — Implementation moved into `PasteCommitter.commit`.
+    /// This wrapper preserves the existing call sites (`commitOutcome(_:savedApp:)`)
+    /// and supplies `.standard` mode. The per-action-hotkey direct path
+    /// uses `.directHotkey` mode at its own call site.
     @MainActor
     private func commitOutcome(_ outcome: ApplyOutcome,
                                 savedApp: NSRunningApplication?) {
-        switch outcome {
-        case .preview(let item), .alternativeCommit(let item, .standardPaste):
-            performStandardPaste(item, savedApp: savedApp)
-        case .alternativeCommit(let item, .typeSlowly(let delay, let jitter)):
-            performTypeSlowly(item, savedApp: savedApp, delay: delay, jitter: jitter)
-        case .alternativeCommit(let item, .typeFast):
-            performTypeSlowly(item, savedApp: savedApp, delay: 0.05, jitter: 0)
-        case .failed(let original, _, _):
-            // On commit of a failed outcome, paste the original and play the failure sound.
-            performStandardPaste(original, savedApp: savedApp)
-            SoundFeedback.play(.pasteFailure)
-        case .sideEffect(_, let perform):
-            perform()
-            SoundFeedback.play(.pasteSuccess)
-        }
+        PasteCommitter.commit(outcome,
+                              into: savedApp,
+                              mode: .standard,
+                              performer: self)
     }
 
     /// Convert a HUD commit that landed during AI streaming into a deferred
@@ -2045,7 +2133,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         }
     }
 
-    private func performStandardPaste(_ item: ClipboardItem, savedApp: NSRunningApplication?) {
+    // #A39 (0.57.0) — `performStandardPaste`, `performTypeSlowly`, and
+    // the two sound helpers below satisfy `PasteCommitterPerformer` so
+    // the unified committer can delegate side effects back here. Access
+    // level loosened from `private` to package-internal for the same
+    // reason; the protocol conformance lives in an extension at the end
+    // of this file.
+    func performStandardPaste(_ item: ClipboardItem, savedApp: NSRunningApplication?) {
         PasteboardWriter.write(item, store: store)
         watcher.ignoreNextChange = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
@@ -2056,8 +2150,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         }
     }
 
-    private func performTypeSlowly(_ item: ClipboardItem, savedApp: NSRunningApplication?,
-                                   delay: TimeInterval, jitter: Double) {
+    func performTypeSlowly(_ item: ClipboardItem, savedApp: NSRunningApplication?,
+                           delay: TimeInterval, jitter: Double) {
         guard AXIsProcessTrusted() else {
             SoundFeedback.play(.pasteFailure)
             return
@@ -2573,6 +2667,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
 
     private func removeLocalKeyMonitor() {
         if let m = localKeyMonitor { NSEvent.removeMonitor(m); localKeyMonitor = nil }
+    }
+}
+
+// MARK: - PasteCommitterPerformer conformance (#A39)
+
+/// Forwards the small side-effect surface the unified `PasteCommitter`
+/// requires back to `AppDelegate`'s existing helpers. Keeps the
+/// committer's dispatch table dependency-free of AppKit specifics so
+/// it stays testable; the protocol is the single seam between policy
+/// and execution.
+extension AppDelegate: PasteCommitterPerformer {
+    @MainActor
+    func playSuccessSound() {
+        SoundFeedback.play(.pasteSuccess)
+    }
+
+    @MainActor
+    func playFailureSound() {
+        SoundFeedback.play(.pasteFailure)
+    }
+
+    @MainActor
+    func closeBigHUDForSideEffect() {
+        // `closeBigHUD` is the umbrella teardown — cancels AI streaming,
+        // clears the BigHUD panel, resets the paste-and-keep latch. The
+        // committer reaches this path only for `.keepingHUDOpen × .sideEffect`,
+        // where the user asked to stay open but the side effect (Finder
+        // reveal, URL open) is about to steal focus anyway.
+        closeBigHUD()
     }
 }
 

@@ -217,7 +217,7 @@ private func saveImage(_ image: NSImage, originalItem: ClipboardItem) -> Clipboa
 // MARK: - OCR (Vision)
 
 struct ImageOCRAction: ClipboardAction {
-    let id = "builtin.image_ocr"; let title = "Extract text (OCR)"; let isLocal = true
+    let id = "builtin.image.ocr"; let title = "Extract text (OCR)"; let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         imageActionApplies(item: item, context: context)
     }
@@ -259,7 +259,7 @@ struct ImageOCRAction: ClipboardAction {
 // MARK: - QR / barcode decode
 
 struct ImageDecodeQRAction: ClipboardAction {
-    let id = "builtin.image_decode_qr"; let title = "Decode QR / barcode"; let isLocal = true
+    let id = "builtin.image.decode_qr"; let title = "Decode QR / barcode"; let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         imageActionApplies(item: item, context: context)
     }
@@ -311,7 +311,7 @@ private func applyFilter(_ filter: CIFilter, on image: NSImage) -> NSImage? {
 }
 
 struct ImageGrayscaleAction: ClipboardAction {
-    let id = "builtin.image_grayscale"; let title = "Grayscale"; let isLocal = true
+    let id = "builtin.image.to_grayscale"; let title = "Grayscale"; let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         imageActionApplies(item: item, context: context)
     }
@@ -330,7 +330,7 @@ struct ImageGrayscaleAction: ClipboardAction {
 }
 
 struct ImageInvertAction: ClipboardAction {
-    let id = "builtin.image_invert"; let title = "Invert colors"; let isLocal = true
+    let id = "builtin.image.invert_colors"; let title = "Invert colors"; let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         imageActionApplies(item: item, context: context)
     }
@@ -380,7 +380,7 @@ private func rotateImage(_ item: ClipboardItem, radians: CGFloat) -> ClipboardIt
 /// existing user customizations / hotkeys carry over). Title clarified to
 /// say "right" since "CW" alone isn't intuitive at a glance.
 struct ImageRotateRightAction: ClipboardAction {
-    let id = "builtin.image_rotate"
+    let id = "builtin.image.rotate_right"
     let title = "Rotate right (90° CW)"
     let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
@@ -401,7 +401,7 @@ struct ImageRotateRightAction: ClipboardAction {
 /// the user can quickly straighten a sideways-captured photo from either
 /// direction without thinking about which way it tipped.
 struct ImageRotateLeftAction: ClipboardAction {
-    let id = "builtin.image_rotate_left"
+    let id = "builtin.image.rotate_left"
     let title = "Rotate left (90° CCW)"
     let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
@@ -419,24 +419,21 @@ struct ImageRotateLeftAction: ClipboardAction {
 }
 
 struct ImageResize1920Action: ClipboardAction {
-    let id = "builtin.image_resize_1920"; let title = "Resize to max 1920px"; let isLocal = true
+    let id = "builtin.image.resize_max_1920"; let title = "Resize to max 1920px"; let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         imageActionApplies(item: item, context: context)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
         enum ResizeResult { case ok(ClipboardItem); case alreadySmall; case failed }
         let result: ResizeResult = await runOffMain {
+            // #A47 — Migrated to ImageRenderer.downscale. The legacy
+            // lockFocus path produced backing-scale-dependent output
+            // dimensions; the new path is pixel-deterministic.
             guard let img = loadImage(item) else { return .failed }
             let size = img.size
             let maxSide = max(size.width, size.height)
             guard maxSide > 1920 else { return .alreadySmall }
-            let scale = 1920 / maxSide
-            let newSize = NSSize(width: size.width * scale, height: size.height * scale)
-            let out = NSImage(size: newSize)
-            out.lockFocus()
-            img.draw(in: NSRect(origin: .zero, size: newSize),
-                     from: .zero, operation: .copy, fraction: 1.0)
-            out.unlockFocus()
+            let out = ImageRenderer.downscale(img, maxSide: 1920)
             guard let saved = saveImage(out, originalItem: item) else { return .failed }
             return .ok(saved)
         }
@@ -449,7 +446,7 @@ struct ImageResize1920Action: ClipboardAction {
 }
 
 struct ImageCompressJPEGAction: ClipboardAction {
-    let id = "builtin.image_compress_jpeg"; let title = "Compress to JPEG 80%"; let isLocal = true
+    let id = "builtin.image.compress_jpeg"; let title = "Compress to JPEG 80%"; let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         imageActionApplies(item: item, context: context)
     }
@@ -481,7 +478,7 @@ struct ImageCompressJPEGAction: ClipboardAction {
 }
 
 struct ImageStripMetadataAction: ClipboardAction {
-    let id = "builtin.image_strip_meta"; let title = "Strip EXIF / metadata"; let isLocal = true
+    let id = "builtin.image.strip_metadata"; let title = "Strip EXIF / metadata"; let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         imageActionApplies(item: item, context: context)
     }
@@ -522,7 +519,7 @@ struct ImageStripMetadataAction: ClipboardAction {
 /// result wrapped in a code fence (the "Wrap in code block" action chains
 /// nicely after this one via ⌥⌘Space).
 struct ImageToASCIIArtAction: ClipboardAction {
-    let id = "builtin.image_ascii_art"
+    let id = "builtin.image.to_ascii_art"
     let title = "ASCII art"
     let isLocal = true
 

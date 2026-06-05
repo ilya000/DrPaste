@@ -4,7 +4,7 @@ A press-and-hold clipboard utility for macOS.
 
 DrPaste extends the system Paste gesture rather than replacing it. Hold `⌥⌘V`, browse your clipboard history and transformations in a HUD, release to paste. There is no separate window to manage, no panel to dismiss — the workflow is keyboard-first and gesture-driven.
 
-Current version: **0.53.0** (alpha).
+Current version: **0.57.0** (alpha).
 
 ## Features
 

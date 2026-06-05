@@ -4,7 +4,7 @@ Active work, structured roadmap, and a condensed changelog. Historical
 free-form notes were collapsed into this document; the long-form discussion
 that preceded each shipped item lives in git history.
 
-Current version: **0.53.0** (alpha). `AppBrand.version` is the live
+Current version: **0.57.0** (alpha). `AppBrand.version` is the live
 source of truth — bump there per release. The version string in this
 file's header and in `SKILL.md` / `README.md` / `HELP.md` is updated
 alongside. See [SKILL.md](SKILL.md) for
@@ -2946,6 +2946,512 @@ scattered novelties.
 
 ---
 
+### #A71 — Icon placement: Menu Bar vs Notch tray (multi-phase)
+
+**Status:** planned. Multi-phase feature; phase boundaries deliberately
+sharp because phase 2 is what *justifies* phase 1 — without the
+hover-reveal value layer, this collapses into "the same icon in a
+slightly different spot" and the build cost (new window class,
+multi-monitor geometry math, screen-change observer, fullscreen
+handling) outpaces the user value.
+
+**Touches:** new `NotchTrayController.swift` + `NotchTrayPanel.swift`
++ `NotchDetector.swift`, `SettingsWindow.swift` Appearance tab,
+`main.swift` status-item lifecycle (swap between NSStatusItem and
+notch panel), `AppendAccumulator.swift` (halo state plumbing),
+`HELP.md` documentation.
+
+**Context (from design discussion):** Apps like NotchNook, Boring
+Notch, DynamicNotch don't just *relocate* the menu-bar icon — they
+turn the area around the notch into a new UI surface (hover-reveal
+panel, drag tray, persistent media controls, AirDrop replacement).
+Pure relocation is cosmetic and doesn't pay for itself. DrPaste's
+notch mode must *do something menu-bar mode can't* or the toggle is
+empty preference noise. Default stays **Menu Bar** so first-launch
+users see the familiar surface; notch is opt-in.
+
+**Naming:** the user-facing label is **"Around the notch"** (or
+"Notch area"), not "Notch". The notch itself is a camera cutout; we
+sit *next to* it. NotchNook / BetterTouchTool use "Nook" / "Notch
+Bar" for the same reason — calling the setting "Notch" misleads.
+
+**Settings location:** Settings → **Appearance**, alongside theme.
+It's a visual placement decision, not functional, and the
+appearance tab is where the user goes when they want to change how
+DrPaste looks. NOT Settings → General — that's for behaviour
+toggles.
+
+#### Phase 1 — relocation foundation (0.55-ish)
+
+- Notch detection via `NSScreen.main?.safeAreaInsets.top > 0` on
+  macOS 12+ — built-in display only; external displays never report
+  notch insets even if the built-in has one.
+- Settings → Appearance → "Icon placement" Picker:
+  - "Menu bar" (default)
+  - "Around the notch" (visible on non-notch Macs, disabled with
+    explainer "Available only on Macs with a display notch" — keeps
+    the option discoverable so the user learns DrPaste has it).
+- Live switch with no restart. Old surface tears down, new one
+  builds up, accumulator state migrates (the colored dot transfers
+  to whichever surface is active).
+- Window recipe for the notch surface (reuse MiniHUD's pattern):
+  `NSPanel`, styleMask `[.nonactivatingPanel, .borderless]`,
+  `level = .statusBar`, `collectionBehavior = [.canJoinAllSpaces,
+  .stationary, .ignoresCycle, .fullScreenAuxiliary]`,
+  `hidesOnDeactivate = false`.
+- Screen-change observer:
+  `NSWorkspace.shared.notificationCenter.addObserver(self,
+  selector: #selector(handleScreenChange),
+  name: NSApplication.didChangeScreenParametersNotification, ...)`.
+  Reposition the panel on monitor connect/disconnect, resolution
+  change, sleep/wake.
+- Multi-monitor policy: notch panel **only lives on the built-in
+  display**. External monitors fall back to the regular menu-bar
+  status item (yes, both surfaces can be live at once on
+  multi-display setups — built-in shows notch tray, external shows
+  the status icon, but only one is "active" for the colored-dot
+  indicator and that one is the built-in display's notch).
+- Hit area extends beyond the visible icon (notch corners eat clicks
+  that "almost hit"). Pad ~30 pt around the actual visible icon.
+- Fullscreen behaviour: the notch panel disappears in fullscreen
+  apps because the menu bar does. This matches the menu-bar status
+  item's fullscreen behaviour — neither surface wins in fullscreen.
+  Documented in HELP.md so users don't expect different.
+
+**Phase 1 success criteria:** user can toggle placement live;
+indicator dot stays visible in notch mode where it would have been
+hidden behind the notch in menu-bar mode on a wide menu bar;
+multi-monitor and screen-resolution changes don't crash or leave
+stranded panels.
+
+#### Phase 2 — hover-reveal value layer (0.56-ish)
+
+This is what makes notch mode *worth choosing*. Without it phase 1
+is preference theatre.
+
+- **Hover-reveal recent clips strip.** Mouse approaches the notch
+  area → thin horizontal strip slides down from behind the notch
+  showing the 5 most recent clipboard items as small chips
+  (text preview / image thumbnail / file icon). Tap a chip → pastes
+  into the previously-focused app, same path as ⌥⌘V → release. Strip
+  auto-hides 250 ms after the mouse leaves.
+- Hover trigger uses a transparent tracking-area NSPanel ~80 pt
+  wide × ~40 pt tall flanking the notch on each side, registering
+  `mouseEntered` / `mouseExited` to drive the strip's open/close
+  animation. The tracking panel ignores clicks (passthrough to the
+  menu bar below) — only the visible strip swallows clicks.
+- **Persistent accumulator halo.** Append Copy session active
+  (#A65 dot)? In notch mode, the area around the notch gets a
+  subtle colored glow — red for rich-text track, cyan for files
+  track — visible peripherally without staring at the menu bar.
+  Replaces / supplements the 6 pt dot. Animation: 1.2 s breathing
+  cycle at 60% → 100% opacity.
+- The hover strip and the halo share the same NSPanel — they're
+  two states of the same surface (collapsed = halo only, expanded =
+  clips strip + halo).
+
+**Phase 2 success criteria:** notch mode users use the hover strip
+to paste recent clips without invoking ⌥⌘V at all in the common
+"paste the thing I just copied" case; accumulator halo is reported
+in user feedback as more visible than the 6 pt dot was.
+
+#### Phase 3 — optional power features (0.57-ish, defer until phase 2 feedback)
+
+- **Drop zone.** Drag any payload (text / image / files) over the
+  notch area → DrPaste adds it to history without requiring focus
+  switch + ⌘C. Visual landing target appears while a drag is
+  active.
+- **Region capture launcher.** Small crosshair icon left of the
+  notch → click = `⌥⌘+drag` region capture, no hotkey memorisation.
+- **Pin-to-notch favourites.** User flags a clip in BigHUD as
+  "pinned" → it gets a permanent slot in the notch strip, ahead of
+  the recency-ordered chips. Up to 3 pinned items.
+
+#### Technical notes
+
+- Notch insets only become available on macOS 12+. Earlier macOS
+  versions don't run notch hardware anyway, so the picker just hides
+  the option on `< 12` (or shows it disabled with "Requires
+  macOS 12+" — pick discoverability over invisibility).
+- The notch tray panel must not steal focus — `nonactivatingPanel`
+  style mask + `becomeFirstResponder` returning false on the hosting
+  view. Tested via "type into TextEdit → hover near notch → strip
+  appears → keyboard focus stays in TextEdit".
+- Accessibility: respect "Reduce Motion" — disable the halo
+  breathing animation and the hover strip slide animation when
+  reduced-motion is enabled (`NSWorkspace.shared
+  .accessibilityDisplayShouldReduceMotion`).
+- Display scaling: `safeAreaInsets` already accounts for "Larger
+  Text" zoom; the panel's `convertFromBacking(_:)` math handles
+  Retina vs non-Retina automatically when we use point-based frame
+  origins.
+
+#### What this is NOT
+
+- Not a replacement for the menu bar icon. Menu bar stays the
+  default and the canonical surface. Notch is *for users who want
+  more than an icon, on Macs that have the hardware*.
+- Not a separate clipboard manager. Same store, same actions, same
+  hotkeys — only the placement of the visual surface changes.
+
+---
+
+### #A73 — Rich-text AI roundtrip preserving formatting
+
+**Status:** planned.
+**Touches:** `AIProvider.swift` (AI runtime for `.richText` inputs),
+`AIAction.swift` (alternate result decoder), `RichTextHelpers.swift`
+(markdown ↔ NSAttributedString bridge), `DefaultAISeed.swift` (new
+seeded descriptors marked `appliesToRich = true`).
+
+**Context:** AI actions today flatten rich text to plain text before
+the provider call and return plain text. The user loses bold / italic /
+links / colour / inline images on every AI transform — a "summarize"
+or "translate" on a formatted document mails back a plain paragraph
+even though the source had structure. Existing local transforms (case
+change, Unicode pseudo-font, transliteration, trim, wrap) already
+preserve formatting via the `preservesRichTextFormatting` engine flag;
+AI actions should match.
+
+**Requirements:**
+- Send the rich-text source as Markdown (round-trippable, model-native)
+  with an explicit "preserve formatting" instruction in the system
+  prompt: "Output Markdown. Preserve bold (**), italic (*), inline
+  code (`), and links ([text](url)) from the input."
+- Parse the model response as Markdown back into NSAttributedString
+  via the existing `RichTextHelpers.markdownToAttributedString`
+  pipeline; emit `.preview(makeRichTextItem(...))` not plain text.
+- Inline images (NSTextAttachment) survive the round-trip: extract
+  to a per-attachment placeholder token (`[[image_1]]`) before send,
+  re-attach by position from the original attachment table after the
+  reply parses. Models can't see / generate images in this path, so
+  placement is preserved by index, not regenerated.
+- New optional descriptor field `richTextStrategy: .preserveMarkdown |
+  .flatten` (default `.flatten` for backward compat) so the user can
+  opt in per AI action.
+- Seed the rich-text-capable variants of Translate, Fix grammar, and
+  Make shorter as `ai.rich.translate`, `ai.rich.fix_grammar`,
+  `ai.rich.make_shorter`. The existing `ai.text.*` variants stay as
+  plain-text fast paths.
+
+**Implementation notes:**
+- The MD round-trip through `NSAttributedString(markdown:)` is lossy
+  for block-level structure (lists, headings). For 0.56 we accept the
+  inline-only fidelity since it covers ~90% of "format-preserving AI"
+  user expectations; block-level survival is a separate work item.
+- Attachment placeholder regex must be unique enough that models
+  don't accidentally invent collisions (`[[image_NN]]` with N from 1
+  to attachment count works).
+- For Gemini / OpenRouter providers, the same system-prompt approach
+  works; no per-provider branching needed.
+
+---
+
+### #A74 — Pre-distribution ID consolidation (0.56.0)
+
+**Status:** completed in 0.56.0.
+**Touches:** every descriptor file, every action struct, every
+default-on / palette file, the icons table, the descriptions table,
+the test-samples table, the migration helper, the seed-version
+counters in `DefaultTransformationSeed.swift` and `DefaultAISeed.swift`.
+
+**Context:** Pre-distribution housekeeping. Action IDs had drifted over
+60+ batches into a flat namespace where `builtin.json_pretty`,
+`builtin.file_to_image`, `builtin.image_ocr`, and `user.translate`
+sat side by side with no shared structure. Adding a sixth Files action
+or a tenth JSON action made the namespace harder to scan. Worse,
+nothing prevented HUD chip filtering or hotkey resolution from getting
+sloppy in the long term. Because the user is the sole installed user
+and distribution hasn't happened, the cleanup window is open: rename
+the world once, no compatibility layer needed.
+
+**Decisions locked-in:**
+- Convention v2: `<namespace>.<content_kind>.<verb_noun>` where
+  `content_kind` matches the source `SemanticKind` ∈ {text, rich, url,
+  json, table, markdown, code, image, files, html}. AI namespace =
+  `ai.<content_kind>.<verb_noun>` for seeded AI descriptors;
+  `user.<...>` reserved for genuinely user-created descriptors.
+  `builtin.identity` is the sole universal-anchor exception (works on
+  every content kind).
+- HUD chip filtering is driven by `applicableTypes` + `isApplicable`,
+  NOT by ID-substring parsing. Convention v2 is for human scanability
+  and consistency only; the runtime contract is unchanged.
+- One-shot config rewrite via `IDMigration056.apply(to:)` keyed off
+  `seedTransformationVersion < 9` — translates legacy `enabledFlags`,
+  `customTitles`, `customDescriptions`, `actionHotkeys`,
+  `actionTestSamples`, `actionTestImageBlobs`, `actionOrder`,
+  `customTransformations[*].id`, `customAI[*].id`. Idempotent.
+- `paste_as_text` + `clean_formatting` merged into a single
+  `builtin.rich.strip_formatting` (both did the same thing).
+
+**New actions shipped alongside the rename:**
+- `builtin.text.remove_line_breaks` — joins single newlines into
+  spaces while preserving paragraph breaks (2+ newlines).
+- `builtin.text.wrap_quotes` — wraps in typographic double quotes
+  (`"…"`).
+- `builtin.text.wrap_parens` — wraps in parentheses.
+- `builtin.files.copy_shell_safe_paths` — POSIX single-quote-escaped
+  paths, space-separated, safe to paste into Terminal.
+- `builtin.files.to_rich_icons` — rich-text representation with Finder
+  icons inline.
+- `builtin.table.to_html` — clean `<table>` / `<thead>` / `<tbody>`
+  output.
+- `ai.text.make_shorter`, `ai.text.improve_clarity`,
+  `ai.text.make_friendly` — three tone/length AI rewrites.
+- `ai.code.explain`, `ai.code.find_bugs`, `ai.code.translate` — three
+  code AI actions.
+- `ai.text.draft_email_reply`, `ai.text.generate_email_subject` — two
+  email AI helpers.
+- `ai.text.clean_ocr` — flagship OCR-cleanup AI workflow.
+
+**Plumbing:**
+- `DefaultTransformationSeed.currentSeedVersion` 8 → 9.
+- `DefaultAISeed.currentSeedVersion` 7 → 8.
+- `IDMigration056` runs before either seed pass on existing installs.
+- `AppBrand.version` 0.55.0 → 0.56.0.
+
+---
+
+### #A75 — Semantic traits model (contextual action visibility)
+
+**Status:** planned. Deferred — NOT part of the 0.56.0 pass. Lands as its
+own stabilized phase AFTER the #A74 ID rename is committed and stable.
+**Touches:** `ClipboardModel` (ClipboardItem), capture pipeline (provenance
+stamping), `ClipboardAction` protocol (requiredTraits / forbiddenTraits),
+HUD action filtering, `ContextDetector`.
+**Context:** A traits layer turns DrPaste from kind-only filtering into
+content-aware surfacing — the core promise "show what makes sense for what
+the user copied". This is a NEW architecture, not cosmetic: it touches the
+clip model, capture pipeline, action protocol, and HUD filter. Stacking it
+into the same pre-release blob as the ID rename is the main destabilization
+risk; phase it separately.
+
+Matching model:
+`Action.matches = kind ∈ supportedKinds && requiredTraits satisfied && forbiddenTraits absent`
+
+**Trait taxonomy (three lifecycles — do not conflate):**
+- Cheap content traits (containsEmails, containsURLs, containsCyrillic,
+  containsLatin, uppercaseHeavy, wrappedLines, repeatedSpaces,
+  containsMarkdownSyntax, containsHTMLTags, looksMinified) — used for HUD
+  gating. Lifecycle decided in #A76.
+- Provenance traits (fromOCR, fromScreenshot, fromPDF, fromCamera, fromAI)
+  — MUST be stamped at clip creation; cannot be recomputed later.
+- Expensive traits (containsQRCode, containsBarcode, looksWrongKeyboardLayout,
+  ocrConfidence, layoutRepairScore) — MUST NOT gate HUD visibility. Show the
+  action when the primary kind fits; execute on click; fail softly.
+
+**Kill-feature requirement (HIGH priority within this phase):** OCR → text →
+downstream actions is a primary daily workflow (owner uses it constantly).
+The OCR action must stamp `fromOCR` on its output clip, and the trait must
+propagate through subsequent transforms so trait-gated cleanup
+(`ai.text.clean_ocr` requiring `fromOCR`) surfaces automatically. Chained
+trait propagation is first-class here, not an afterthought.
+
+**Requirements:**
+- ClipboardItem carries persisted provenance traits.
+- Cheap content traits computed per the #A76 decision.
+- requiredTraits / forbiddenTraits on ClipboardAction; HUD filter honours them.
+- Expensive detection never gates visibility (show + soft-fail).
+- Provenance propagates across transform chains (OCR kill-feature).
+
+**Trait assignment UX (built-in + user-created actions):** Users must never
+see the word "trait" — they answer one plain question, "When should this
+action appear?". The action editor gains an optional "Show this action
+when…" block next to the existing "Applies to:" content-type checkboxes, with
+plain-language conditions (contains emails / contains links / is ALL CAPS /
+looks like an email / came from screenshot-OCR / contains Cyrillic / contains
+Latin / messy spacing / looks like code-JSON-markdown). Each maps 1:1 to a
+cheap trait under the hood. Default: nothing checked = "always, for the
+selected content types" (today's behaviour — backward compatible).
+
+**Two-tier vocabulary (key distinction):** the small curated list is a
+*human-UI* constraint, not a system one — a person is overwhelmed by 50
+checkboxes, so the editor surfaces only the short, plain-language cheap-trait
+set. The AI auto-config pass (#A82) has no such limit: it draws from the FULL
+set of real, implemented, fine-grained traits so it can match very precisely.
+Both tiers are bounded to traits the engine can actually compute (AI never
+invents conditions) — only the *size shown to each consumer* differs. An
+AI-selected fine-grained trait that isn't in the human checkbox list is still
+displayed back in the editor (e.g. as a removable "AI-detected: …" chip) so
+the user can see and undo it. Provenance / expensive traits appear in the
+human list only where meaningful. `requiredTraits` = "Show when…"
+(primary); `forbiddenTraits` = "Never show when…" lives under Advanced.
+Built-ins ship with sensible gates pre-set and stay editable like any
+descriptor. The existing Test panel shows live "would this appear for this
+sample? ✓/✗" feedback so conditions are tuned against a real example.
+Rule-based suggestions pre-fill likely conditions from the prompt/engine
+(keyword heuristic); the AI upgrade of that step is #A82.
+
+**Implementation notes:** Source — marketing-agent "Canonical Semantic Model"
+doc + code-side review + owner discussion on editor UX.
+
+---
+
+### #A76 — Content-trait lifecycle: store vs recompute (owner decision before release)
+
+**Status:** planned. Requires owner write-up + decision before first release.
+**Touches:** `ClipboardModel`, `ContextDetector`, HUD filter.
+**Context:** Provenance traits (#A75) are clearly stored at creation. Content
+traits (containsEmails, uppercaseHeavy, …) are ambiguous: storing them on the
+clip risks staleness when detection logic changes (persisted history carries
+old verdicts); recomputing live on HUD-open avoids staleness at a small
+per-open CPU cost. The model is therefore hybrid, not uniform.
+
+**Owner action required before release:** write up the tradeoff in detail and
+decide. Points to weigh:
+- Recompute-on-HUD-open: always fresh, no migration on logic change, no schema
+  growth; cost = O(visible clips × cheap detectors) per HUD open (likely
+  negligible for cheap regex traits).
+- Store-on-clip: O(1) at HUD open, but needs a detector-version field +
+  re-detection migration when logic changes, and grows index.json.
+- Hybrid is likely correct: provenance stored, content recomputed.
+
+**Requirements:** decision recorded; ClipboardItem schema reflects it; if
+recompute, define the detector entry point and its per-open budget.
+
+---
+
+### #A77 — Transliteration default visibility (locale-aware Latin→Cyrillic)
+
+**Status:** planned. Depends on cheap-trait gating from #A75.
+**Touches:** `CuratedDefaults`, `DefaultTransformationSeed`, transliteration
+actions, `ContextDetector` (containsCyrillic / containsLatin).
+**Context:** Cyrillic→Latin has an honest content trigger (containsCyrillic).
+Latin→Cyrillic does NOT — Latin text is ubiquitous, and a content-based
+"likelyTransliterable" cannot reliably separate romanized Slavic ("Privet")
+from English ("Private"). The real signal is the user's locale / preferred
+languages, not clip content. For Cyrillic-first users (a large segment)
+Latin→Cyrillic is valuable on their occasional Latin clips; for English-first
+users it is noise. A blanket palette-only default was English-centric and is
+rejected.
+
+**Requirements:**
+- Drop `likelyTransliterable` (unreliable content signal).
+- Cyrillic→Latin: default-on, gated `containsCyrillic`.
+- Latin→Cyrillic: gated `containsLatin AND NOT containsCyrillic`; default-on
+  state follows locale — on when `Locale.preferredLanguages` contains a
+  Cyrillic-script language, palette-only otherwise. User-overridable like any
+  curated default.
+
+---
+
+### #A78 — Curate down the default text-clip action set
+
+**Status:** planned. Discussion required (do not change defaults yet).
+**Touches:** `CuratedDefaults`.
+**Context:** Even with trait gating, a plain text clip with no special traits
+surfaces ~17 ungated chips (Type Slowly, Normalize spaces, Remove line breaks,
+lowercase, UPPERCASE, Sentence case, Wrap quotes, Wrap brackets, Bold,
+Monospace, Plain ASCII, Markdown→Unicode, + AI Fix grammar / Translate /
+Summarize / Improve clarity / Make shorter). "Show all the value" and "flat,
+scannable strip" are in tension; the marketing doc does not name it. Keep
+current defaults for now; revisit.
+
+**Requirements (to discuss):** candidates to move to palette or down-rank —
+text wrappers, Improve clarity, Make shorter; keep a tight always-on AI core
+(Fix grammar / Translate / Summarize). Decide a target max ungated-chip count
+for a no-trait text clip.
+
+---
+
+### #A79 — AI action onboarding affordance when no provider configured
+
+**Status:** planned (near-term; small).
+**Touches:** AI action execution path, MiniHUD / BigHUD preview, ActionEditor
+preview.
+**Context:** AI actions stay visible by default even with no provider
+connected — hiding them means users never discover they can connect AI. But
+running one with no provider currently fails. Instead of an error, the
+preview / result should present a problem-framed onboarding affordance:
+"Connect an AI provider — get the result" (RU: «Подключи ИИ-провайдера —
+получишь результат»), with a one-click path to Settings → AI.
+
+**Requirements:**
+- Detect "no enabled provider" before executing an AI action.
+- Render the onboarding message (localised) in place of the result, not a
+  failure chime.
+- Provide a recovery action ("Open Settings → AI") reusing the existing
+  MiniHUD `.failure` recovery-button surface (#A69).
+
+---
+
+### #A80 — Frequency-based action ranking
+
+**Status:** planned (low confidence — value unproven).
+**Touches:** local usage store, action ordering.
+**Context:** Ranking surfaced actions partly by how often the user actually
+runs each would personalise the strip, but requires a local per-action usage
+counter (new subsystem) and tuning to avoid feedback loops (frequently-shown
+≠ frequently-wanted). Deferred; revisit after traits land.
+
+**Requirements:** local usage counters; blend with contextual relevance +
+curated priority; never the sole ranking signal.
+
+---
+
+### #A81 — Swift 6 language-mode readiness (NSFont/AttributedString warnings)
+
+**Status:** planned (deferred — tie to an eventual Swift 6 language-mode
+migration).
+**Touches:** `UserGuideWindowController` (markdown → AttributedString
+renderer), any other `NSFont`/`NSColor`-in-`AttributedString` sites.
+**Context:** Under the current Swift 5.9 toolchain the project compiles with
+~32 warnings of the form "conformance of 'NSFont' to 'Sendable' is
+unavailable in macOS; this is an error in the Swift 6 language mode". They
+all originate from assigning `NSFont` to Swift `AttributedString` attributes
+in `UserGuideWindowController`'s help-window renderer (AttributedString
+requires Sendable attribute values; NSFont's Sendable conformance is
+unavailable). They are **non-blocking** today — only Swift 6 language mode
+turns them into errors. Fixing them properly means re-expressing the renderer
+with `NSMutableAttributedString` (whose `.font` attribute carries no Sendable
+constraint), which is a deliberate rewrite, not a quick patch.
+
+**Requirements:**
+- When adopting Swift 6 language mode (or sooner if desired), convert the
+  `UserGuideWindowController` styling helpers from Swift `AttributedString`
+  + presentation-intent walks to `NSMutableAttributedString` enumeration, or
+  otherwise eliminate the non-Sendable-attribute assignments.
+- Audit the codebase for the same pattern at the same time.
+
+---
+
+### #A82 — AI auto-configuration of action traits
+
+**Status:** planned (future enhancement of the #A75 trait-assignment UX).
+**Touches:** ActionEditor (trait-assignment block), AIProvider, the cheap-trait
+vocabulary.
+**Context:** The #A75 editor pre-fills "Show this action when…" conditions
+with a keyword heuristic over the action's prompt / engine / parameters. That
+heuristic misses cases where intent isn't lexical — e.g. a custom AI prompt
+"Rewrite this as a friendly reply to a colleague" implies emailLike / chatLike
+without containing the word "email". An optional AI pass closes that gap: it
+reads the action's prompt / engine / params and proposes the matching
+conditions from the curated vocabulary. This is the strongest version of "the
+user doesn't have to think about traits at all".
+
+**Design constraints (keep it trustworthy and cheap):**
+- Two complementary layers, not a replacement: rule-based heuristic is the
+  free/offline baseline; the AI pass is an opt-in "✨ Auto-detect conditions
+  with AI" button. No provider → heuristic still works.
+- Suggest, never silently apply: AI output is shown for confirmation
+  ("AI suggests: show only for emails — [Apply] [Edit]"), preserving user
+  control and the "why did this chip appear" mental model.
+- Runs once at action save/edit time, cached on the descriptor — NEVER per
+  clip. Intelligence at configuration time; cheap pre-computed traits at
+  trigger time.
+- Constrained output, but a RICH vocabulary: AI picks from the full set of
+  real, implemented traits — which can be large and fine-grained, because the
+  "small list" is a human-UI concern, not an AI one (no risk of overwhelming a
+  model). The only hard bound is that every chosen trait must be one the engine
+  can actually compute — AI never invents conditions. A bigger vocabulary lets
+  it match more precisely.
+
+**Requirements:** button + confirmation UI in the trait-assignment block;
+provider-gated (reuse the no-provider onboarding affordance from #A79);
+constrained-vocabulary prompt; cache result on the descriptor.
+
+---
+
 ## Changelog
 
 Shipped versions. Each bullet is one observable change. Implementation-level
@@ -2955,6 +3461,176 @@ recovered via `git log --follow BACKLOG.md` and inspected with
 `git show <commit>:BACKLOG.md`. The early revisions are bilingual and
 include verbose technical reasoning per "Правка"; this current revision is
 the curated, English-only working document.
+
+### 0.57.0 — Architecture hardening, part 2
+
+Continuation of the pre-distribution cleanup that started with #A74.
+No new user-visible actions this round — the budget went to the
+plumbing that makes adding the next batch of actions safer.
+
+**Architecture wins:**
+
+- **#A39 PasteCommitter.** Every commit surface (BigHUD release,
+  per-action hotkey direct trigger) now routes through a single
+  mode × outcome policy table in `PasteCommitter.commit`. The
+  0.42.x Type Slowly direct-hotkey patch becomes a single row
+  (`.directHotkey × .alternativeCommit(.typeSlowly) → typeSlowly`)
+  instead of a special-case inline branch — the bug shape that
+  fired in 0.42.x can no longer drift back in because the dispatch
+  table is the single source of truth. The committer also gains a
+  `.previewOnly` mode used by the Settings playground guard so
+  test runs can never accidentally write to the system pasteboard
+  or fire side effects.
+- **#A40 SelectionCaptureService.** The "write sentinel → simulate
+  ⌘C → await pasteboard change → snapshot all representations
+  losslessly → optionally promote to history" sequence used by
+  every direct-trigger surface (per-action hotkey, BigHUD hold-
+  preview, ⌥⌘X Cut & Replace, ⌥⌘C Quick Copy, ⌥⌘S Append Copy
+  seed, macOS Services menu) lives in one typed-error API.
+  Sites still inline the old `simulateCopyAndAwaitChange` +
+  `snapshotPasteboardAsItem` pair; the migration lands incrementally
+  alongside the next batch.
+- **#A41 ImportReport.** `Actions.swift importJSON(.merge)` used
+  to handle exactly 2 of the 13 user-tunable `ActionConfig`
+  fields — title renames, custom transformations, hotkeys, test
+  samples, playground state, and preferences were all silently
+  dropped on import. The new `ActionConfig.merging(_:)` walks
+  every field, applies a policy table documented in
+  `ImportReport.swift`'s header (incoming wins on `enabledFlags`,
+  current wins everywhere else, hotkey auto-steal when an
+  incoming chord lands on a different recipient), and returns a
+  structured `ImportReport` ready to feed the Settings sheet's
+  "what changed" summary.
+- **#A44 ProviderResolver + ResolvedAIProvider.** A top-level pure
+  function that takes a nominal `providerID`, an `AIOperationKind`,
+  and the live `ProvidersConfig` and returns a strongly-typed
+  `ResolvedAIProvider` struct with `providerLabel`, `providerKind`,
+  `modelLabel`, `isRerouted`, `rerouteReason`, and `recoveryHint`
+  fields. The four UI surfaces (Edit Action provider picker,
+  BigHUD action chip, MiniHUD inflight label, Settings AI row
+  badge) can read from one struct instead of reproducing the
+  scattered "look up provider, check default, check cheapest"
+  recipes. The existing `AIImageAction.ResolvedProvider` nested
+  struct stays as the runtime-internal HTTP-dispatch payload —
+  carries the API key, which UI must never see.
+- **#A46 Persistence I/O.** `actions.json` and `index.json` writes
+  now coalesce within a 200 ms window via a shared
+  `PersistenceDebouncer`. Rapid bursts (multi-clip Append Copy
+  session, batch import, Settings checkbox thrash) collapse into
+  one write; the actual `Data.write(to:options:.atomic)` runs off
+  the main thread. `applicationWillTerminate` flushes both
+  saver instances so a 50 ms-before-quit edit never strands.
+  Targets the perceivable 200–500 ms hitches users reported on
+  Dropbox-resident Application Support.
+
+**Bug fixes:**
+
+- **#A33 Unicode Stylize re-applies cleanly.** Applying Italic to
+  already-Bold text now denormalizes back to ASCII first, then
+  applies the new table. Previous behaviour stacked silently:
+  the Italic table is keyed on a-z / A-Z and the Bold glyphs
+  aren't in those ranges, so the per-character lookup fell
+  through to "pass it as-is" and the output came back identical
+  to the input. The `upsideDown` style picks up the same
+  denormalize-first fix.
+
+**Test coverage:**
+
+- New: `UnicodeStylizerTests` adds four denormalize-then-restyle
+  invariants (`testStylingAlreadyStyledTextDenormalizesFirst`,
+  `testStyleChainsAreIndependentOfPriorStyle`,
+  `testStylingPlainInputUnchangedByDenormalizeFastPath`,
+  `testUpsideDownDenormalizesBeforeFlip`).
+- New: `SelectionCaptureServiceTests` covers the four typed
+  `CaptureError` cases. Live `.success` / `.timeout` paths
+  remain manual smoke until the pasteboard-fake harness lands.
+- New: `ImportMergeTests` exercises every documented field in
+  the merge policy table — `enabledFlags`, `customAI`,
+  `customTitles`, `customTransformations`, `actionOrder`,
+  `actionHotkeys` (current-wins + auto-steal), `actionTestSamples`,
+  seed counters (must NOT migrate), and `preferences`
+  (non-default incoming wins over default local).
+- New: `PasteCommitterTests` pins the full mode × outcome
+  dispatch table via a fake `PasteCommitterPerformer` recorder —
+  Type Slowly via direct hotkey types, `.failed × .directHotkey`
+  plays the failure chime only, `.previewOnly` rejects every
+  escape attempt.
+- New: `ProviderResolverTests` covers nominal-wins, capability
+  mismatch reroute, cost-rank fallback, missing-API-key reroute,
+  disabled-provider reroute, and empty-config returns nil.
+- New: `PersistenceDebouncerTests` exercises the 200 ms coalesce
+  contract and `flushSync` semantics.
+
+**Plumbing:**
+
+- `AppBrand.version` 0.56.0 → 0.57.0.
+- New `SelectionCaptureService.swift`, `ImportReport.swift`,
+  `PasteCommitter.swift`, `ProviderResolver.swift`,
+  `PersistenceDebouncer.swift`.
+- No seed bumps — no descriptor changes this release.
+
+### 0.56.0 — Pre-distribution ID consolidation + 14 new actions
+
+The headline of this release isn't a single new feature — it's the
+namespace cleanup the project has been deferring for a year. Every
+action ID was renamed to convention v2
+(`<namespace>.<content_kind>.<verb_noun>`) so the registry, palette,
+and Settings list now read as a coherent taxonomy instead of a flat
+bag of historical accretions. The rename is one-shot — old configs
+auto-migrate via `IDMigration056` and no compatibility shims survive
+in the source. See **#A74** for the full decision log.
+
+**Convention v2:** built-in actions are
+`builtin.<content_kind>.<verb_noun>` where `content_kind` matches the
+source `SemanticKind` (`text`, `rich`, `url`, `json`, `table`, `md`,
+`code`, `html`, `image`, `files`). Seeded AI actions move to
+`ai.<content_kind>.<verb_noun>`; `user.*` is reserved for actually
+user-created descriptors. `builtin.identity` is the sole anchor
+exception (works on every kind).
+
+**Merge:** `builtin.paste_as_text` + `builtin.clean_formatting` →
+`builtin.rich.strip_formatting`. They did the same thing.
+
+**New local actions (6):**
+
+- **#A74-1 Remove line breaks** (`builtin.text.remove_line_breaks`,
+  engine `removeLineBreaks`). Joins single newlines into spaces and
+  preserves 2+ consecutive newlines as paragraph breaks. Fixes
+  hard-wrapped PDF / email-quote paste-back.
+- **#A74-2 Wrap in quotes** (`builtin.text.wrap_quotes`). Typographic
+  double quotes via the existing `wrap` engine.
+- **#A74-3 Wrap in parens** (`builtin.text.wrap_parens`).
+- **#A74-4 Shell-safe paths** (`builtin.files.copy_shell_safe_paths`).
+  POSIX single-quote escaping (`'\''` idiom), space-separated.
+- **#A74-5 Rich icons representation** (`builtin.files.to_rich_icons`).
+  `NSAttributedString` with Finder icons inlined next to filenames.
+- **#A74-6 CSV → HTML table** (`builtin.table.to_html`). Clean
+  `<table>` / `<thead>` / `<tbody>` — for Notion / Confluence /
+  Google Docs.
+
+**New AI actions (9, seed-version bump 7 → 8):**
+
+- `ai.text.make_shorter`, `ai.text.improve_clarity`,
+  `ai.text.make_friendly` — three tone / length AI rewrites covering
+  the "this paragraph is too long / too dense / too cold" pattern.
+- `ai.code.explain`, `ai.code.find_bugs`, `ai.code.translate` — three
+  code AI helpers.
+- `ai.text.draft_email_reply`, `ai.text.generate_email_subject` — two
+  email AI shortcuts.
+- `ai.text.clean_ocr` — flagship OCR cleanup workflow (joins broken
+  words, repairs common OCR mistakes, normalises whitespace).
+
+**Plumbing:**
+
+- `IDMigration056.swift` — one-shot config rewrite gated on
+  `seedTransformationVersion < 9`. Rewrites every legacy ID across
+  enabledFlags / customTitles / customDescriptions / actionHotkeys /
+  actionTestSamples / actionTestImageBlobs / actionOrder /
+  customTransformations / customAI. Idempotent.
+- `DefaultTransformationSeed.currentSeedVersion` 8 → 9 (new
+  descriptors + rename).
+- `DefaultAISeed.currentSeedVersion` 7 → 8 (rename + 9 new seeds).
+- `AppBrand.version` 0.55.0 → 0.56.0.
 
 ### 0.53.0 — Batch: 6 new actions + 4 HUD polish + diagnostics + cancellation hygiene
 

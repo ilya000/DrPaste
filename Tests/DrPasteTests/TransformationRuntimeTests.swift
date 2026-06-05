@@ -345,4 +345,14 @@ final class TransformationRuntimeTests: XCTestCase {
                                                   params: ["target": "tatar"])
         XCTAssertEqual(out, "җәй")
     }
+
+    /// Regression: the ICU pattern used \u{...} (Swift syntax, invalid in
+    /// ICU regex), which silently disabled the whole replacement so tabs and
+    /// NBSP were never normalized. Tabs must collapse to a single space.
+    func testNormalizeSpacesHandlesTabsAndNBSP() throws {
+        let out = try TransformationRuntime.apply(engine: .normalizeSpaces,
+                                                  input: "a\t\tb \u{00A0}\u{00A0}c   d",
+                                                  params: [:])
+        XCTAssertEqual(out, "a b c d")
+    }
 }

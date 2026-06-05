@@ -21,7 +21,7 @@ import AppKit
 // MARK: - Table
 
 struct TableToJSONAction: ClipboardAction {
-    let id = "builtin.table_to_json"; let title = "CSV → JSON"; let isLocal = true
+    let id = "builtin.table.to_json"; let title = "CSV → JSON"; let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         context.contains(.table)
     }
@@ -51,7 +51,7 @@ struct TableToJSONAction: ClipboardAction {
 }
 
 struct TableToMarkdownAction: ClipboardAction {
-    let id = "builtin.table_to_md"; let title = "CSV → Markdown table"; let isLocal = true
+    let id = "builtin.table.to_md"; let title = "CSV → Markdown table"; let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         context.contains(.table)
     }
@@ -77,7 +77,7 @@ struct TableToMarkdownAction: ClipboardAction {
 // MARK: - Rich text
 
 struct RichTextToMarkdownAction: ClipboardAction {
-    let id = "builtin.rich_to_md"; let title = "Rich → Markdown"; let isLocal = true
+    let id = "builtin.rich.to_md"; let title = "Rich → Markdown"; let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         context.contains(.richText)
     }
@@ -121,7 +121,7 @@ enum TableActionsPack {
 // MARK: - Rich → HTML
 
 struct RichTextToHTMLAction: ClipboardAction {
-    let id = "builtin.rich_to_html"; let title = "Rich → HTML"; let isLocal = true
+    let id = "builtin.rich.to_html"; let title = "Rich → HTML"; let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         context.contains(.richText)
     }
@@ -142,7 +142,7 @@ struct RichTextToHTMLAction: ClipboardAction {
 // MARK: - Rich → Wiki markup
 
 struct RichTextToWikiAction: ClipboardAction {
-    let id = "builtin.rich_to_wiki"; let title = "Rich → Wiki markup"; let isLocal = true
+    let id = "builtin.rich.to_wiki"; let title = "Rich → Wiki markup"; let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         context.contains(.richText)
     }
@@ -164,8 +164,10 @@ struct RichTextToWikiAction: ClipboardAction {
 
 // MARK: - Paste as text (combined clean + trim)
 
+// #A74 — Merged with CleanFormattingAction (was builtin.clean_formatting +
+// builtin.paste_as_text duplicate pair). Single ID under convention v2.
 struct PasteAsTextAction: ClipboardAction {
-    let id = "builtin.paste_as_text"; let title = "Paste as text"; let isLocal = true
+    let id = "builtin.rich.strip_formatting"; let title = "Plain text"; let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         context.contains(.plain) || context.contains(.richText)
     }
@@ -187,7 +189,7 @@ struct PasteAsTextAction: ClipboardAction {
 /// captions, Discord profile descriptions, etc.). Letterforms outside
 /// ASCII A-Z / a-z / 0-9 pass through unchanged.
 struct RichTextToUnicodeStyledAction: ClipboardAction {
-    let id = "builtin.rich_to_unicode_style"
+    let id = "builtin.rich.to_unicode_styled"
     let title = "Unicode Fancy"
     let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
