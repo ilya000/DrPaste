@@ -815,6 +815,45 @@ struct ActionEditor: View {
             }
         // Parameter-less engines seeded as built-ins via DefaultTransformationSeed.
         // They expose no editable parameters in the UI — they just show their
+        case .latinToCyrillic:
+            HStack {
+                Text("Language:").font(.caption).foregroundStyle(.secondary)
+                    .frame(width: 100, alignment: .leading)
+                Picker("", selection: paramBinding(key: "target", default: "russian")) {
+                    Text("Russian").tag("russian")
+                    Text("Ukrainian").tag("ukrainian")
+                    Text("Kazakh").tag("kazakh")
+                    Text("Serbian").tag("serbian")
+                    Text("Bulgarian").tag("bulgarian")
+                    Text("Tajik").tag("tajik")
+                    Text("Mongolian").tag("mongolian")
+                    Text("Belarusian").tag("belarusian")
+                    Text("Kyrgyz").tag("kyrgyz")
+                    Text("Tatar").tag("tatar")
+                    Text("Chechen").tag("chechen")
+                    Text("Macedonian").tag("macedonian")
+                    Text("Bashkir").tag("bashkir")
+                    Text("Chuvash").tag("chuvash")
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+            }
+        case .leetspeak:
+            paramToggle(label: "Aggressive", key: "aggressive")
+        case .uwuSpeak:
+            paramToggle(label: "Inject faces", key: "faces")
+        case .zalgo:
+            HStack {
+                Text("Intensity:").font(.caption).foregroundStyle(.secondary)
+                    .frame(width: 100, alignment: .leading)
+                Picker("", selection: paramBinding(key: "intensity", default: "medium")) {
+                    Text("Light").tag("light")
+                    Text("Medium").tag("medium")
+                    Text("Heavy").tag("heavy")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
         // description (which the editor already prints above this view) and
         // run on the input as-is.
         case .trim,
@@ -824,7 +863,8 @@ struct ActionEditor: View {
              .slugify, .wordCount,
              .mdToPlain, .mdExtractHeadings, .mdExtractLinks,
              .urlStripTracking,
-             .cyrillicToLatin:
+             .cyrillicToLatin,
+             .prettyCodeLocal:
             Text("This engine has no parameters.")
                 .font(.caption).foregroundStyle(.tertiary)
         }

@@ -147,7 +147,12 @@ struct ImageResizeAction: ClipboardAction {
         // Walk attributed string attachments; replace each image
         // attachment with a resized PNG re-attachment. Non-image
         // runs pass through untouched.
-        let result: NSAttributedString? = await runOffMain {
+        // The closure returns flat-RTFD `Data` (Sendable) rather than the
+        // NSAttributedString itself — NSAttributedString is not Sendable on
+        // macOS, so returning it across runOffMain's detached-task boundary
+        // is an error under the Swift 6 language mode. We re-hydrate the
+        // attributed string on the main side from the flat-RTFD bytes.
+        let result: Data? = await runOffMain {
             guard let attr = self.loadAttributedString(item) else { return nil }
             let out = NSMutableAttributedString(attributedString: attr)
             var anyReplaced = false
@@ -167,9 +172,15 @@ struct ImageResizeAction: ClipboardAction {
                 out.replaceCharacters(in: range, with: replacement)
                 anyReplaced = true
             }
-            return anyReplaced ? out : nil
+            guard anyReplaced else { return nil }
+            return try? out.data(from: NSRange(location: 0, length: out.length),
+                                 documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd])
         }
-        guard let attr = result else {
+        guard let rtfd = result,
+              let attr = try? NSAttributedString(
+                  data: rtfd,
+                  options: [.documentType: NSAttributedString.DocumentType.rtfd],
+                  documentAttributes: nil) else {
             return .failed(original: item, reason: "Resize Images: no embedded images to resize.", recovery: nil)
         }
         return .preview(makeRichTextItem(attr, from: item))

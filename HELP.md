@@ -20,12 +20,13 @@ This document describes every feature in plain language, with concrete real-worl
 8. [Custom actions](#custom-actions)
 9. [AI providers](#ai-providers)
 10. [AI image actions](#ai-image-actions)
-11. [⌥⌘S Append Copy — merging clips](#s-append-copy--merging-clips)
-12. [Region Capture — screen-region screenshots](#region-capture--screen-region-screenshots)
-13. [Settings](#settings)
-14. [Sounds and themes](#sounds-and-themes)
-15. [Tips and tricks](#tips-and-tricks)
-16. [Troubleshooting](#troubleshooting)
+11. [Cyrillic transliteration — 14 languages](#cyrillic-transliteration--14-languages)
+12. [⌥⌘S Append Copy — merging clips](#s-append-copy--merging-clips)
+13. [Region Capture — screen-region screenshots](#region-capture--screen-region-screenshots)
+14. [Settings](#settings)
+15. [Sounds and themes](#sounds-and-themes)
+16. [Tips and tricks](#tips-and-tricks)
+17. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -210,7 +211,7 @@ Deterministic operations over text via configurable engines:
 - **unicodeStyle** — Unicode pseudo-fonts (𝐛𝐨𝐥𝐝, 𝑖𝑡𝑎𝑙𝑖𝑐, 𝓢𝓬𝓻𝓲𝓹𝓽, 𝔉𝔯𝔞𝔨𝔱𝔲𝔯, 𝙼𝚘𝚗𝚘𝚜𝚙𝚊𝚌𝚎, Sᴍᴀʟʟ Cᴀᴘs, Ⓒⓘⓡⓒⓛⓔⓓ, ∀ uʍop ǝpᴉsdn, etc. — about 20 styles) for Twitter/X, Telegram, LinkedIn, Discord — anywhere Markdown is not rendered.
 - **markdown styles → unicode** (`builtin.font_markdown`, added in 0.42.0) — takes plain Markdown with inline markup (`**bold**`, `*italic*`, `***bi***`, `` `code` ``, `~~strike~~`) and replaces each span with the matching Unicode pseudo-font; markup characters are stripped. Plain text between markup stays unchanged.
 - **markdown → rich text** (`builtin.md_to_rich`, added in 0.42.0) — converts plain Markdown source into NSAttributedString. When pasted into Mail / Pages / Notes / Word the formatting is preserved.
-- **cyrillic → latin** — transliteration with variant auto-detection (Russian / Ukrainian / Belarusian / Bulgarian / Serbian / Macedonian), `Привет → Privet`.
+- **cyrillic → latin** / **latin → cyrillic** — transliteration across **14 Cyrillic languages** with automatic language detection, `Привет → Privet`. See [its own section](#cyrillic-transliteration--14-languages).
 - **lineFilter** — filter lines by regex/keyword.
 - **wikiMarkup** — conversion to Wiki markup.
 
@@ -357,6 +358,57 @@ DrPaste automatically picks the cheapest image-capable provider if none is expli
 4. **Custom** — unknown cost, last resort.
 
 If you have both Gemini and OpenAI connected — auto-select for a new image action will take Gemini. Saves 75%+ on each request.
+
+---
+
+## Cyrillic transliteration — 14 languages
+
+DrPaste ships two **fully offline, deterministic** transliteration actions. No AI, no network, no API key — they run instantly on any text clip and work the same on every machine.
+
+- **Cyrillic → Latin** — romanize Cyrillic text. The language is **detected automatically**, so you just run the action.
+- **Latin → Cyrillic** — the reverse. Here you **pick the target language** in the action editor (a Latin string is ambiguous without it).
+
+Both preserve word case: `Привет → Privet`, `ПРИВЕТ → PRIVET`.
+
+### Supported languages
+
+All Cyrillic-script languages with more than ~1 million speakers. Each uses its own **national / common romanization**, not a single uniform scheme — so the output looks the way speakers of that language expect.
+
+| Language | Example | Romanized | Detected by |
+|---|---|---|---|
+| Russian | Привет мир | Privet mir | default (no marker) |
+| Ukrainian | Привіт Київ | Pryvit Kyyiv | і ї є ґ |
+| Kazakh | Қазақстан | Qazaqstan | ұ қ ғ ә |
+| Serbian | Џек и Ђоко | Džek i Đoko | ћ ђ џ |
+| Bulgarian | ъгъл | agal | ъ without ы/э/ё |
+| Tajik | Тоҷикистон | Tojikiston | ҷ ӣ ӯ ҳ |
+| Mongolian | Өнөөдөр | Önöödör | ө ү |
+| Belarusian | воўк | vowk | ў |
+| Kyrgyz | өзүң | özüñ | ң ө ү |
+| Tatar | җәй | cäy | җ |
+| Chechen | Ӏан | 'an | Ӏ (palochka) |
+| Macedonian | Ѓорѓи | Gjorgji | ѓ ќ ѕ |
+| Bashkir | Башҡортостан | Başqortostan | ҙ ҫ ҡ |
+| Chuvash | чӑваш | chăvash | ӑ ӗ ӳ |
+
+### How auto-detection works (Cyrillic → Latin)
+
+The detector compares the text against each language's **full alphabet**. A language is ruled out the moment the text contains a letter its alphabet can't spell — so a word is never assigned to a language that physically couldn't write it. Among the languages that *can* spell the text, the **more widely spoken** one wins.
+
+In practice: «Џек» contains `џ`, which does not exist in Russian, so Russian is excluded outright; the word is valid in both Serbian and Macedonian, and the more widespread Serbian is chosen. Likewise a Tatar sentence with `җ` rules out Kazakh, since Kazakh has no `җ`. Bulgarian — whose alphabet is a subset of Russian's — is the one special case: it's recognized by a hard sign `ъ` used as a vowel with no Russian-only `ы/э/ё`. If nothing distinguishes the text, it's treated as Russian.
+
+### Latin → Cyrillic — choosing the language
+
+Open the action in **Settings → Actions**, and pick the target from the **Language** dropdown (14 options). The reverse mapping understands digraphs (`zh → ж`, `ch → ч`, `gj → ѓ`) and the national Latin's diacritic letters (`ä → ә`, `ö → ө`, `ü → ү`, `ñ → ң`). For best results, feed it text written in that language's standard Latin — plain ASCII (`a` for both `а` and `ә`) is inherently ambiguous.
+
+### Typical uses
+
+- Romanize names, place names, and addresses for forms, tickets, or international documents.
+- Generate URL slugs and filenames from Cyrillic titles.
+- Recover Cyrillic text someone typed in Latin (or vice versa).
+- Chain into a Unicode pseudo-font style (Cyrillic → Latin → `𝐁𝐨𝐥𝐝`) for social profiles.
+
+Assign a per-action `⌥⌘`+letter hotkey to either action for one-tap transliteration of the current selection.
 
 ---
 

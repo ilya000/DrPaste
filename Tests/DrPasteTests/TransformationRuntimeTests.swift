@@ -268,4 +268,81 @@ final class TransformationRuntimeTests: XCTestCase {
                                                   params: ["pattern": "foo", "mode": "remove"])
         XCTAssertEqual(out, "bar\nbaz")
     }
+
+    func testLatinToCyrillicMacedonian() throws {
+        // Macedonian-specific digraphs: gj→ѓ, plus shared lj/nj/dž and j→ј.
+        let out = try TransformationRuntime.apply(engine: .latinToCyrillic,
+                                                  input: "Skopje Gjorgji",
+                                                  params: ["target": "macedonian"])
+        XCTAssertEqual(out, "Скопје Ѓорѓи")
+    }
+
+    func testLatinToCyrillicMacedonianDistinctFromSerbian() throws {
+        // gj→ѓ, kj→ќ, dz→ѕ are Macedonian, not Serbian (which has ђ/ћ).
+        let out = try TransformationRuntime.apply(engine: .latinToCyrillic,
+                                                  input: "gjkjdz",
+                                                  params: ["target": "macedonian"])
+        XCTAssertEqual(out, "ѓќѕ")
+    }
+
+    // MARK: Cyrillic → Latin auto-detection across 14 languages
+
+    /// Each input carries a marker letter unique (or near-unique) to its
+    /// language; detection must route to that language's romanization.
+    func testCyrillicToLatinAutoDetectsLanguage() throws {
+        let cases: [(String, String)] = [
+            ("Привет мир", "Privet mir"),                  // Russian default
+            ("Привіт", "Pryvit"),                          // Ukrainian (і → і/y, г→h)
+            ("Қазақстан", "Qazaqstan"),                    // Kazakh (ұ/қ → q)
+            ("Џек", "Džek"),                               // Serbian (џ → dž)
+            ("ъгъл", "agal"),                              // Bulgarian (ъ → a)
+            ("Тоҷик", "Tojik"),                            // Tajik (ҷ → j)
+            ("Өнөө", "Önöö"),                              // Mongolian (ө → ö)
+            ("воўк", "vowk"),                              // Belarusian (ў → w)
+            ("өзүң", "özüñ"),                               // Kyrgyz/Kazakh shared (ң→ñ)
+            ("җәй", "cäy"),                                // Tatar (җ → c)
+            ("Ӏан", "'an"),                                // Chechen (palochka → ')
+            ("Ѓорѓи", "Gjorgji"),                          // Macedonian (ѓ → gj)
+            ("һәҙ", "häź"),                                // Bashkir (ҙ → ź)
+            ("чӑваш", "chăvash")                           // Chuvash (ӑ → ă)
+        ]
+        for (input, expected) in cases {
+            let out = try TransformationRuntime.apply(engine: .cyrillicToLatin,
+                                                      input: input, params: [:])
+            XCTAssertEqual(out, expected, "Cyrillic→Latin for \(input)")
+        }
+    }
+
+    /// A word containing letters absent from Russian must never be read as
+    /// Russian. «Џек» is valid only in Serbian and Macedonian → the more
+    /// widely spoken Serbian wins (Cyrillic џ → dž, not left untransliterated).
+    func testCyrillicDetectionExcludesImpossibleLanguage() throws {
+        let out = try TransformationRuntime.apply(engine: .cyrillicToLatin,
+                                                  input: "Џек", params: [:])
+        XCTAssertEqual(out, "Džek")
+    }
+
+    /// Tatar's unique җ must outweigh the markers it shares with Kazakh
+    /// (ә/ң/һ), even though Kazakh has higher prevalence.
+    func testCyrillicDetectionUniqueMarkerBeatsPrevalence() throws {
+        // "җәһәт" shares ә/һ with Kazakh but җ is Tatar-only → Tatar (җ→c, ә→ä, һ→h).
+        let out = try TransformationRuntime.apply(engine: .cyrillicToLatin,
+                                                  input: "җәһәт", params: [:])
+        XCTAssertEqual(out, "cähät")
+    }
+
+    func testLatinToCyrillicKazakh() throws {
+        let out = try TransformationRuntime.apply(engine: .latinToCyrillic,
+                                                  input: "Qazaqstan",
+                                                  params: ["target": "kazakh"])
+        XCTAssertEqual(out, "Қазақстан")
+    }
+
+    func testLatinToCyrillicTatar() throws {
+        // c→җ, ä→ә, y→й.
+        let out = try TransformationRuntime.apply(engine: .latinToCyrillic,
+                                                  input: "cäy",
+                                                  params: ["target": "tatar"])
+        XCTAssertEqual(out, "җәй")
+    }
 }

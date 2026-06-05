@@ -16,7 +16,7 @@ final class SeedIntegrityTests: XCTestCase {
 
         XCTAssertEqual(Set(ids).count, ids.count, "Bundled transformation IDs must be unique.")
         XCTAssertTrue(ids.allSatisfy { $0.hasPrefix("builtin.") })
-        XCTAssertEqual(DefaultTransformationSeed.currentSeedVersion, 6)
+        XCTAssertEqual(DefaultTransformationSeed.currentSeedVersion, 7)
     }
 
     func testDefaultTransformationsReferenceValidEnginesAndSemanticKinds() {
@@ -75,7 +75,12 @@ final class SeedIntegrityTests: XCTestCase {
             "builtin.files_names",
             "builtin.files_md_links",
             "builtin.files_reveal",
-            "builtin.type_slowly"
+            "builtin.type_slowly",
+            "builtin.csv_to_wiki_table",
+            "builtin.csv_to_rtfd_table",
+            "builtin.file_to_image",
+            "builtin.image_resize_universal",
+            "builtin.unit_conversion"
         ]
         let known = seeded.union(hardcoded)
         let unknown = CuratedDefaults.enabledByDefault.subtracting(known)

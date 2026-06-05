@@ -44,8 +44,8 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
     case mdExtractLinks    = "md_extract_links"
     case urlStripTracking  = "url_strip_tracking"
     case unicodeStyle      = "unicode_style"        // style: bold/italic/script/...
-    case cyrillicToLatin   = "cyrillic_to_latin"    // auto-detects ru/uk/be/bg/sr/mk
-    case latinToCyrillic   = "latin_to_cyrillic"    // target: russian/ukrainian/bulgarian/serbian
+    case cyrillicToLatin   = "cyrillic_to_latin"    // auto-detects 14 langs by markers+prevalence
+    case latinToCyrillic   = "latin_to_cyrillic"    // target: one of 14 langs (see cyrillicLangs)
     case prettyCodeLocal   = "pretty_code_local"    // JSON / XML / HTML / CSS / generic
     case leetspeak         = "leetspeak"            // a→4 e→3 ... aggressive flag
     case uwuSpeak          = "uwu_speak"            // r/l→w, n+vowel→ny+vowel, face injection
@@ -178,9 +178,9 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
         case .unicodeStyle:
             return "Convert ASCII letters and digits into a stylized Unicode pseudo-font (Bold, Italic, Script, Fraktur, Double-struck, Monospace, Fullwidth, Small Caps, Circled, Upside-down, etc.). Plain reverses any styled input back to ASCII."
         case .cyrillicToLatin:
-            return "Transliterate Cyrillic text (Russian, Ukrainian, Belarusian, Bulgarian, Serbian, Macedonian) to Latin. Auto-detects the script variant by marker letters: ћ ђ ј љ њ џ ѓ ќ ѕ → Serbian/Macedonian (Gaj's diacritic scheme: ж→ž, ч→č, ш→š); ъ without ы/э/ё → Bulgarian (Streamlined 2009: щ→sht, ъ→a); є ї ґ → Ukrainian; ў → Belarusian; otherwise Russian default. Preserves word case (Привет→Privet, ПРИВЕТ→PRIVET). Useful for URL slugs, name romanization, plain-Latin contexts, and chaining into Unicode pseudo-font styling."
+            return "Transliterate Cyrillic to Latin across 14 languages (Russian, Ukrainian, Kazakh, Serbian, Bulgarian, Tajik, Mongolian, Belarusian, Kyrgyz, Tatar, Chechen, Macedonian, Bashkir, Chuvash), each with its national/common romanization. Auto-detects the language by alphabet fit — a language whose alphabet can't spell a letter in the text is ruled out (ї/є/ґ → Ukrainian, ұ/қ/ә → Kazakh, ҷ/ӣ/ӯ → Tajik, җ → Tatar, ҙ/ҡ → Bashkir, ӑ/ӗ/ӳ → Chuvash, ӏ → Chechen, ћ/ђ/џ → Serbian, ѓ/ќ/ѕ → Macedonian, ў → Belarusian, ъ without ы/э/ё → Bulgarian, …), breaking ties toward the more widely spoken language. Preserves word case (Привет→Privet, ПРИВЕТ→PRIVET). Useful for URL slugs, name romanization, and chaining into Unicode pseudo-font styling."
         case .latinToCyrillic:
-            return "Reverse-transliterate Latin to Cyrillic using a target-language scheme: Russian (default), Ukrainian, Bulgarian, or Serbian. Recognizes digraphs (zh→ж, ch→ч, sh→ш, shch→щ, yo→ё, yu→ю, ya→я) and falls back to a single-letter map otherwise. Preserves case (Privet→Привет, PRIVET→ПРИВЕТ). Deterministic and offline — for name transliteration, ASCII-typed Cyrillic recovery, or simple Cyrillic intent."
+            return "Reverse-transliterate Latin to Cyrillic for a chosen target language (14 supported: Russian default, Ukrainian, Kazakh, Serbian, Bulgarian, Tajik, Mongolian, Belarusian, Kyrgyz, Tatar, Chechen, Macedonian, Bashkir, Chuvash). Recognizes digraphs (zh→ж, ch→ч, sh→ш, shch→щ, gj→ѓ, …) and the national Latin's diacritic letters (ä→ә, ö→ө, ü→ү, ñ→ң, …), falling back to a single-letter map. Preserves case (Privet→Привет, PRIVET→ПРИВЕТ). Deterministic and offline."
         case .prettyCodeLocal:
             return "Deterministic code reformatter. Auto-detects format by leading characters: { / [ → JSON via JSONSerialization (.prettyPrinted + .sortedKeys); <?xml → XMLDocument .nodePrettyPrint; <!DOCTYPE / <html → HTML reflow (newlines after tags, tag-depth indent, collapse multi-space); selector + { → CSS (newline after ;, indent rule body 2 spaces); otherwise generic whitespace normalization (trim trailing whitespace, collapse 3+ blank lines, tabs → 4 spaces, normalize LF). Fully offline, sub-50 ms for typical sizes. AI Pretty Code is a separate action for arbitrary languages with idiomatic style."
         case .leetspeak:
@@ -571,33 +571,179 @@ enum TransformationRuntime {
 
     // MARK: Cyrillic transliteration
 
-    /// Variant of Cyrillic for selecting the appropriate Latin scheme.
-    /// `.russian` covers Russian + Ukrainian + Belarusian (digraph style:
-    /// zh, ch, sh, kh). `.bulgarian` follows Streamlined 2009 (sht, a, y).
-    /// `.serbian` covers Serbian + Macedonian Gaj's Latin (ž, č, š, h, c).
-    private enum CyrillicVariant { case russian, bulgarian, serbian }
-
-    /// Detect which Cyrillic variant the text uses. Heuristic — looks at
-    /// marker letters that uniquely identify a script. Defaults to Russian
-    /// when no marker hits, which is the most common case.
-    private static func detectCyrillicVariant(_ s: String) -> CyrillicVariant {
-        let serbianMarkers: Set<Character> = ["ћ", "ђ", "ј", "љ", "њ", "џ", "ѓ", "ќ", "ѕ",
-                                              "Ћ", "Ђ", "Ј", "Љ", "Њ", "Џ", "Ѓ", "Ќ", "Ѕ"]
-        let russianOnlyMarkers: Set<Character> = ["ы", "э", "ё", "Ы", "Э", "Ё"]
-        if s.contains(where: { serbianMarkers.contains($0) }) {
-            return .serbian
+    /// One supported Cyrillic-script language. `prevalence` is a rough
+    /// native-speaker count in millions, used *only* to break
+    /// auto-detection ties toward the more widely spoken language.
+    /// `markers` are distinctive lowercase Cyrillic letters that flag this
+    /// language during Cyrillic→Latin detection (Russian carries none — it
+    /// is the default fallback). `cyr2lat` / `lat2cyr` are romanization
+    /// overrides layered over the Russian base maps; `lat2cyrDrop` removes
+    /// Russian base digraphs that don't exist in this language.
+    private struct CyrillicLang {
+        let id: String
+        let name: String
+        let prevalence: Int
+        /// The language's full lowercase Cyrillic alphabet. Detection rules
+        /// out any language whose alphabet is missing a letter present in
+        /// the text — so a word can never be assigned to a language that
+        /// physically can't spell it.
+        let letters: Set<Character>
+        let cyr2lat: [Character: String]
+        let lat2cyr: [String: String]
+        let lat2cyrDrop: [String]
+        init(_ id: String, _ name: String, _ prevalence: Int,
+             letters: String,
+             cyr2lat: [Character: String] = [:],
+             lat2cyr: [String: String] = [:],
+             lat2cyrDrop: [String] = []) {
+            self.id = id; self.name = name; self.prevalence = prevalence
+            self.letters = Set(letters)
+            self.cyr2lat = cyr2lat
+            self.lat2cyr = lat2cyr; self.lat2cyrDrop = lat2cyrDrop
         }
-        let hasYer = s.contains("ъ") || s.contains("Ъ")
-        let hasRussianMarker = s.contains(where: { russianOnlyMarkers.contains($0) })
-        if hasYer && !hasRussianMarker {
-            return .bulgarian
-        }
-        return .russian
     }
 
-    /// Lowercase Cyrillic → Latin base map. Covers Russian, Ukrainian,
-    /// Belarusian, and Old Church Slavonic letters. Bulgarian and Serbian
-    /// overrides are applied separately in `cyrillicMap(for:)`.
+    /// Russian 33-letter alphabet — the base most other languages extend.
+    private static let ruCore = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
+
+    /// Slavic-script Gaj/Vuk digraphs shared by Serbian and Macedonian:
+    /// the Russian-style ASCII digraphs (sh/ch/zh/…) are dropped in favour
+    /// of single diacritic letters.
+    private static let southSlavicDrop = ["sh", "ch", "zh", "kh", "ts",
+                                          "yo", "yu", "ya", "shch", "ye"]
+
+    /// All 14 supported Cyrillic languages (>1M speakers), ordered by
+    /// prevalence (the tie-breaker during detection). `letters` is each
+    /// language's complete alphabet; romanization follows each language's
+    /// national / common scheme rather than a single uniform standard.
+    /// Latin→Cyrillic overrides assume input written in that national Latin
+    /// (incl. diacritics like ä/ö/ü/ñ where the scheme uses them).
+    private static let cyrillicLangs: [CyrillicLang] = [
+        CyrillicLang("russian", "Russian", 150,
+            letters: ruCore),
+        CyrillicLang("ukrainian", "Ukrainian", 33,
+            letters: "абвгґдеєжзиіїйклмнопрстуфхцчшщьюя",
+            cyr2lat: ["г": "h", "и": "y"],
+            lat2cyr: ["y": "и", "yi": "ї", "ye": "є", "g": "г", "i": "і"]),
+        CyrillicLang("kazakh", "Kazakh", 13,
+            letters: ruCore + "әғіңөұүһқ",
+            cyr2lat: ["ә": "ä", "ғ": "ğ", "қ": "q", "ң": "ñ", "ө": "ö",
+                      "ұ": "ū", "ү": "ü", "һ": "h", "і": "i", "ж": "j",
+                      "ш": "ş", "и": "i", "й": "i", "ю": "iu", "я": "ia"],
+            lat2cyr: ["ä": "ә", "ğ": "ғ", "q": "қ", "ñ": "ң", "ö": "ө",
+                      "ū": "ұ", "ü": "ү", "j": "ж", "ş": "ш", "h": "һ"]),
+        CyrillicLang("serbian", "Serbian", 9,
+            letters: "абвгдђежзијклљмнњопрстћуфхцчџш",
+            cyr2lat: ["ж": "ž", "ч": "č", "ш": "š", "х": "h", "ц": "c",
+                      "ћ": "ć", "ђ": "đ", "ј": "j", "љ": "lj", "њ": "nj",
+                      "џ": "dž"],
+            lat2cyr: ["ž": "ж", "č": "ч", "š": "ш", "ć": "ћ", "đ": "ђ",
+                      "lj": "љ", "nj": "њ", "dž": "џ", "j": "ј", "h": "х",
+                      "c": "ц"],
+            lat2cyrDrop: southSlavicDrop),
+        CyrillicLang("bulgarian", "Bulgarian", 8,
+            letters: "абвгдежзийклмнопрстуфхцчшщъьюя",
+            cyr2lat: ["щ": "sht", "ъ": "a", "ь": "y"],
+            lat2cyr: ["sht": "щ", "a": "а", "yo": "йо", "yu": "ю", "ya": "я"]),
+        CyrillicLang("tajik", "Tajik", 8,
+            letters: "абвгғдеёжзиӣйкқлмнопрстуӯфхҳцчҷшъэюя",
+            cyr2lat: ["ғ": "gh", "ӣ": "ī", "қ": "q", "ӯ": "ū", "ҳ": "h",
+                      "ҷ": "j", "ъ": "'"],
+            lat2cyr: ["gh": "ғ", "ī": "ӣ", "q": "қ", "ū": "ӯ", "h": "ҳ",
+                      "j": "ҷ"]),
+        CyrillicLang("mongolian", "Mongolian", 6,
+            letters: ruCore + "өү",
+            cyr2lat: ["ж": "j", "ө": "ö", "ү": "ü", "щ": "sh", "й": "i",
+                      "ъ": "i", "ь": "i"],
+            lat2cyr: ["ö": "ө", "ü": "ү", "j": "ж"]),
+        CyrillicLang("belarusian", "Belarusian", 5,
+            letters: "абвгдеёжзійклмнопрстуўфхцчшыьэюя",
+            cyr2lat: ["г": "h"],
+            lat2cyr: ["w": "ў", "h": "г", "i": "і"]),
+        CyrillicLang("kyrgyz", "Kyrgyz", 5,
+            letters: ruCore + "ңөү",
+            cyr2lat: ["ң": "ñ", "ө": "ö", "ү": "ü", "ж": "j"],
+            lat2cyr: ["ñ": "ң", "ö": "ө", "ü": "ү", "j": "ж"]),
+        CyrillicLang("tatar", "Tatar", 5,
+            letters: ruCore + "әөүҗңһ",
+            cyr2lat: ["ә": "ä", "ө": "ö", "ү": "ü", "җ": "c", "ң": "ñ",
+                      "һ": "h", "ж": "j", "х": "x", "ч": "ç", "ш": "ş",
+                      "ы": "ı"],
+            lat2cyr: ["ä": "ә", "ö": "ө", "ü": "ү", "ñ": "ң", "c": "җ",
+                      "ç": "ч", "ş": "ш", "j": "ж", "x": "х", "ı": "ы"]),
+        CyrillicLang("chechen", "Chechen", 2,
+            letters: ruCore + "ӏӀ",
+            cyr2lat: ["ӏ": "'", "Ӏ": "'", "ъ": "'"],
+            lat2cyr: ["'": "ӏ"]),
+        CyrillicLang("macedonian", "Macedonian", 2,
+            letters: "абвгдѓежзѕијклљмнњопрстќуфхцчџш",
+            cyr2lat: ["ж": "ž", "ч": "č", "ш": "š", "х": "h", "ц": "c",
+                      "ѓ": "gj", "ќ": "kj", "ѕ": "dz", "џ": "dž",
+                      "љ": "lj", "њ": "nj", "ј": "j"],
+            lat2cyr: ["ž": "ж", "č": "ч", "š": "ш", "gj": "ѓ", "ǵ": "ѓ",
+                      "kj": "ќ", "ḱ": "ќ", "dz": "ѕ", "lj": "љ", "nj": "њ",
+                      "dž": "џ", "j": "ј", "h": "х", "c": "ц"],
+            lat2cyrDrop: southSlavicDrop),
+        CyrillicLang("bashkir", "Bashkir", 1,
+            letters: ruCore + "әөүғҙҡңҫһ",
+            cyr2lat: ["ә": "ä", "ө": "ö", "ү": "ü", "ғ": "ğ", "ҙ": "ź",
+                      "ҫ": "ś", "ҡ": "q", "ң": "ñ", "һ": "h", "ж": "j",
+                      "х": "x", "ч": "ç", "ш": "ş", "ы": "ı"],
+            lat2cyr: ["ä": "ә", "ö": "ө", "ü": "ү", "ğ": "ғ", "ź": "ҙ",
+                      "ś": "ҫ", "q": "ҡ", "ñ": "ң", "ç": "ч", "ş": "ш",
+                      "j": "ж", "x": "х", "ı": "ы"]),
+        CyrillicLang("chuvash", "Chuvash", 1,
+            letters: ruCore + "ӑӗҫӳ",
+            cyr2lat: ["ӑ": "ă", "ӗ": "ĕ", "ҫ": "ś", "ӳ": "ÿ"],
+            lat2cyr: ["ă": "ӑ", "ĕ": "ӗ", "ś": "ҫ", "ÿ": "ӳ"])
+    ]
+
+    private static func cyrillicLang(id: String) -> CyrillicLang {
+        cyrillicLangs.first { $0.id == id } ?? cyrillicLangs[0]
+    }
+
+    /// Union of every supported alphabet — used to isolate the Cyrillic
+    /// letters in a string while ignoring Latin / punctuation.
+    private static let allCyrillicLetters: Set<Character> = {
+        var u = Set<Character>()
+        for lang in cyrillicLangs { u.formUnion(lang.letters) }
+        return u
+    }()
+
+    /// Auto-detect the Cyrillic language by alphabet fit: a language is
+    /// penalised once for every Cyrillic letter in the text that its
+    /// alphabet does not contain, and the language with the fewest such
+    /// "foreign" letters wins. Ties break toward the more widely spoken
+    /// language (higher `prevalence`) — so «Џек», impossible in Russian
+    /// but valid in Serbian and Macedonian, resolves to Serbian. Bulgarian,
+    /// whose alphabet is a subset of Russian's, is recovered from its
+    /// signature ъ-as-vowel with no Russian-only ы/э/ё.
+    private static func detectCyrillicLanguage(_ s: String) -> CyrillicLang {
+        var present = Set(s.lowercased())
+        present.formUnion(s)
+        let textCyr = present.intersection(allCyrillicLetters)
+        guard !textCyr.isEmpty else { return cyrillicLang(id: "russian") }
+        var best = cyrillicLangs[0]                       // Russian baseline
+        var bestForeign = textCyr.subtracting(best.letters).count
+        for lang in cyrillicLangs.dropFirst() {
+            let foreign = textCyr.subtracting(lang.letters).count
+            if foreign < bestForeign
+                || (foreign == bestForeign && lang.prevalence > best.prevalence) {
+                bestForeign = foreign
+                best = lang
+            }
+        }
+        if best.id == "russian"
+            && textCyr.contains("ъ")
+            && textCyr.isDisjoint(with: ["ы", "э", "ё"]) {
+            return cyrillicLang(id: "bulgarian")
+        }
+        return best
+    }
+
+    /// Lowercase Cyrillic → Latin base map (Russian + Ukrainian /
+    /// Belarusian / Old Church Slavonic letters). Per-language overrides
+    /// are layered on top in `cyrillicMap(forLanguage:)`.
     private static let cyrillicBaseMap: [Character: String] = [
         // Common letters
         "а": "a", "б": "b", "в": "v", "г": "g", "д": "d",
@@ -615,26 +761,9 @@ enum TransformationRuntime {
         "ѣ": "ye", "ѵ": "i", "ѳ": "f", "ѕ": "dz"
     ]
 
-    private static func cyrillicMap(for variant: CyrillicVariant) -> [Character: String] {
+    private static func cyrillicMap(forLanguage lang: CyrillicLang) -> [Character: String] {
         var m = cyrillicBaseMap
-        switch variant {
-        case .russian:
-            break
-        case .bulgarian:
-            // Streamlined Transliteration System (Bulgarian state standard, 2009).
-            m["щ"] = "sht"
-            m["ъ"] = "a"
-            m["ь"] = "y"
-        case .serbian:
-            // Gaj's Latin alphabet — one-to-one with Serbian Cyrillic.
-            m["ж"] = "ž"; m["ч"] = "č"; m["ш"] = "š"
-            m["х"] = "h"; m["ц"] = "c"
-            // Serbian-specific letters.
-            m["ћ"] = "ć"; m["ђ"] = "đ"; m["ј"] = "j"
-            m["љ"] = "lj"; m["њ"] = "nj"; m["џ"] = "dž"
-            // Macedonian-specific letters.
-            m["ѓ"] = "gj"; m["ќ"] = "kj"; m["ѕ"] = "dz"
-        }
+        for (k, v) in lang.cyr2lat { m[k] = v }
         return m
     }
 
@@ -643,8 +772,8 @@ enum TransformationRuntime {
     /// is determined per-letter against neighbours so "ПРИВЕТ" → "PRIVET"
     /// (all-caps) but "Привет" → "Privet" (title-case), not "PRIvet".
     private static func cyrillicTransliterate(_ input: String) -> String {
-        let variant = detectCyrillicVariant(input)
-        let map = cyrillicMap(for: variant)
+        let lang = detectCyrillicLanguage(input)
+        let map = cyrillicMap(forLanguage: lang)
         let chars = Array(input)
         var out = ""
         out.reserveCapacity(chars.count * 2)
@@ -993,8 +1122,9 @@ enum TransformationRuntime {
     }
 
     /// Latin → Cyrillic map for the given target language. Digraphs first
-    /// (matched greedily by the caller), single letters second.
-    /// Russian default. Ukrainian/Bulgarian/Serbian apply overrides.
+    /// (matched greedily by the caller), single letters second. Russian
+    /// base, then the target language's `lat2cyrDrop` removals and
+    /// `lat2cyr` overrides from the `cyrillicLangs` table are applied.
     private static func latinToCyrillicMap(for target: String) -> [String: String] {
         // Russian base — digraphs precede single-letter for greedy match.
         var m: [String: String] = [
@@ -1013,36 +1143,9 @@ enum TransformationRuntime {
             "j": "й",
             "w": "в", "x": "кс", "q": "к"
         ]
-        switch target {
-        case "ukrainian":
-            m["y"] = "и"           // у Ukrainian "y" чаще "и", а не "й"
-            m["yi"] = "ї"
-            m["ye"] = "є"
-            m["g"] = "г"           // ґ available via apostrophe; "g" → "г" by default
-            m["i"] = "і"
-        case "bulgarian":
-            // Streamlined 2009 reverse.
-            m["sht"] = "щ"
-            m["a"] = "а"
-            // Bulgarian doesn't use ы/э/ё; clear those.
-            m["yo"] = "йо"
-            m["yu"] = "ю"; m["ya"] = "я"
-        case "serbian":
-            // Gaj's Latin reverse — single-letter only (no digraphs).
-            m["ž"] = "ж"; m["č"] = "ч"; m["š"] = "ш"
-            m["ć"] = "ћ"; m["đ"] = "ђ"
-            m["lj"] = "љ"; m["nj"] = "њ"; m["dž"] = "џ"
-            m["j"] = "ј"
-            m["h"] = "х"; m["c"] = "ц"
-            // Strip Russian-only digraphs.
-            m.removeValue(forKey: "sh"); m.removeValue(forKey: "ch")
-            m.removeValue(forKey: "zh"); m.removeValue(forKey: "kh")
-            m.removeValue(forKey: "ts"); m.removeValue(forKey: "yo")
-            m.removeValue(forKey: "yu"); m.removeValue(forKey: "ya")
-            m.removeValue(forKey: "shch")
-        default:
-            break // russian default already applied
-        }
+        let lang = cyrillicLang(id: target)
+        for key in lang.lat2cyrDrop { m.removeValue(forKey: key) }
+        for (k, v) in lang.lat2cyr { m[k] = v }
         return m
     }
 
