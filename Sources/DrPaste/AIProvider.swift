@@ -1288,21 +1288,28 @@ struct AIAction: ClipboardAction {
     let providerID: String?         // nil = use default
     let applicableTypes: Set<SemanticKind>
     let preserveRichFormatting: Bool
+    let requiredTraits: [String]      // #A75 "Show when…" conditions
+    let forbiddenTraits: [String]
 
     init(id: String, title: String, promptTemplate: String,
          providerID: String? = nil,
          applicableTypes: Set<SemanticKind> = [.text, .richText, .url, .json, .markdown, .code],
-         preserveRichFormatting: Bool = false) {
+         preserveRichFormatting: Bool = false,
+         requiredTraits: [String] = [],
+         forbiddenTraits: [String] = []) {
         self.id = id
         self.title = title
         self.promptTemplate = promptTemplate
         self.providerID = providerID
         self.applicableTypes = applicableTypes
         self.preserveRichFormatting = preserveRichFormatting
+        self.requiredTraits = requiredTraits
+        self.forbiddenTraits = forbiddenTraits
     }
 
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        applicableTypes.contains(item.semantic) || context.contains(.plain)
+        guard applicableTypes.contains(item.semantic) || context.contains(.plain) else { return false }
+        return ActionTrait.passes(required: requiredTraits, forbidden: forbiddenTraits, in: context)
     }
 
     @MainActor
@@ -1794,14 +1801,16 @@ enum DefaultAISeed {
                 title: "AI: Draft email reply",
                 promptTemplate: "Draft a polite email reply to the message below. Keep it concise, practical, and professional. Do not invent commitments or facts. Reply with the draft only.",
                 providerID: defaultProviderSentinel,
-                applicableTypes: ["text", "richText"]
+                applicableTypes: ["text", "richText"],
+                requiredTraits: ["emailLike"]
             ),
             CustomAIDescriptor(
                 id: "ai.text.generate_email_subject",
                 title: "AI: Generate email subject",
                 promptTemplate: "Generate a concise email subject line for this message. Reply with the subject only.",
                 providerID: defaultProviderSentinel,
-                applicableTypes: ["text", "richText"]
+                applicableTypes: ["text", "richText"],
+                requiredTraits: ["emailLike"]
             ),
 
             // MARK: #A74 (0.56.0) — flagship OCR cleanup workflow
@@ -1815,7 +1824,8 @@ enum DefaultAISeed {
                 title: "AI: Clean OCR text",
                 promptTemplate: "Clean up OCR text. Fix broken line breaks, spacing, punctuation, and obvious recognition errors while preserving the original meaning. Do not add new facts. Reply with the cleaned text only.",
                 providerID: defaultProviderSentinel,
-                applicableTypes: ["text", "richText"]
+                applicableTypes: ["text", "richText"],
+                requiredTraits: ["fromOCR"]
             )
         ]
     }

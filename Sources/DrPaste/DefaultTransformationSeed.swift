@@ -86,7 +86,7 @@ enum DefaultTransformationSeed {
             descriptor(id: "builtin.text.sort_lines",     title: "Sort lines",      engine: .sortLines,    params: ["direction": "asc", "caseInsensitive": "false"], types: [.text, .markdown, .code]),
             descriptor(id: "builtin.text.unique_lines",   title: "Unique lines",    engine: .uniqueLines,  params: [:],                   types: [.text, .markdown, .code]),
             // #A74 (0.56.0) — new: join soft-wrapped lines.
-            descriptor(id: "builtin.text.remove_line_breaks", title: "Remove line breaks", engine: .removeLineBreaks, params: [:], types: [.text, .markdown, .richText]),
+            descriptor(id: "builtin.text.remove_line_breaks", title: "Remove line breaks", engine: .removeLineBreaks, params: [:], types: [.text, .markdown, .richText], requiredTraits: ["wrappedLines"]),
 
             // MARK: text — encoding
             descriptor(id: "builtin.text.base64_encode", title: "Base64 encode",   engine: .base64Encode, params: [:],                   types: [.text, .code]),
@@ -177,14 +177,19 @@ enum DefaultTransformationSeed {
                 title: "Ћ → Ć  Cyrillic translit",
                 engine: .cyrillicToLatin,
                 params: [:],
-                types: [.text]
+                types: [.text],
+                requiredTraits: ["containsCyrillic"]
             ),
             descriptor(
                 id: "builtin.text.latin_to_cyrillic",
                 title: "Ć → Ћ  Latin translit",
                 engine: .latinToCyrillic,
                 params: ["target": "russian"],
-                types: [.text]
+                types: [.text],
+                // Latin → Cyrillic only makes sense on pure-Latin text — see
+                // #A77 (locale-aware default is a separate, later refinement).
+                requiredTraits: ["containsLatin"],
+                forbiddenTraits: ["containsCyrillic"]
             ),
 
             // MARK: code — Pretty Code Local
@@ -245,7 +250,8 @@ enum DefaultTransformationSeed {
                        title: "Normalize spaces",
                        engine: .normalizeSpaces,
                        params: [:],
-                       types: [.text, .markdown, .code]),
+                       types: [.text, .markdown, .code],
+                       requiredTraits: ["messySpacing"]),
             descriptor(id: "builtin.text.collapse_blank_lines",
                        title: "Collapse blank lines",
                        engine: .collapseBlankLines,
@@ -255,12 +261,14 @@ enum DefaultTransformationSeed {
                        title: "Extract emails",
                        engine: .extractEmails,
                        params: [:],
-                       types: [.text, .markdown, .richText, .code]),
+                       types: [.text, .markdown, .richText, .code],
+                       requiredTraits: ["containsEmails"]),
             descriptor(id: "builtin.text.extract_links",
                        title: "Extract links",
                        engine: .extractLinks,
                        params: [:],
-                       types: [.text, .markdown, .richText, .code])
+                       types: [.text, .markdown, .richText, .code],
+                       requiredTraits: ["containsURLs"])
         ]
     }
 
@@ -282,14 +290,18 @@ enum DefaultTransformationSeed {
                                    title: String,
                                    engine: TransformationEngine,
                                    params: [String: String],
-                                   types: [SemanticKind]) -> CustomTransformationDescriptor {
+                                   types: [SemanticKind],
+                                   requiredTraits: [String] = [],
+                                   forbiddenTraits: [String] = []) -> CustomTransformationDescriptor {
         CustomTransformationDescriptor(
             id: id,
             title: title,
             engineID: engine.rawValue,
             parameters: params,
             applicableTypes: types.map(\.rawValue),
-            enabled: true
+            enabled: true,
+            requiredTraits: requiredTraits,
+            forbiddenTraits: forbiddenTraits
         )
     }
 }

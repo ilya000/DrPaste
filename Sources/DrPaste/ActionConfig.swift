@@ -41,6 +41,9 @@ struct CustomAIDescriptor: Codable, Identifiable, Equatable {
     /// Operation mode. Default `.text` preserves backward compatibility with
     /// pre-0.32.0 actions.json files (where this field doesn't exist).
     var kind: Kind = .text
+    // #A75 trait gating — "Show this action when…". Empty = always.
+    var requiredTraits: [String] = []
+    var forbiddenTraits: [String] = []
 
     init(id: String,
          title: String,
@@ -48,7 +51,9 @@ struct CustomAIDescriptor: Codable, Identifiable, Equatable {
          providerID: String,
          applicableTypes: [String],
          enabled: Bool = true,
-         kind: Kind = .text) {
+         kind: Kind = .text,
+         requiredTraits: [String] = [],
+         forbiddenTraits: [String] = []) {
         self.id = id
         self.title = title
         self.promptTemplate = promptTemplate
@@ -56,6 +61,8 @@ struct CustomAIDescriptor: Codable, Identifiable, Equatable {
         self.applicableTypes = applicableTypes
         self.enabled = enabled
         self.kind = kind
+        self.requiredTraits = requiredTraits
+        self.forbiddenTraits = forbiddenTraits
     }
 
     /// Custom decoder so `kind` defaults to `.text` when absent — old
@@ -70,10 +77,13 @@ struct CustomAIDescriptor: Codable, Identifiable, Equatable {
         self.applicableTypes = try c.decode([String].self, forKey: .applicableTypes)
         self.enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         self.kind = try c.decodeIfPresent(Kind.self, forKey: .kind) ?? .text
+        self.requiredTraits = try c.decodeIfPresent([String].self, forKey: .requiredTraits) ?? []
+        self.forbiddenTraits = try c.decodeIfPresent([String].self, forKey: .forbiddenTraits) ?? []
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, title, promptTemplate, providerID, applicableTypes, enabled, kind
+        case requiredTraits, forbiddenTraits
     }
 }
 

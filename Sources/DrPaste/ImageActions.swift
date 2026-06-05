@@ -249,7 +249,11 @@ struct ImageOCRAction: ClipboardAction {
         }
         switch outcome {
         case .ok(let text):
-            return .preview(makeTextItem(text, from: item))
+            // Stamp OCR provenance so "Clean OCR text" surfaces on the result
+            // (#A75 kill-feature chain).
+            var out = makeTextItem(text, from: item)
+            out.tags.append(ContextDetector.ocrProvenanceTag)
+            return .preview(out)
         case .failed(let reason):
             return .failed(original: item, reason: reason, recovery: nil)
         }

@@ -3214,8 +3214,29 @@ the world once, no compatibility layer needed.
 
 ### #A75 — Semantic traits model (contextual action visibility)
 
-**Status:** planned. Deferred — NOT part of the 0.56.0 pass. Lands as its
-own stabilized phase AFTER the #A74 ID rename is committed and stable.
+**Status:** SHIPPED (0.57.0). Built on the existing `ContentContext` /
+`ContextDetector` (already recomputed live — so #A76 "store vs recompute" is
+moot for content traits). What landed:
+- Cheap content traits: containsEmails / containsURLs / containsCyrillic /
+  containsLatin / uppercaseHeavy / messySpacing / wrappedLines (+ existing
+  email / layoutWrong). Provenance trait `fromOCR` stored on the clip's
+  `tags` and stamped by the OCR action (kill-feature chain).
+- `requiredTraits` / `forbiddenTraits` on `CustomTransformationDescriptor` and
+  `CustomAIDescriptor` (Codable-defaulted); honoured in both action paths'
+  `isApplicable`. Rule in `ActionTraits.swift` (`ActionTrait.passes`):
+  required is OR, forbidden blocks, unknown keys ignored.
+- Built-in gates: extract emails→containsEmails, extract links→containsURLs,
+  normalize spaces→messySpacing, remove line breaks→wrappedLines,
+  Cyrillic→Latin→containsCyrillic, Latin→Cyrillic→containsLatin & NOT
+  containsCyrillic; AI clean-OCR→fromOCR, draft-reply / subject→emailLike.
+- Editor: "Show this action when…" toggle block + live "would appear for this
+  sample ✓/✗" preview; hidden for image-only actions. Master Enabled/Disabled
+  unchanged; no "always" override (clear the condition to always-show).
+- One-shot migration stamps built-in gates onto an existing config.
+DEFERRED to follow-ups: AI-path email-trait richness, locale-aware
+Latin→Cyrillic default (#A77), AI auto-config (#A82).
+
+**Status (original):** planned. Deferred — NOT part of the 0.56.0 pass.
 **Touches:** `ClipboardModel` (ClipboardItem), capture pipeline (provenance
 stamping), `ClipboardAction` protocol (requiredTraits / forbiddenTraits),
 HUD action filtering, `ContextDetector`.

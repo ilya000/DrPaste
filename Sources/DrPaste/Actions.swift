@@ -237,8 +237,52 @@ final class ActionRegistry: ObservableObject {
         // (#A74 clean slate — no shipped users to migrate through the old chain).
         if seedAI(into: &copy)             { changed = true }
         if seedTransformations(into: &copy) { changed = true }
+        if applyBuiltinTraitGatesIfNeeded(into: &copy) { changed = true }
 
         if changed { config = copy }
+    }
+
+    /// #A75 — one-shot stamp of the built-in "Show this action when…"
+    /// conditions onto an existing config. `seedTransformations` / `seedAI`
+    /// are add-only, so a config that already has the built-in descriptors
+    /// (from before traits existed) would never pick up their gates. This
+    /// copies requiredTraits / forbiddenTraits from the seed onto the
+    /// matching installed descriptors, exactly once (UserDefaults-guarded) so
+    /// later user edits — including deliberately clearing a gate — are never
+    /// re-stamped.
+    private func applyBuiltinTraitGatesIfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.builtinTraitGates.v1"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+
+        var transformGates: [String: (req: [String], forb: [String])] = [:]
+        for d in DefaultTransformationSeed.defaults()
+        where !d.requiredTraits.isEmpty || !d.forbiddenTraits.isEmpty {
+            transformGates[d.id] = (d.requiredTraits, d.forbiddenTraits)
+        }
+        var aiGates: [String: (req: [String], forb: [String])] = [:]
+        for d in DefaultAISeed.defaults()
+        where !d.requiredTraits.isEmpty || !d.forbiddenTraits.isEmpty {
+            aiGates[d.id] = (d.requiredTraits, d.forbiddenTraits)
+        }
+
+        var changed = false
+        for idx in copy.customTransformations.indices {
+            if let g = transformGates[copy.customTransformations[idx].id] {
+                copy.customTransformations[idx].requiredTraits = g.req
+                copy.customTransformations[idx].forbiddenTraits = g.forb
+                changed = true
+            }
+        }
+        for idx in copy.customAI.indices {
+            if let g = aiGates[copy.customAI[idx].id] {
+                copy.customAI[idx].requiredTraits = g.req
+                copy.customAI[idx].forbiddenTraits = g.forb
+                changed = true
+            }
+        }
+
+        UserDefaults.standard.set(true, forKey: key)
+        return changed
     }
 
     /// Returns true if any AI seeds were appended or migrated.
@@ -647,7 +691,9 @@ final class ActionRegistry: ObservableObject {
                     title: desc.title,
                     promptTemplate: desc.promptTemplate,
                     providerID: resolvedProviderID,
-                    applicableTypes: kinds.isEmpty ? [.text, .richText, .markdown] : kinds
+                    applicableTypes: kinds.isEmpty ? [.text, .richText, .markdown] : kinds,
+                    requiredTraits: desc.requiredTraits,
+                    forbiddenTraits: desc.forbiddenTraits
                 )
                 actions.append(action)
             case .image:

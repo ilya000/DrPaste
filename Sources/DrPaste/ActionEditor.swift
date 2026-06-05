@@ -274,6 +274,8 @@ struct ActionEditor: View {
     @State private var title: String = ""
     @State private var hotkey: ActionHotkey? = nil
     @State private var applicableTypes: Set<SemanticKind> = []
+    @State private var requiredTraits: Set<String> = []   // #A75 "Show when…" conditions
+    @State private var forbiddenTraits: [String] = []     // preserved across edits (not user-edited yet)
 
     // Mode-specific state
     @State private var builtinID: String = ""
@@ -366,6 +368,7 @@ struct ActionEditor: View {
                         titleSection
                         hotkeySection
                         applicableTypesSection
+                        if showsTraitConditions { traitConditionsSection }
                         Divider().padding(.vertical, 2)
                         modeSpecificSection
                     }
@@ -576,6 +579,70 @@ struct ActionEditor: View {
                 }
             }
         }
+    }
+
+    /// #A75 — "Show this action when…". Each toggle is one cheap content
+    /// condition; the Enabled/Disabled master switch is separate (unchanged).
+    /// No condition selected = always shown for the applicable types. To make
+    /// a gated action always appear, the user simply unchecks its condition —
+    /// there is deliberately no "always" override that ignores conditions.
+    /// Trait conditions are text-derived, so the section is hidden for
+    /// image-only actions (image→image AI, OCR-style builtins) where they'd
+    /// never match.
+    private var showsTraitConditions: Bool {
+        if kind == .ai && aiKind == .image { return false }
+        let textKinds: Set<SemanticKind> = [.text, .richText, .url, .json, .code, .markdown, .table, .email]
+        return applicableTypes.isEmpty || !applicableTypes.isDisjoint(with: textKinds)
+    }
+
+    @ViewBuilder
+    private var traitConditionsSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Show this action when…").font(.caption).foregroundStyle(.secondary)
+            Text(requiredTraits.isEmpty
+                 ? "No condition — always shown for the types above."
+                 : "Shown only when the clipboard matches any checked condition.")
+                .font(.system(size: 11)).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            let columns = [GridItem(.adaptive(minimum: 210), spacing: 6)]
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 4) {
+                ForEach(ActionTrait.all) { trait in
+                    Toggle(isOn: Binding(
+                        get: { requiredTraits.contains(trait.key) },
+                        set: { isOn in
+                            if isOn { requiredTraits.insert(trait.key) }
+                            else { requiredTraits.remove(trait.key) }
+                        }
+                    )) {
+                        Text(trait.label).font(.system(size: 12))
+                    }
+                    .toggleStyle(.checkbox)
+                }
+            }
+            if !requiredTraits.isEmpty && !testInput.isEmpty {
+                traitPreviewLine
+            }
+        }
+    }
+
+    /// Live "would this appear for the current sample?" indicator — the
+    /// conditions are tuned against a real example, never in the abstract.
+    private var traitPreviewLine: some View {
+        let stub = ClipboardItem(
+            id: UUID(), semantic: .text, createdAt: Date(),
+            representations: [:], typesOrdered: [], previewText: testInput,
+            previewImageRel: nil, sourceBundleID: nil, sourceAppName: nil,
+            sourceWindowTitle: nil, tags: [])
+        let ctx = ContextDetector.detect(stub)
+        let passes = ActionTrait.passes(required: Array(requiredTraits), forbidden: [], in: ctx)
+        return HStack(spacing: 5) {
+            Image(systemName: passes ? "checkmark.circle.fill" : "circle.dashed")
+                .foregroundStyle(passes ? Color.green : Color.secondary)
+            Text(passes ? "Would appear for the current sample"
+                        : "Hidden for the current sample")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+        }
+        .padding(.top, 2)
     }
 
     // `isTypeApplicable` was removed when the "Applies to" grid
@@ -1604,7 +1671,9 @@ struct ActionEditor: View {
             engineID: transformationEngine.rawValue,
             parameters: transformationParams,
             applicableTypes: appliesArray,
-            enabled: true
+            enabled: true,
+            requiredTraits: requiredTraits.sorted(),
+            forbiddenTraits: forbiddenTraits
         )
         // Insert directly after the original so the clone shows up
         // as the original's right-hand neighbour in the Settings
@@ -1636,7 +1705,9 @@ struct ActionEditor: View {
             providerID: aiProviderID,
             applicableTypes: resolvedApplicableTypes,
             enabled: true,
-            kind: aiKind
+            kind: aiKind,
+            requiredTraits: requiredTraits.sorted(),
+            forbiddenTraits: forbiddenTraits
         )
         // Insert directly after the original — see duplicate-
         // Transformation comment above for rationale.
@@ -1726,6 +1797,8 @@ struct ActionEditor: View {
             title = d.title
             hotkey = registry.hotkey(for: d.id)
             applicableTypes = Set(d.applicableTypes.compactMap { SemanticKind(rawValue: $0) })
+            requiredTraits = Set(d.requiredTraits)
+            forbiddenTraits = d.forbiddenTraits
             if let engine = d.engine {
                 transformationEngine = engine
                 transformationParams = d.parameters
@@ -1735,6 +1808,8 @@ struct ActionEditor: View {
             title = d.title
             hotkey = registry.hotkey(for: d.id)
             applicableTypes = Set(d.applicableTypes.compactMap { SemanticKind(rawValue: $0) })
+            requiredTraits = Set(d.requiredTraits)
+            forbiddenTraits = d.forbiddenTraits
             aiPrompt = d.promptTemplate
             aiProviderID = d.providerID
             aiKind = d.kind     // image-mode picker honours existing descriptor
@@ -1951,7 +2026,9 @@ struct ActionEditor: View {
                 engineID: transformationEngine.rawValue,
                 parameters: transformationParams,
                 applicableTypes: appliesArray,
-                enabled: true
+                enabled: true,
+                requiredTraits: requiredTraits.sorted(),
+                forbiddenTraits: forbiddenTraits
             )
             registry.upsertCustomTransformation(descriptor)
             registry.setHotkey(hotkey, for: targetID)
@@ -1974,7 +2051,9 @@ struct ActionEditor: View {
                 providerID: aiProviderID,
                 applicableTypes: resolvedApplicableTypes,
                 enabled: true,
-                kind: aiKind
+                kind: aiKind,
+                requiredTraits: requiredTraits.sorted(),
+                forbiddenTraits: forbiddenTraits
             )
             registry.upsertCustomAI(descriptor)
             registry.setHotkey(hotkey, for: targetID)

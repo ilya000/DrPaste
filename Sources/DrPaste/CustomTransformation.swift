@@ -368,6 +368,10 @@ struct CustomTransformationDescriptor: Codable, Identifiable, Equatable {
     var parameters: [String: String]
     var applicableTypes: [String]            // SemanticKind.rawValue list
     var enabled: Bool = true
+    // #A75 trait gating — "Show this action when…". Empty = always (for the
+    // applicable types). Codable-defaulted so older configs decode cleanly.
+    var requiredTraits: [String] = []        // ActionTrait keys; OR — any present
+    var forbiddenTraits: [String] = []       // ActionTrait keys; none may be present
 
     var engine: TransformationEngine? {
         TransformationEngine(rawValue: engineID)
@@ -386,7 +390,11 @@ struct CustomTransformationAction: ClipboardAction {
     let applicableSet: Set<SemanticKind>
 
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        applicableSet.contains(item.semantic) || context.contains(.plain)
+        guard applicableSet.contains(item.semantic) || context.contains(.plain) else { return false }
+        // #A75 — honour the descriptor's "Show this action when…" conditions.
+        return ActionTrait.passes(required: descriptor.requiredTraits,
+                                  forbidden: descriptor.forbiddenTraits,
+                                  in: context)
     }
 
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {

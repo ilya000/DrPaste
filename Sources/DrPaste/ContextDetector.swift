@@ -42,12 +42,21 @@ struct ContentContext: OptionSet, Hashable {
     static let uppercaseHeavy   = ContentContext(rawValue: 1 << 19)  // mostly UPPERCASE prose
     static let messySpacing     = ContentContext(rawValue: 1 << 20)  // tabs / NBSP / 2+ spaces
     static let wrappedLines     = ContentContext(rawValue: 1 << 21)  // hard-wrapped (PDF-style) lines
+    static let fromOCR          = ContentContext(rawValue: 1 << 22)  // provenance: produced by OCR (stored tag)
 }
 
 enum ContextDetector {
 
+    /// Provenance tag stamped on clips produced by the OCR action, so a
+    /// downstream "Clean OCR text" action can surface only for OCR output
+    /// (#A75 kill-feature chain). Stored on the clip — cannot be recomputed.
+    static let ocrProvenanceTag = "fromOCR"
+
     static func detect(_ item: ClipboardItem) -> ContentContext {
         var ctx = ContentContext()
+
+        // Provenance (stored, not derived from content).
+        if item.tags.contains(ocrProvenanceTag) { ctx.insert(.fromOCR) }
 
         // Map SemanticKind to the primary flag.
         switch item.semantic {
