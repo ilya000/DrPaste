@@ -151,6 +151,45 @@ struct GeneralTab: View {
                 }
             }
 
+            // #A60 — explainer for the colored dot on the menu-bar icon
+            // and the ⌥⌘S workflow. Without this, a user who hasn't read
+            // HELP.md sees "a colored dot appeared on the icon" with no
+            // in-product context. Pairs with the dynamic tooltip on the
+            // status item itself (set in `updateStatusTooltip`).
+            Section("Append Copy") {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .top, spacing: 8) {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 8, height: 8)
+                            .padding(.top, 5)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Red dot — rich-text accumulator")
+                                .font(.system(.body, weight: .semibold))
+                            Text("Each ⌥⌘S folds the current selection (or last copy) into a running rich-text or image accumulator. ⌥⌘V pastes the merged result.")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    HStack(alignment: .top, spacing: 8) {
+                        Circle()
+                            .fill(Color.cyan)
+                            .frame(width: 8, height: 8)
+                            .padding(.top, 5)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Cyan dot — files accumulator")
+                                .font(.system(.body, weight: .semibold))
+                            Text("When the first item in the session is a file (or list of files), ⌥⌘S builds a files-only batch — perfect for sending many files to one upload target without copying their bytes.")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    Text("The session auto-closes 120 seconds after the last ⌥⌘S, or after any other ⌥⌘ command (⌥⌘V / ⌥⌘C / ⌥⌘X / region capture). Hover the menu-bar icon for a live status tooltip.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
             Section("Configuration") {
                 HStack(spacing: 10) {
                     Button("Export…") { exportConfig() }
@@ -171,6 +210,23 @@ struct GeneralTab: View {
                     Spacer()
                 }
                 Text("Factory Reset wipes all action customizations, custom AI prompts and transformations, per-action hotkeys, configured AI providers, and saved API keys, then reseeds the bundled defaults. This cannot be undone.")
+                    .font(.caption).foregroundStyle(.secondary)
+
+                // #A58 — Diagnostics snapshot. Pastes a Markdown report
+                // of runtime state to the system clipboard so the user
+                // can drop it into an email / GitHub issue without
+                // having to open Console.app. The snapshot redacts API
+                // keys to last-4 chars; full keys never travel.
+                HStack(spacing: 10) {
+                    Button {
+                        _ = Diagnostics.copyToClipboardViaDelegate()
+                        configStatus = "Copied diagnostics to clipboard."
+                    } label: {
+                        Label("Copy diagnostics", systemImage: "doc.on.clipboard")
+                    }
+                    Spacer()
+                }
+                Text("Builds a one-page report (version, runtime state, history stats, configured providers — API keys redacted) and copies it to the clipboard. Paste into a bug report so it's reproducible.")
                     .font(.caption).foregroundStyle(.secondary)
 
                 if let status = configStatus {

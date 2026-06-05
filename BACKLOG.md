@@ -4,7 +4,7 @@ Active work, structured roadmap, and a condensed changelog. Historical
 free-form notes were collapsed into this document; the long-form discussion
 that preceded each shipped item lives in git history.
 
-Current version: **0.50.0** (alpha). `AppBrand.version` is the live
+Current version: **0.53.0** (alpha). `AppBrand.version` is the live
 source of truth — bump there per release. The version string in this
 file's header and in `SKILL.md` / `README.md` / `HELP.md` is updated
 alongside. See [SKILL.md](SKILL.md) for
@@ -1891,20 +1891,14 @@ audit + ImportReport)** for the conflict-resolution policy below.
   surface as the `customTitles` merge work in #A41.
 
 **Touches:** `CustomTransformationDescriptor.swift` +
-`CustomAIDescriptor` gain a `description: String?` field;
-`ActionConfig` gains `customDescriptions: [String: OverrideEntry]`
-where `OverrideEntry = { text, baseDefaultHash, editedAt }`;
-`BuiltinActionEditor.swift` metadata dictionary stays as
-authoritative for hardcoded built-ins but exposes editable user
-override; `SettingsWindow.swift` action row becomes 2-line;
+`CustomAIDescriptor` gain `description: String?`;
+`ActionConfig` gains `customDescriptions: [String: DescriptionOverride]`
+where `DescriptionOverride = { text, baseDefaultHash, editedAt }`;
+`BuiltinActionEditor.swift` metadata dictionary remains
+authoritative bundle-only for hardcoded built-ins (no backfill into
+config); `SettingsWindow.swift` action row becomes 2-line;
 `ActionEditor.swift` gains a Description field; `BigHUD.swift`
 keeps showing title only.
-**Touches:** `CustomTransformationDescriptor.swift` + `CustomAIDescriptor`
-gain a `description: String?` field; `BuiltinActionEditor.swift`
-metadata dictionary stays as authoritative for hardcoded built-ins
-but exposes editable user override; `SettingsWindow.swift` action
-row becomes 2-line; `ActionEditor.swift` gains a Description field;
-`BigHUD.swift` keeps showing title only.
 
 **Context:** Today action data has only a `title` field. Built-in
 actions have descriptions in a side table (`BuiltinActionMetadata.
@@ -1915,17 +1909,25 @@ code blocks as untranslatable" anywhere persistable. Settings list
 rows show only the title, which leaves no scannable answer to
 "what does this disabled action actually do".
 
-**Requirements (data):**
+**Requirements (data) — single schema, do not deviate:**
 
-- Add `description: String?` to `CustomTransformationDescriptor`,
-  `CustomAIDescriptor`, and to a new lightweight `BuiltinTitleOverride`
-  field on `ActionConfig.customTitles` (or expand to `customTitles
-  + customDescriptions`).
-- Decoding default = nil; old saved configs migrate cleanly
-  (no version bump needed unless we want to backfill).
+- Add `description: String?` field directly to
+  `CustomTransformationDescriptor` and `CustomAIDescriptor`.
+  Decoding default = nil; old saved configs migrate cleanly (no
+  version bump needed unless we want to backfill).
+- Add `customDescriptions: [String: DescriptionOverride]` to
+  `ActionConfig` for built-in description overrides. **Do not**
+  expand `customTitles` into a multi-purpose map — keep titles
+  and descriptions as separate side tables so each can evolve
+  independently and Codable migrations stay narrow.
+- `DescriptionOverride = { text: String, baseDefaultHash: String,
+  editedAt: Date }` per the 0.50.0 adversarial-pass refinement —
+  hash detects bundle-default change so a stale override surfaces
+  the conflict editor.
 - Built-in actions: `ActionMetadata.description(forActionID:)` looks
   up `customDescriptions[id]` first, then falls back to
-  `BuiltinActionMetadata.descriptions[id]`.
+  `BuiltinActionMetadata.descriptions[id]` (which itself never
+  lands in config — bundle-only, per the no-backfill i18n rule).
 
 **Requirements (UI):**
 
@@ -2767,8 +2769,58 @@ provider picker, `BigHUD.swift` / `MiniHUD.swift` chrome,
 
 ### #A45 — Contract tests: registry, migrations, provider resolution, commits
 
-**Status:** planned. Next maturity step beyond pure-module tests in
-#A4. Adds *behaviour* tests that lock the product's invariants in place.
+**Status:** partial — initial pass shipped. Test suite currently
+passes 101/101.
+**Touches:** `Tests/DrPasteTests/*.swift`. Some tests can use a fake
+`AIProvider`, fake `NSPasteboard`, fake `URLSession`; others can
+run against real ActionRegistry with a temp Application Support dir.
+
+**Already shipped:**
+
+- `SeedIntegrityTests` — descriptor IDs, applicable types, no
+  duplicates.
+- `MetadataIntegrityTests` — every seeded ID has a description in
+  `BuiltinActionMetadata.descriptions` (current + legacy alias
+  coverage post-0.50.0).
+- `HotkeyPolicyTests` — reserved DrPaste chord rejection, system
+  chord rejection with feature-name hint, auto-steal flow.
+- `ProviderKindTests` — capability flags, image-edit support per
+  kind, cheapest-image-provider cost ranking.
+- `ActionConfigCodableTests` — Codable round-trip across schema
+  evolution (custom AI / transformation / hotkey arrays).
+- `UnicodeStylizerTests` — every style table round-trips ASCII
+  (#A32 regression baseline + denormalize-then-restyle).
+
+**Remaining (next maturity bump):**
+
+- `remapLegacyActionIDs` migration tests — enabledFlags /
+  customTitles / actionHotkeys / actionOrder / actionTestSamples
+  remap from legacy → current; current-wins conflict policy.
+- `runFirstLaunchSeeds` idempotence — running twice doesn't
+  duplicate descriptors; absence of legacy descriptors in
+  `customTransformations` post-seed.
+- Import/export merge tests — once #A41 lands.
+- `PasteCommitter` mode × outcome — once #A39 lands.
+- `SelectionCaptureService` typed errors — once #A40 lands.
+- Fake-stream AI cancellation tests (cancel + final-chunk race,
+  90 s watchdog).
+- `PasteboardWriter` representation-order tests (skip-missing
+  blobs, fallback to preview path).
+- `AppendAccumulator` — rich-text + image bridge, files-strict
+  rejection of non-image non-files.
+- `ScreenRegionCapture` — captured item carries source-app
+  metadata.
+- Curated-defaults icon coverage: for every ID in
+  `CuratedDefaults.enabledByDefault`, `BuiltinActionIcons.iconName`
+  ≠ `"gearshape"`.
+
+**Test-writing principle (reaffirmed from #A4):**
+
+Tests live in `Tests/DrPasteTests` and run via `swift test`. Pure
+functions (transformations, classifiers, hash helpers) get fast
+unit tests. Contract tests use a `TempDir.swift` helper to swap
+`AppStorage.dataDir` for a temporary URL per test — never touch
+the real Application Support directory.
 **Touches:** `Tests/DrPasteTests/*.swift`. Some tests can use a fake
 `AIProvider`, fake `NSPasteboard`, fake `URLSession`; others can
 run against real ActionRegistry with a temp Application Support dir.
@@ -2830,6 +2882,68 @@ and could regress reliability.
 - If proceeding: morph MiniHUD's panel into BigHUD's panel via a single
   frame animation + content cross-fade; suppress close+reopen.
 
+### #A70 — Fun / Internet Slang action group (Leetspeak, LOLspeak, UwU, Hacker Terminal, Zalgo)
+
+**Status:** planned.
+**Touches:** new local transform engines under the Transformation handler;
+CuratedDefaults action registrations + icons; two AI action definitions
+reusing the existing AI pipeline; action category grouping in the picker.
+**Context:** A meme-oriented action category. Low priority, high
+shareability — the kind of feature people screenshot. Three of the five
+transforms are fully deterministic and run with no model call (keeping the
+free-and-local-first philosophy intact); two need AI because they are style
+rewrites, not substitutions. Grouped so they read as a deliberate set, not
+scattered novelties.
+**Requirements:**
+- New action category "Fun / Internet Slang" in the action list, holding
+  the five actions below. Each transforms selected text and clipboard text.
+- Where an action is local-capable, expose an optional AI mode toggle.
+- (1) Convert to Leetspeak / 1337 — local. Substitutions
+  `a→4 e→3 i→1 o→0 s→5 t→7`; optional aggressive level adds `l→1 g→9 b→8`
+  plus a slang word map (`hacker→h4x0r`, `owned→pwned`, `elite→1337`).
+  Example: `hello hacker world → h3ll0 h4x0r w0rld`.
+- (2) Convert to LOLspeak / Cat Language — AI. Rewrite into LOLcat-style
+  English ("I can haz cheezburger?"); preserve meaning, rewrite grammar in
+  meme-cat style. Example: `Can I have a sandwich? → I can haz sandwich?`.
+- (3) Convert to UwU / OwO Speech — local, optional AI mode. Replace r/l→w,
+  soften words, optionally append faces (`UwU`, `OwO`, `nya~`).
+  Example: `really cool friend → weawwy coow fwiend UwU`.
+- (4) Convert to Hacker Terminal Slang — AI. Map intent to CLI metaphors
+  (`sudo`, `apt install`, `rm -rf`, `grep`, `cat`, `echo`, `&&`, pipes),
+  dry tech humor. Example: `I need coffee and sleep →
+  sudo apt install coffee && rm -rf sleep`.
+- (5) Corrupt as Zalgo Text — local. Add Unicode combining marks; intensity
+  levels Light / Medium / Heavy as a parameter.
+  Example: `The void looks back → T̴h̷e̶ v̸o̵i̷d̶ l̵o̸o̴k̶s̷ b̴a̷c̵k̶`.
+- Local actions (1, 3, 5) must work fully offline. AI actions (2, 4) gate on
+  AI availability and show the standard "needs AI" state when offline.
+- Output preserves emoji/whitespace and passes through unsupported chars
+  rather than mangling them.
+**Implementation notes:**
+- Leetspeak — pure table map:
+  ```swift
+  let leet: [Character: Character] = ["a":"4","e":"3","i":"1","o":"0","s":"5","t":"7"]
+  func toLeet(_ s: String, aggressive: Bool) -> String {
+      var map = leet
+      if aggressive { map["l"]="1"; map["g"]="9"; map["b"]="8" }
+      return String(s.map { map[Character($0.lowercased())] ?? $0 })
+  }
+  ```
+- UwU — regex replaces `[rl]→w` (preserve case), `n([aeiou])→ny$1`,
+  `\bhas\b→haz`; optional face injection after sentence-final punctuation.
+- Zalgo — sample N marks per char from three combining-mark sets:
+  up `U+0300…U+036F`, down `U+0316…U+0362`, mid (e.g. `U+0334…U+0338`).
+  Intensity = max marks per char: Light `[1,1,0]`, Medium `[3,3,1]`,
+  Heavy `[8,8,2]` (up, down, mid). Skip whitespace.
+  ```swift
+  let up = (0x300...0x36F).compactMap { UnicodeScalar($0).map(Character.init) }
+  func zalgo(_ s: String, up u: Int, down d: Int, mid m: Int) -> String { /* sample */ }
+  ```
+- AI actions (2, 4) are thin: a fixed system prompt + the standard provider
+  call. Suggested prompts captured in the feature draft; keep them short and
+  "output only the rewritten text".
+- Transforms should be re-run-safe (Zalgo/UwU may compound — acceptable).
+
 ---
 
 ## Changelog
@@ -2841,6 +2955,289 @@ recovered via `git log --follow BACKLOG.md` and inspected with
 `git show <commit>:BACKLOG.md`. The early revisions are bilingual and
 include verbose technical reasoning per "Правка"; this current revision is
 the curated, English-only working document.
+
+### 0.53.0 — Batch: 6 new actions + 4 HUD polish + diagnostics + cancellation hygiene
+
+A wide batch covering content-output variety, in-HUD UX polish, and a
+debugging backstop. No correctness fixes this round — the codebase is
+in a stable spot post-0.52, so the budget went to user-visible surface
+area instead.
+
+**New local actions (6):**
+
+- **#A15 CSV → Wiki / CSV → Rich table** (`CSVTableActions.swift`).
+  Two parallel actions sharing a small RFC-4180-ish parser (handles
+  quoted fields with embedded commas / newlines / `""`-escapes plus
+  CRLF/LF). Wiki action emits MediaWiki table markup as text (broad
+  paste compatibility); RTFD action builds an `NSTextTable` for
+  rendered paste into Mail / Notes / Pages / Word. Slack / Notion fall
+  back to plain text by design.
+- **#A18 Latin → Cyrillic (local)** (`CustomTransformation.swift`,
+  engine `latinToCyrillic`). Reverse transliteration with target-
+  language parameter (Russian default; Ukrainian / Bulgarian / Serbian
+  overrides). Greedy digraph match (`shch` > `sh` > `s`, etc.). Case
+  preserved per source run. The AI counterpart ships in 0.54.0.
+- **#A19 Pretty Code (local)** (engine `prettyCodeLocal`).
+  Deterministic offline reformatter — JSON via JSONSerialization
+  (.prettyPrinted + .sortedKeys), XML via XMLDocument .nodePrettyPrint,
+  HTML reflow (newline-after-tag + tag-depth indent), CSS (newline
+  after `;`, 2-space rule indent), generic whitespace cleanup
+  otherwise. Auto-detect by leading characters; sub-50 ms typical.
+  The AI counterpart for arbitrary languages ships in 0.54.0.
+- **#A70 Fun / Internet Slang trio** (engines `leetspeak`,
+  `uwuSpeak`, `zalgo`). Leetspeak: pure table map (`a→4 e→3 i→1 o→0
+  s→5 t→7`); Aggressive flag adds `l→1 g→9 b→8`. UwU: r/l → w
+  case-preserving + `n + vowel → ny + vowel`; optional `UwU / OwO /
+  nya~` injection after sentence-ending punctuation. Zalgo: combining
+  marks from `U+0300…U+036F` (up), `U+0316…U+0362` (down), `U+0334…
+  U+0338` (mid), intensity Light / Medium / Heavy. All three are
+  palette-enabled rather than curated-on — the default chip strip
+  stays serious. The two AI actions (LOLspeak, Hacker Terminal) ship
+  in 0.54.0.
+
+**HUD UX polish (4):**
+
+- **#A63 Action chip outline style** (`BigHUD.swift`). The selected
+  action chip switches from a solid accent fill to a thin accent
+  border + faint tint so it reads as a "command" rather than another
+  contained object. Clip selection in the history strip keeps the
+  solid-fill style — clips ARE objects, that style fits them.
+- **#A61 Empty-history onboarding panel** (`BigHUD.swift`). The
+  generic "History is empty" placeholder is replaced with an inline
+  explainer: clipboard icon, "Your clipboard history is empty", a
+  one-line instruction, and three keyboard chips (`⌘C` / `⌥⌘V` /
+  `esc`). Shown on first launch, after Factory Reset, and after
+  manual clears.
+- **#A69 MiniHUD explicit `.failure` state** (`MiniHUD.swift`,
+  `main.swift`). Direct-trigger action failures no longer vanish
+  silently after the `pasteFailure` chime — the MiniHUD now switches
+  to a red ✕ + action title + one-line reason and auto-dismisses
+  after 4 seconds. Optional recovery button (title + closure) for
+  cases like missing-key → "Open Settings". Same surface is used by
+  the BigHUD's `commitOutcome` failed path eventually (pair with
+  #A39's PasteCommitter work).
+- **#A60 Append Copy tooltip + Settings explanation finish**
+  (`SettingsWindow.swift`). Tooltip wiring already landed in 0.51.0;
+  this round adds a dedicated "Append Copy" section to Settings →
+  General with a labeled red / cyan dot row and a 120 s timeout
+  explainer so a user who hasn't read HELP.md can self-onboard from
+  the Settings pane.
+
+**Diagnostics + bug-prevention (2):**
+
+- **#A58 Diagnostics snapshot + Copy button** (`Diagnostics.swift`,
+  `SettingsWindow.swift`). A Markdown report of runtime state
+  (version, AX trust, HUD mode, store stats, registered action count
+  broken down by builtin / user / AI, configured providers with
+  API keys redacted to last-4, pasteboard changeCount + top types,
+  interesting UserDefaults keys). Settings → Configuration → "Copy
+  diagnostics" pastes it to the clipboard — drops cleanly into a
+  bug report.
+- **#A57 Playground test-task cancellation hygiene**
+  (`ActionEditor.swift`). The Run-test path now stores its Task
+  handle on the view model, cancels the previous run before starting
+  a new one, gates all MainActor result writes on `!Task.isCancelled`,
+  and tears the task down on `.onDisappear`. Stops the
+  "fast double-click on Run" race where the loser stomped the live
+  outcome; also stops a closed-window AI call from burning provider
+  tokens for a result that has nowhere to land.
+
+**Plumbing:**
+
+- `DefaultTransformationSeed.currentSeedVersion` bumped 6 → 7 so
+  existing installs pick up the five new descriptors on next launch
+  via the standard new-entry seed pass.
+- `BuiltinActionIcons` / `BuiltinActionEditor` descriptions /
+  `CuratedDefaults.enabledByDefault` /
+  `ActionTestSamples.sample(for:)` all updated for the five new IDs.
+- `MiniHUD.swift` gains `MiniHUDFailure` view-model + `showFailure`
+  controller method + a `failure` published state property on
+  `MiniHUDState`.
+- Auto-dismiss task on the MiniHUD failure surface (`autoDismissTask:
+  Task<Void, Never>?`) is cancelled in `hide()` and on the next
+  `show()` / `showFailure()` so a fast sequence of fires never
+  schedules overlapping dismiss timers.
+
+**Deferred to 0.54.0:**
+
+- AI counterparts to #A18 (Latin → Cyrillic AI) and #A19 (Pretty Code
+  AI).
+- AI half of #A70 (LOLspeak, Hacker Terminal).
+- #A17 Paste-as-is file icons + text sample.
+- #A22 URL preview cards (local HTML parse).
+- #A47 NSImage.lockFocus → CGContext / CIImage.
+- #A50 Central ElapsedClock.
+- #A53 Orphan blob GC.
+- #A59 release-to-paste discoverability hint (HintState schema is
+  spec'd in BACKLOG already; deferred only because the in-HUD chrome
+  is crowded post-#A61 and needs a layout pass first).
+
+### 0.52.0 — Batch: 3 new actions + correctness + AI image preflight + cleanups
+
+Pairs with 0.51.0 as a tested release pair. Adds three brand-new local
+actions (Resize Images universal, File → Image extraction, Unit
+conversion), a real-correctness fix for image transformations, an AI
+image preflight, and the post-0.50 calibration items the colleague
+flagged in his review.
+
+**New local actions (3):**
+
+- **#A14 Resize Images universal** (`ImageResizeAction.swift`).
+  Single action handles three input kinds: image clips, files clips
+  containing image files, and rich-text clips with embedded image
+  attachments. Default `maxLongSide = 1920` (parameterisable through
+  the descriptor once #A16's parameter editor lands). Never enlarges
+  — images already at or below target pass through untouched. Output
+  format preservation: PNG → PNG, JPEG → JPEG q=0.92,
+  HEIC → JPEG (HEIC encode is not universally supported via
+  NSBitmapImageRep), TIFF → PNG. Curated-on by default.
+- **#A21 File → Image extraction** (`FileToImageAction.swift`).
+  PDF page 1 rendered at 2× scale via PDFKit → PNG. HEIC / HEIF /
+  TIFF / BMP / GIF → re-encode as PNG. Single-file clips only;
+  multi-file rejected on purpose. Curated-on by default.
+- **#A20 Unit conversion** (`UnitConversion.swift`). Local action,
+  no AI. Auto-detects metric vs. imperial measurements in text and
+  inserts the converted equivalent in parentheses ("75 °F (23.9 °C)").
+  Six categories: length (m/cm/mm/km ↔ in/ft/yd/mi), weight
+  (g/kg ↔ oz/lb), temperature (°C ↔ °F — no Kelvin per user spec),
+  volume (L/mL ↔ fl oz/gal/qt/pt), speed (km/h ↔ mph), area
+  (m² ↔ ft²). Parser handles compound forms (`6 feet 7 in`,
+  `5'11"`), decimal vs. comma (`5.5` / `5,5`), and °/non-° variants.
+  Curated-on by default.
+
+**Correctness (1):**
+
+- **#A48 Image actions load original, not preview thumbnail**
+  (`ImageActions.swift`). `loadImage` priority order inverted:
+  raw `public.png` / `public.tiff` / `public.jpeg` / `public.heic`
+  representations are tried first, and `previewImageRel` (a 600 pt
+  thumbnail) becomes the last-resort fallback. Previously every
+  image transformation (OCR, Grayscale, Rotate, AI Watercolor)
+  silently degraded to thumbnail resolution when both were stored
+  — a Grayscale on a 5K screenshot output a 600 pt grayscale,
+  losing ~95% of the data. Now operates on the source bytes.
+  `loadPreviewImage(_:)` is exposed for HUD chrome / Settings list
+  use where the thumbnail is what's wanted.
+
+**AI image preflight (1):**
+
+- **#A55 AI image preflight auto-resize**
+  (`AIImageActions.swift`). The 4 MB hard cap remains as the
+  final safety net, but now the preflight first tries to downscale
+  the longer side to 2048 px and re-encode PNG. If that brings the
+  upload under 4 MB, the action proceeds (with a "resized for
+  upload" NSLog for diagnostics). If even the 2048-px version is
+  too dense (extremely rare), it still fails with a clear message.
+  Closes the dead-end where a direct-trigger AI image hotkey on a
+  large screenshot would fail with no recovery path.
+
+**Calibration items from the colleague's post-0.50 review:**
+
+- **#A45 marked partial** (was `planned`) with explicit
+  shipped-vs-remaining breakdown. Six test files already exist
+  (SeedIntegrity, MetadataIntegrity, HotkeyPolicy, ProviderKind,
+  ActionConfigCodable, UnicodeStylizer); the remaining contract
+  tests (migration / commit / capture / accumulator) are listed
+  explicitly so the next test-writing pass knows what to add.
+- **#A64 BACKLOG cleanup.** The old `BuiltinTitleOverride or
+  expand customTitles into customTitles + customDescriptions`
+  ambiguity is gone — the spec now states a single schema:
+  `description: String?` on descriptors,
+  `customDescriptions: [String: DescriptionOverride]` on
+  `ActionConfig`. Duplicate `Touches:` block removed.
+- **SKILL.md Appendix C ID rename.** `md_extract_headings` →
+  `md_headings`, `json_extract_keys` → `json_keys`. Legacy alias
+  note added so docs match production code.
+- **SKILL.md CuratedDefaults summary refreshed.** The old
+  "Unicode fancy: bold, italic, fullwidth (small selection out of
+  20+)" was a year out of date. New summary lists every style in
+  the curated set (21 entries) and explains the philosophy.
+
+### 0.51.0 — Batch: foundation + UX wins + content-hash dedup
+
+Eleven backlog items in one release. The work splits cleanly into
+three groups: shared foundation (#A43, #A49, #A51, plus toast surface
+used by two later items), user-visible UX (#A30, #A60 finish, #A65,
+#A66, #A67 finish), and correctness (#A52, #A57 partial). Each item
+is small and independently testable.
+
+**Foundation:**
+
+- **#A43 PreferenceKeys enum** (`PreferenceKeys.swift`). Every
+  UserDefaults key in the project moves to a static constant. Factory
+  Reset will iterate `PreferenceKeys.allDirectKeys` rather than a
+  hand-maintained list (next release will rewire Factory Reset to
+  consume it). New keys must be added here first — string literals
+  spread across SettingsWindow / BigHUD / WelcomeWindow are the
+  drift source.
+- **#A49 `withWatchdog(seconds:cancelling:)`** (`ConcurrencyUtil.swift`).
+  Extracts the detached watchdog pattern (#245 lesson) into a
+  reusable helper. Both BigHUD streaming and direct-trigger AI will
+  consume it as #A39's pipeline rewrite catches up; for now the
+  helper exists and is documented.
+- **#A51 AIHTTP shared session** (`AIHTTP.swift`). 20 s request
+  timeout, 60 s resource timeout, custom UA. `UsageProbe` switched
+  off `URLSession.shared`. Non-streaming AI calls will migrate in
+  follow-ups as their files get touched; AI streaming paths keep
+  their own session (different timeout profile).
+- **ToastController** (`ToastController.swift`). Non-activating
+  panel anchored near the menu-bar icon. Single-instance: a second
+  toast within auto-dismiss replaces the first. Category system so
+  the user can mute Append Copy specifically without losing
+  essential (permission-denied) toasts. Powers #A65, #A66, and
+  later #A60-style explanations.
+
+**User-visible UX:**
+
+- **#A30 HUD Pin button**. New pin icon in the BigHUD header next
+  to ✕. Click → toggle pinned state. Pinned HUD survives commit
+  (release ⌥⌘ or ⏎ pastes but doesn't close). Per-session: every
+  fresh ⌥⌘V open starts unpinned. Visual: `pin.fill` accent when
+  pinned, slightly-rotated `pin` secondary when unpinned. Tooltip
+  + accessibility label switch with state.
+- **#A65 Append Copy toasts**. ⌥⌘S now surfaces a short
+  inline message: "Append started" (first press of a session),
+  "Clip appended" / "Files appended" (subsequent), "Append ended"
+  (timeout / cancellation). Anchored near menu bar so it doesn't
+  compete with the user's current app. Settings → General will
+  surface the mute toggle (#A60 finishes the explanation row
+  separately).
+- **#A66 Region Capture confirmation toast**. After ⌥⌘+drag
+  produces a successful capture, a 1.2 s toast shows
+  "Captured WxH" with a camera-viewfinder glyph. Permission-denied
+  path will get its own toast in a follow-up (depends on AX
+  bridge changes).
+- **#A67 Cheat sheet per-action hint** (finish). Per-action chord
+  rows in the region-capture cheat sheet now read
+  `⌥⌘T  Translate to Spanish — tap run, hold preview`. Pairs with
+  the existing HotkeyRecorder footer hint added in 0.42.3. The
+  semantics are now visible in both surfaces.
+
+**Correctness:**
+
+- **#A52 Content-hash image dedup**. `ClipboardItem` gains a
+  `contentHash: String?` field (Codable, default nil for old saved
+  items). `ClipboardStore.add` auto-computes a SHA-256 of the
+  largest representation blob (or previewText for text-only items)
+  on inbound items. `sameContent` prefers hash comparison when
+  available, falling back to the previous `previewImageRel ==
+  previewImageRel` path for items without a hash. Two identical
+  screenshots now dedupe correctly.
+
+**Post-0.50.0 calibration items (from external review):**
+
+- Comment in `remapLegacyActionIDs` corrected from "0.42.5 hot-patch"
+  to "shipped in 0.50.0" (the project skipped 0.42.5; the migration
+  shipped as part of the 0.50.0 release).
+- Conflict policy in `remapLegacyActionIDs` rewritten to honestly
+  describe **current-wins-uniformly** (the previous text claimed
+  legacy-wins for user-intent fields but the code never matched
+  that claim — current always wins). Rationale added: if a current
+  key exists, the user has already interacted with the new seeded
+  action, and that intent must not be silently displaced.
+- Explicit note added that `customTransformations.id` is
+  intentionally not remapped because legacy IDs were never seeded
+  as descriptors, only as side-table keys.
 
 ### 0.50.0 — Adversarial review integration (hot-patch + 8 spec deepens)
 

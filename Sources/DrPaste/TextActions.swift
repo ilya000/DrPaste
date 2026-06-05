@@ -76,6 +76,7 @@ struct GenerateQRAction: ClipboardAction {
 
 enum TextActionsPack {
     static var all: [ClipboardAction] {
-        [GenerateQRAction()]
+        [GenerateQRAction(),
+         UnitConversionAction()]   // #A20 metric ↔ imperial
     }
 }

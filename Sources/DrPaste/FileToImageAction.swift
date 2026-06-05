@@ -1,0 +1,134 @@
+//
+//  FileToImageAction.swift
+//  DrPaste
+//
+//  Copyright © 2026 iLya Os.
+//  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
+//  See LICENSE for terms.
+//
+//  Extract an image from a single-file `.files` clip (#A21).
+//
+//  Scope (intentionally narrow per user spec):
+//
+//    • PDF                → render page 1 at 2× scale as PNG
+//    • HEIC / HEIF        → re-encode bytes as PNG
+//    • TIFF / BMP / GIF   → re-encode bytes as PNG
+//
+//  Multi-page PDFs only emit page 1. Multi-file clips are
+//  intentionally rejected — the user spec asked for "first page
+//  / simple cases only". Video / archive / unknown formats are
+//  inapplicable (action chip disabled).
+//
+
+import Foundation
+import AppKit
+import PDFKit
+
+struct FileToImageAction: ClipboardAction {
+    let id = "builtin.file_to_image"
+    let title = "Extract image"
+    let isLocal = true
+
+    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
+        guard item.semantic == .files else { return false }
+        let paths = filesList(item)
+        guard paths.count == 1 else { return false }
+        let lower = paths[0].lowercased()
+        return supportedExtensions.contains { lower.hasSuffix("." + $0) }
+    }
+
+    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
+        let paths = filesList(item)
+        guard let path = paths.first else {
+            return .failed(original: item,
+                           reason: "Extract image: empty files list.",
+                           recovery: nil)
+        }
+        let lower = path.lowercased()
+        let result: (Data?, String?) = await runOffMain {
+            let url = URL(fileURLWithPath: path)
+            if lower.hasSuffix(".pdf") {
+                return self.extractPDFFirstPage(url)
+            } else {
+                return self.reencodeAsPNG(url)
+            }
+        }
+        guard let data = result.0, let fmt = result.1 else {
+            return .failed(original: item,
+                           reason: "Extract image: couldn't read \(URL(fileURLWithPath: path).lastPathComponent).",
+                           recovery: nil)
+        }
+        return .preview(makeImageItem(data: data, format: fmt, from: item))
+    }
+
+    // MARK: PDF first page
+
+    private func extractPDFFirstPage(_ url: URL) -> (Data?, String?) {
+        guard let doc = PDFDocument(url: url) else { return (nil, nil) }
+        guard let page = doc.page(at: 0) else { return (nil, nil) }
+        let bounds = page.bounds(for: .mediaBox)
+        // 2× scale = high-DPI render. Good balance between size and quality
+        // for typical PDFs (US Letter / A4 → ~1700×2200 px).
+        let scale: CGFloat = 2
+        let pixelSize = NSSize(width: bounds.width * scale, height: bounds.height * scale)
+        let image = NSImage(size: pixelSize)
+        image.lockFocus()
+        if let ctx = NSGraphicsContext.current?.cgContext {
+            ctx.saveGState()
+            ctx.scaleBy(x: scale, y: scale)
+            page.draw(with: .mediaBox, to: ctx)
+            ctx.restoreGState()
+        }
+        image.unlockFocus()
+        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return (nil, nil)
+        }
+        let rep = NSBitmapImageRep(cgImage: cg)
+        guard let data = rep.representation(using: .png, properties: [:]) else { return (nil, nil) }
+        return (data, "PNG")
+    }
+
+    // MARK: re-encode HEIC / TIFF / BMP / GIF as PNG
+
+    private func reencodeAsPNG(_ url: URL) -> (Data?, String?) {
+        guard let image = NSImage(contentsOf: url) else { return (nil, nil) }
+        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return (nil, nil)
+        }
+        let rep = NSBitmapImageRep(cgImage: cg)
+        guard let data = rep.representation(using: .png, properties: [:]) else { return (nil, nil) }
+        return (data, "PNG")
+    }
+
+    // MARK: writing
+
+    private func makeImageItem(data: Data, format: String, from item: ClipboardItem) -> ClipboardItem {
+        // id / createdAt are `let` — preview-transformation reuses
+        // the source clip's identity (matches saveImage / makeTextItem).
+        var copy = item
+        copy.semantic = .image
+        let blobName = "extract-\(UUID().uuidString.prefix(8)).png"
+        let url = AppStorage.blobsDir.appendingPathComponent(blobName)
+        try? data.write(to: url)
+        copy.representations = ["public.png": blobName]
+        copy.typesOrdered = ["public.png"]
+        copy.imageFormat = format
+        copy.originalImageFileSize = data.count
+        return copy
+    }
+
+    private func filesList(_ item: ClipboardItem) -> [String] {
+        guard let s = item.previewText else { return [] }
+        return s.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    private let supportedExtensions: Set<String> = [
+        "pdf",
+        "heic", "heif",
+        "tiff", "tif",
+        "bmp",
+        "gif"
+    ]
+}

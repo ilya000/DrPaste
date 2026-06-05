@@ -9,7 +9,7 @@ Native macOS clipboard utility built around press-and-hold UX. Goal is not "yet 
 
 Original working name: **ClipMacPoC**. Final product name: **DrPaste** (chosen 25 May 2026). The "Dr" semantic is **PhD / scholar / educated**, not medical. The icon reflects this: clipboard + mortarboard cap, not a medical cross.
 
-Current version: **0.50.0** (alpha, unsigned SwiftPM build).
+Current version: **0.53.0** (alpha, unsigned SwiftPM build).
 
 ## Project location
 
@@ -536,6 +536,14 @@ The active backlog lives in `BACKLOG.md`. Highlights of **planned** work
   pill for image-AI direct hotkeys, PasteboardWriter declares only
   readable types (skip missing-blob silent corruption). 13 deferred
   recommendations queued as #A46–#A58.
+- **0.51.0** — batch: foundation (PreferenceKeys enum,
+  `withWatchdog` helper, AIHTTP session with explicit timeouts,
+  ToastController), user-visible UX (BigHUD Pin button, Append Copy
+  toasts, Region Capture "Captured WxH" toast, cheat-sheet per-action
+  "tap run, hold preview" suffix), correctness (ClipboardItem
+  `contentHash` SHA-256 + hash-based sameContent dedup). Plus
+  post-0.50 calibration items: comment fixes in `remapLegacyActionIDs`
+  (version + honest conflict policy).
 - **0.50.0** — adversarial review integration: `remapLegacyActionIDs`
   hot-patch (existing users with hotkeys / titles on
   `_extract_*` IDs would have seen orphaned state after the 0.42.4
@@ -757,15 +765,25 @@ Lives in `CuratedDefaults.enabledByDefault`. Currently:
 
 - Text: paste_as_text, layout_repair, uppercase, lowercase, trim,
   word_count, sort_lines.
-- Markdown: md_to_plain, md_to_rich (added 0.42.0), md_extract_headings.
+- Markdown: md_to_plain, md_to_rich (added 0.42.0), md_headings
+  (renamed from md_extract_headings in 0.50.0 — legacy alias kept
+  in metadata/icons until #299 retires them).
 - Code: code_wrap, tabs_to_spaces.
 - URL: url_strip_tracking, url_just_domain, url_md_link.
-- JSON: json_pretty, json_minify, json_extract_keys.
+- JSON: json_pretty, json_minify, json_keys (renamed from
+  json_extract_keys in 0.50.0; legacy alias kept).
 - Image: ocr, decode_qr, strip_metadata, resize_1920, grayscale, rotate,
   rotate_left, ascii_art.
 - Files: paths, names, md_links, reveal.
 - Tables: to_json, to_md.
-- Unicode fancy: bold, italic, fullwidth (small selection out of 20+).
+- Unicode fancy: the **full curated set** is bold, italic,
+  bold_italic, script, bold_script, fraktur, bold_fraktur,
+  double_struck, sans, sans_bold, sans_italic, sans_bold_italic,
+  monospace, fullwidth, small_caps, circled, filled_circled,
+  squared, filled_squared, upside_down, plain, and font_markdown
+  (added 0.42.0). All seeded by default — the user can disable
+  individual styles via Settings, the curated philosophy is
+  "every Unicode pseudo-font is one toggle away".
 - Cyrillic transliteration.
 - AI text (via CustomAIDescriptor.enabled = true): Translate, Fix
   grammar, Polish, Summarize, Explain.

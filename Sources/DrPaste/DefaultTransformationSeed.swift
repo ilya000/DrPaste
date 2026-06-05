@@ -42,7 +42,13 @@ enum DefaultTransformationSeed {
     ///     parses **bold** / *italic* / `code` / ~~strike~~ and applies
     ///     pseudo-fonts span-by-span. Seeded via the normal new-entry
     ///     path in `seedTransformations`; no extra migration required.
-    static let currentSeedVersion: Int = 6
+    /// 7 — added 0.53.0 batch: Latin → Cyrillic (target-language reverse
+    ///     transliteration, mirrors Cyrillic → Latin), Pretty Code Local
+    ///     (deterministic JSON/XML/HTML/CSS/generic), and three Fun /
+    ///     Internet Slang entries (Leetspeak, UwU, Zalgo). Seeded via the
+    ///     normal new-entry path in `seedTransformations`; no migration
+    ///     required.
+    static let currentSeedVersion: Int = 7
 
     /// All bundled transformations. IDs match the legacy hardcoded action IDs
     /// so existing user customizations carry over without remapping.
@@ -152,6 +158,54 @@ enum DefaultTransformationSeed {
                 title: "К → K  Cyrillic transliteration",
                 engine: .cyrillicToLatin,
                 params: [:],
+                types: [.text]
+            ),
+
+            // Latin → Cyrillic (#A18). Reverse transliteration with target
+            // language parameter. Russian default; the editor lets users
+            // pick Ukrainian / Bulgarian / Serbian variants.
+            descriptor(
+                id: "builtin.latin_to_cyrillic",
+                title: "K → К  Latin → Cyrillic",
+                engine: .latinToCyrillic,
+                params: ["target": "russian"],
+                types: [.text]
+            ),
+
+            // Pretty Code Local (#A19). Auto-detects JSON / XML / HTML /
+            // CSS by leading chars, falls back to generic whitespace
+            // normalization. Offline, sub-50 ms. The AI counterpart
+            // ("Pretty Code: AI") ships separately in 0.54.0.
+            descriptor(
+                id: "builtin.pretty_code_local",
+                title: "Pretty Code (local)",
+                engine: .prettyCodeLocal,
+                params: [:],
+                types: [.code, .json, .text]
+            ),
+
+            // Fun / Internet Slang group (#A70). Three local deterministic
+            // novelties. The two AI counterparts (LOLspeak, Hacker
+            // Terminal) ship in 0.54.0 with the rest of the AI pairs.
+            descriptor(
+                id: "builtin.leetspeak",
+                title: "Leetspeak / 1337",
+                engine: .leetspeak,
+                params: ["aggressive": "false"],
+                types: [.text, .code]
+            ),
+            descriptor(
+                id: "builtin.uwu_speak",
+                title: "UwU speech",
+                engine: .uwuSpeak,
+                params: ["faces": "true"],
+                types: [.text, .markdown]
+            ),
+            descriptor(
+                id: "builtin.zalgo",
+                title: "Zalgo corruption",
+                engine: .zalgo,
+                params: ["intensity": "medium"],
                 types: [.text]
             )
         ]

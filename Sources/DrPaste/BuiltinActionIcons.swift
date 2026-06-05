@@ -32,6 +32,18 @@ enum BuiltinActionIcons {
         case "builtin.rich_to_wiki":         return "book.closed"
         case "builtin.rich_to_unicode_style": return "character.cursor.ibeam"
         case "builtin.cyrillic_translit":    return "character.book.closed"
+        case "builtin.image_resize_universal":  return "arrow.up.left.and.arrow.down.right"
+        case "builtin.file_to_image":           return "doc.text.image"
+        case "builtin.unit_conversion":         return "arrow.left.arrow.right"
+        // 0.53.0 batch — #A15 CSV tables, #A18 reverse translit,
+        // #A19 Pretty Code Local, #A70 Fun / Internet Slang.
+        case "builtin.csv_to_wiki_table":       return "tablecells.badge.ellipsis"
+        case "builtin.csv_to_rtfd_table":       return "tablecells"
+        case "builtin.latin_to_cyrillic":       return "character.book.closed.fill"
+        case "builtin.pretty_code_local":       return "curlybraces.square"
+        case "builtin.leetspeak":               return "number.square"
+        case "builtin.uwu_speak":               return "face.smiling"
+        case "builtin.zalgo":                   return "tornado"
         case "builtin.json_pretty":          return "curlybraces"
         case "builtin.json_minify":          return "curlybraces.square"
         // Current seed ID is `builtin.json_keys`; legacy alias kept below.

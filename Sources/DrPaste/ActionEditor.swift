@@ -317,6 +317,13 @@ struct ActionEditor: View {
     /// 10 Hz timer that ticks `testElapsed` while an AI test is running,
     /// same chrome as BigHUD's `aiTickTimer`. Invalidated on completion.
     @State private var testTickTimer: Timer?
+    /// #A57 — handle for the in-flight playground test task. Stored so
+    /// `runTest()` can cancel an earlier run before starting the next
+    /// one (otherwise a fast double-click on Run leaves the prior
+    /// `.apply(...)` racing with the second one and the loser stomps
+    /// the live testOutcome), and so `.onDisappear` / action-switch can
+    /// tear it down without leaking a streaming AI call. Idle when nil.
+    @State private var testTask: Task<Void, Never>? = nil
 
     // Misc
     @State private var conflictMessage: String? = nil
@@ -386,6 +393,15 @@ struct ActionEditor: View {
             idealHeight: 720
         )
         .onAppear { loadInitialState() }
+        // #A57 — cancel the in-flight playground task when the editor
+        // window closes. Without this the AI call keeps streaming
+        // tokens into a now-stale view, burning provider tokens for a
+        // result that has nowhere to land.
+        .onDisappear {
+            testTask?.cancel()
+            testTask = nil
+            stopTestTickTimer()
+        }
     }
 
     // MARK: - Header
@@ -1930,6 +1946,14 @@ struct ActionEditor: View {
     }
 
     private func runTest() {
+        // #A57 — cancel the previous test task before starting a new
+        // one. Without this a fast double-click on Run leaves two
+        // races running at once and whichever finishes second stomps
+        // the live testOutcome with potentially-stale data. For AI
+        // calls it also burns tokens on a result that's about to be
+        // thrown away.
+        testTask?.cancel()
+        testTask = nil
         testRunning = true
         testOutcome = nil
         testInflight = nil
@@ -2007,11 +2031,13 @@ struct ActionEditor: View {
                 testRunning = false
                 return
             }
-            Task {
+            testTask = Task {
                 let outcome = await action.apply(item: inputItem, context: ctx)
                 await MainActor.run {
+                    guard !Task.isCancelled else { return }   // #A57
                     testOutcome = outcome
                     testRunning = false
+                    testTask = nil
                 }
             }
         case .transformation:
@@ -2055,13 +2081,15 @@ struct ActionEditor: View {
                     promptTemplate: aiPrompt,
                     providerID: resolvedProviderID
                 )
-                Task {
+                testTask = Task {
                     let outcome = await action.apply(item: inputItem, context: ctx)
                     await MainActor.run {
+                        guard !Task.isCancelled else { return }   // #A57
                         testOutcome = outcome
                         testRunning = false
                         stopTestTickTimer()
                         testInflight = nil
+                        testTask = nil
                     }
                 }
             } else if isTextToImageAI {
@@ -2071,13 +2099,15 @@ struct ActionEditor: View {
                     promptTemplate: aiPrompt,
                     providerID: resolvedProviderID
                 )
-                Task {
+                testTask = Task {
                     let outcome = await action.apply(item: inputItem, context: ctx)
                     await MainActor.run {
+                        guard !Task.isCancelled else { return }   // #A57
                         testOutcome = outcome
                         testRunning = false
                         stopTestTickTimer()
                         testInflight = nil
+                        testTask = nil
                     }
                 }
             } else {
@@ -2088,13 +2118,15 @@ struct ActionEditor: View {
                     providerID: aiProviderID,
                     applicableTypes: applicableTypes.isEmpty ? [.text] : applicableTypes
                 )
-                Task {
+                testTask = Task {
                     let outcome = await action.apply(item: inputItem, context: ctx)
                     await MainActor.run {
+                        guard !Task.isCancelled else { return }   // #A57
                         testOutcome = outcome
                         testRunning = false
                         stopTestTickTimer()
                         testInflight = nil
+                        testTask = nil
                     }
                 }
             }

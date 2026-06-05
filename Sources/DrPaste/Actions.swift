@@ -233,7 +233,7 @@ final class ActionRegistry: ObservableObject {
     /// every other seed step so the rest of `runFirstLaunchSeeds`
     /// operates on already-migrated keys.
     ///
-    /// Why this exists (0.42.5 hot-patch, surfaced by an adversarial
+    /// Why this exists (shipped in 0.50.0, surfaced by an adversarial
     /// review pass): in 0.42.4 the seed switched to the current names
     /// (`builtin.json_keys`, `builtin.md_headings`, `builtin.md_links`)
     /// and `CuratedDefaults` followed. Legacy IDs (`builtin.json_extract_keys`,
@@ -247,14 +247,23 @@ final class ActionRegistry: ObservableObject {
     /// it disappeared.
     ///
     /// The migration scans every per-id collection in `ActionConfig`
-    /// and re-keys legacy → current. If both keys exist (e.g. user had
-    /// hotkey on legacy AND the new seed somehow already landed before
-    /// this migration ran), legacy wins for fields that carry user
-    /// intent (customTitles, actionHotkeys, testSamples) and the new
-    /// is dropped — the user's customisation is the canonical truth.
-    /// For `enabledFlags`, current wins over legacy because the user
-    /// might have intentionally disabled the new default after seeing
-    /// it.
+    /// and re-keys legacy → current. **Conflict policy:** if both
+    /// keys exist (e.g. the new seed somehow landed before this
+    /// migration ran on a partial-migration install), **current
+    /// wins** uniformly across every field. The legacy entry is
+    /// removed without overwriting the existing current value. This
+    /// is the safer rule: if the user has already interacted with
+    /// the new seeded action (set a title, bound a hotkey,
+    /// disabled it), that intent post-dates whatever was attached
+    /// to the legacy ID and must not be silently displaced.
+    ///
+    /// Custom descriptors (`customTransformations.id`) are
+    /// intentionally NOT remapped here because the legacy IDs
+    /// (`json_extract_keys` / `md_extract_*`) were never seeded as
+    /// descriptors prior to current-ID migration — they only
+    /// existed as side-table keys (enabledFlags / customTitles /
+    /// etc.). A historical pass that seeded descriptors under
+    /// legacy IDs would need a separate migration step here.
     private func remapLegacyActionIDs(into copy: inout ActionConfig) -> Bool {
         // Source of truth for legacy → current mapping. Keep this map
         // append-only: future renames should add a new pair, never

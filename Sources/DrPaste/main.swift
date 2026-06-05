@@ -156,6 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         registry.register(MarkdownActionsPack.all)
         registry.register(CodeActionsPack.all)
         registry.register(TableActionsPack.all)
+        registry.register(CSVTableActionsPack.all)   // #A15
         registry.register(RichTextActionsPack.all)
         registry.register(FileActionsPack.all(store: store))
         registry.register(ImageActionsPack.all)
@@ -1048,6 +1049,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             case .failed(_, let reason, _):
                 SoundFeedback.play(.pasteFailure)
                 NSLog("DrPaste hotkey action failed: \(reason)")
+                // #A69 — replace the silent disappear with an explicit
+                // failure surface so the user sees the reason instead of
+                // having to re-run the action through BigHUD just to read
+                // it. Auto-dismisses after 4 s (MiniHUDController handles
+                // the timer), or sooner via the X button. Action title +
+                // reason gives "what failed and why" in two lines.
+                MiniHUDController.shared.showFailure(
+                    label: action.title,
+                    reason: reason
+                )
             }
         }
     }
@@ -1493,6 +1504,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                                                      width: pxW,
                                                      height: pxH,
                                                      sourceApp: sourceApp) {
+                // Confirmation toast (#A66) — explicit dimensions so the
+                // user knows the capture went through. Anchored near
+                // the menu bar so it doesn't compete with the freshly-
+                // opening BigHUD.
+                ToastController.shared.show(
+                    message: "Captured \(pxW)×\(pxH)",
+                    systemImage: "camera.viewfinder",
+                    duration: 1.2,
+                    category: .essential
+                )
                 self.openBigHUDFocusedOnCapturedImage(item: item, sourceApp: sourceApp)
             }
         }
@@ -1705,6 +1726,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     /// existing accumulator.
     @MainActor
     private func armAppendSessionIndicator(filesMode: Bool) {
+        // Per-session toast feedback (#A65). On the FIRST ⌥⌘S of a
+        // fresh session (no active dot yet) show "Append started";
+        // on subsequent presses within the same session show
+        // "Appended (N clips)" where N = current accumulator size.
+        // Suppressed when the user has disabled append toasts via
+        // Settings (`PreferenceKeys.appendToastsEnabled`).
+        let wasActive = sessionDotView?.isHidden == false
         ensureSessionDotView()
         let color: NSColor = filesMode ? .systemCyan : .systemRed
         sessionDotView?.layer?.backgroundColor = color.cgColor
@@ -1715,6 +1743,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                                                   repeats: false) { [weak self] _ in
             Task { @MainActor in self?.disarmAppendSessionIndicator() }
         }
+        // Toast after the dot is armed so the message reflects the
+        // new state, not the prior one.
+        if !wasActive {
+            ToastController.shared.show(
+                message: filesMode ? "Append started — files" : "Append started",
+                systemImage: filesMode ? "doc.on.doc" : "rectangle.stack.badge.plus",
+                category: .appendCopy
+            )
+        } else {
+            ToastController.shared.show(
+                message: filesMode ? "Files appended" : "Clip appended",
+                systemImage: filesMode ? "doc.on.doc.fill" : "rectangle.stack.fill.badge.plus",
+                category: .appendCopy
+            )
+        }
     }
 
     /// Hide the dot and cancel the auto-hide timer. Called when
@@ -1722,15 +1765,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     /// DrPaste hotkey, or implicitly via timeout.
     @MainActor
     private func disarmAppendSessionIndicator() {
+        let wasActive = sessionDotView?.isHidden == false
         appendSessionTimer?.invalidate()
         appendSessionTimer = nil
         sessionDotView?.isHidden = true
         updateStatusTooltip(appendActive: false, filesTrack: false)
+        // Surface "session ended" only if a session was actually
+        // active — the disarm path also runs during construction.
+        if wasActive {
+            ToastController.shared.show(
+                message: "Append ended",
+                systemImage: "checkmark.circle",
+                category: .appendCopy
+            )
+        }
     }
 
     // MARK: HUD lifecycle
 
     private func openHUD() {
+        // Per-session pin reset (#A30): every fresh HUD open starts
+        // unpinned. The user opts into multi-commit mode by clicking
+        // the pin icon after opening, not as a persistent preference.
+        bigHUDState.isPinned = false
         // De-overlap any prior direct-trigger MiniHUD before we put the
         // BigHUD up. The action behind that MiniHUD might still be
         // running an AI stream; cancel it so its eventual paste doesn't
@@ -1808,8 +1865,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         }
 
         let outcome = bigHUDState.outcome
-        savedFrontmostApp = nil
-        closeBigHUD()
+        // Pin behaviour (#A30): if the user pinned the HUD, treat
+        // this commit as paste-and-keep so the HUD stays open for
+        // subsequent commits. savedFrontmostApp is preserved so the
+        // next commit targets the same app.
+        let pinned = bigHUDState.isPinned
+        if !pinned {
+            savedFrontmostApp = nil
+            closeBigHUD()
+        }
 
         guard let outcome = outcome else { return }
         commitOutcome(outcome, savedApp: savedApp)

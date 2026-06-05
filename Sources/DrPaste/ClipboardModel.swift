@@ -134,6 +134,21 @@ struct ClipboardItem: Identifiable, Codable, Equatable {
 
     var tags: [String]
 
+    /// SHA-256 hex of the largest pasteboard representation (for
+    /// image / files items) or the previewText UTF-8 bytes (for
+    /// text / rich-text items). Optional Codable field — nil for
+    /// items written by versions before 0.50.0; lazy-computed on
+    /// first comparison in `ClipboardStore.sameContent` and
+    /// backfilled into the store.
+    ///
+    /// Why: until 0.50.0 image dedup compared `previewImageRel`,
+    /// which is a UUID generated per write. Two screenshots of
+    /// the same window taken seconds apart would land as separate
+    /// history rows even though their bytes are identical. Hash
+    /// based dedup catches the case. Same logic dedups large
+    /// text copies (5MB Markdown paste twice).
+    var contentHash: String? = nil
+
     /// Convenience plain-text getter kept for backward compatibility with older actions.
     var text: String? {
         get { previewText }
@@ -195,8 +210,18 @@ final class ClipboardStore: ObservableObject {
         // (apps that advertise types on focus change but never
         // write bytes, accidental ⌘C on a blank selection, etc.).
         if item.isEffectivelyEmpty { return }
-        if let last = items.first, sameContent(last, item) { return }
-        items.insert(item, at: 0)
+        // Auto-compute contentHash on inbound items so the next
+        // sameContent comparison can use it (#A52). Old items
+        // already in history may carry nil contentHash; the
+        // sameContent path falls back to the previous comparison
+        // logic in that case.
+        var withHash = item
+        if withHash.contentHash == nil {
+            withHash.contentHash = ClipboardItem.computeContentHash(for: withHash,
+                                                                    blobsDir: blobsDir)
+        }
+        if let last = items.first, sameContent(last, withHash) { return }
+        items.insert(withHash, at: 0)
         trim()
         save()
     }
@@ -365,6 +390,19 @@ final class ClipboardStore: ObservableObject {
 
     private func sameContent(_ a: ClipboardItem, _ b: ClipboardItem) -> Bool {
         guard a.semantic == b.semantic else { return false }
+        // Prefer hash-based comparison when both items carry a
+        // `contentHash`. This catches "two copies of the same image
+        // bytes that were written under different blob filenames"
+        // (#A52, shipped 0.50.0). The previous comparison fell
+        // through to `previewImageRel == previewImageRel`, which is
+        // a UUID per write — so identical screenshots taken
+        // seconds apart never deduped. Hash-match is authoritative
+        // when present; only fall back to previous-version
+        // representation matching when contentHash is missing
+        // (saved items written before 0.50.0 may not have the field).
+        if let ha = a.contentHash, let hb = b.contentHash, !ha.isEmpty, !hb.isEmpty {
+            return ha == hb
+        }
         switch a.semantic {
         case .image:
             return a.previewImageRel == b.previewImageRel
@@ -373,6 +411,50 @@ final class ClipboardStore: ObservableObject {
         default:
             return a.previewText == b.previewText
         }
+    }
+}
+
+// MARK: - Content hashing (Backlog #A52)
+
+import CryptoKit
+
+extension ClipboardItem {
+    /// Computes (if missing) and returns the SHA-256 hash of the
+    /// largest representation blob (for image / files items) or the
+    /// previewText UTF-8 bytes (for text-like items). Idempotent;
+    /// callers can invoke during snapshot creation, and store
+    /// rehydration paths can backfill.
+    ///
+    /// Synchronous file read — call from background queue when
+    /// item carries large representations (Excel TSV + HTML + RTF
+    /// across multiple blobs).
+    static func computeContentHash(for item: ClipboardItem,
+                                   blobsDir: URL) -> String? {
+        // Pick the largest representation blob; for text-only
+        // items the previewText is the canonical content.
+        if !item.representations.isEmpty {
+            var largest: (rel: String, size: Int)? = nil
+            for (_, rel) in item.representations {
+                let url = blobsDir.appendingPathComponent(rel)
+                if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+                   let size = attrs[.size] as? Int {
+                    if size > (largest?.size ?? 0) {
+                        largest = (rel: rel, size: size)
+                    }
+                }
+            }
+            if let l = largest,
+               let data = try? Data(contentsOf: blobsDir.appendingPathComponent(l.rel)) {
+                let digest = SHA256.hash(data: data)
+                return digest.map { String(format: "%02x", $0) }.joined()
+            }
+        }
+        if let text = item.previewText, !text.isEmpty {
+            let data = Data(text.utf8)
+            let digest = SHA256.hash(data: data)
+            return digest.map { String(format: "%02x", $0) }.joined()
+        }
+        return nil
     }
 }
 

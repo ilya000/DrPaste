@@ -131,6 +131,28 @@ enum ActionTestSamples {
         case "builtin.md_to_rich":
             return "A line with **bold**, *italic*, and `inline code`.\n\nFollowed by a [linked phrase](https://example.com)."
 
+        case "builtin.unit_conversion":
+            return "It's 75°F outside, the road sign said 5 miles to the exit, and I weigh 180 lb. My height is 6 feet 2 inches and the bottle holds 16 fl oz."
+
+        // 0.53.0 batch — #A15 / #A18 / #A19 / #A70
+        case "builtin.csv_to_wiki_table", "builtin.csv_to_rtfd_table":
+            return "Name,Role,City\n\"Anna Smith\",Engineer,Lisbon\n\"Bob Tan, Jr.\",Designer,Singapore\nCarla,Manager,\"São Paulo\""
+
+        case "builtin.latin_to_cyrillic":
+            return "Privet, Ilya! Skol'ko sejchas vremeni? Kak dela?"
+
+        case "builtin.pretty_code_local":
+            return "{\"name\":\"DrPaste\",\"version\":\"0.53.0\",\"features\":[\"clipboard\",\"transforms\",\"actions\"],\"settings\":{\"theme\":\"auto\",\"appearance\":{\"opacity\":0.95}}}"
+
+        case "builtin.leetspeak":
+            return "Hello hacker world, this is some elite leet text!"
+
+        case "builtin.uwu_speak":
+            return "Really cool friend! How are you today? Look at the lovely flowers."
+
+        case "builtin.zalgo":
+            return "The void looks back into you"
+
         case "builtin.md_headings", "builtin.md_extract_headings":
             return "# Introduction\n\nSome intro text.\n\n## Background\n\nMore text.\n\n## Goals\n\n### Short-term\n\nDetail.\n\n## Conclusion"
 

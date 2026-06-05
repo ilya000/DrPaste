@@ -242,7 +242,7 @@ struct RegionCaptureCheatSheetView: View {
                     cheatRow(combo: "⌥⌘ + <letter>", title: "your custom actions appear here", muted: true)
                 } else {
                     ForEach(Array(userHotkeys.prefix(5))) { hk in
-                        cheatRow(combo: "⌥⌘\(hk.letter)", title: hk.title)
+                        cheatRow(combo: "⌥⌘\(hk.letter)", title: "\(hk.title) — tap run, hold preview")
                     }
                     if userHotkeys.count > 5 {
                         cheatRow(combo: "", title: "+ \(userHotkeys.count - 5) more in Settings", muted: true)

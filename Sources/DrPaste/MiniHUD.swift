@@ -39,6 +39,27 @@ final class MiniHUDState: ObservableObject {
     /// hide() and the user can't tell whether 5 s in is "still
     /// waiting" or "almost there".
     @Published var completed: Bool = false
+    /// #A69 — non-nil while showing the explicit failure surface.
+    /// Replaces the spinner + provider line with a red ✕ icon, a
+    /// one-line reason, and an optional recovery action button.
+    /// Auto-dismissed by `MiniHUDController.showFailure` after 4 s
+    /// (longer than the success "Done" pill so the reason is
+    /// actually readable), or by the X button.
+    @Published var failure: MiniHUDFailure? = nil
+}
+
+/// View-model for the MiniHUD failure state. Keeps reason text + a
+/// single optional recovery affordance (title + closure) so the view
+/// doesn't need to know about specific failure kinds.
+struct MiniHUDFailure {
+    /// Short reason ("Network error", "Image too large", etc.).
+    /// Two-line wrap at most — keeps the panel from growing.
+    let reason: String
+    /// Optional recovery affordance — e.g. "Open Settings" for a
+    /// missing key, "Open Welcome" for an AX-permissions issue.
+    /// nil hides the button row.
+    let recoveryTitle: String?
+    let recoveryAction: (() -> Void)?
 }
 
 @MainActor
@@ -124,9 +145,62 @@ final class MiniHUDController {
         stopTick()
         state.inflight = nil
         state.completed = false
+        state.failure = nil           // #A69 — clear failure on hide
         onCancelHandler = nil
+        autoDismissTask?.cancel()
+        autoDismissTask = nil
         panel?.orderOut(nil)
     }
+
+    /// #A69 — Show MiniHUD in the explicit failure state. Replaces
+    /// whatever was on screen with a red ✕ + reason + optional
+    /// recovery button. Auto-dismissed after 4 s (long enough to
+    /// read a two-line reason) unless the user clicks the X or
+    /// the recovery button first.
+    ///
+    /// Used by `actionHotkeyDidFire` failure path so direct-trigger
+    /// AI / image action failures no longer disappear silently after
+    /// the failure sound — the user sees *what* went wrong without
+    /// having to re-run the action in BigHUD.
+    @discardableResult
+    func showFailure(label: String,
+                     reason: String,
+                     recoveryTitle: String? = nil,
+                     recoveryAction: (() -> Void)? = nil) -> ShowToken {
+        generation &+= 1
+        let token = generation
+        state.label = label
+        state.inflight = nil
+        state.elapsed = 0
+        state.completed = false
+        state.failure = MiniHUDFailure(reason: reason,
+                                       recoveryTitle: recoveryTitle,
+                                       recoveryAction: recoveryAction)
+        stopTick()
+        onCancelHandler = nil
+        if panel == nil { buildPanel() }
+        guard let panel = panel else { return token }
+        if panel.contentView == nil || !(panel.contentView is NSHostingView<MiniHUDView>) {
+            panel.contentView = NSHostingView(rootView: MiniHUDView(
+                state: state,
+                onClose: { [weak self] in self?.userDismiss() }
+            ))
+        }
+        positionNearCursor(panel)
+        panel.orderFrontRegardless()
+        autoDismissTask?.cancel()
+        let tokenAtSchedule = token
+        autoDismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            self?.hideIfOwner(tokenAtSchedule)
+        }
+        return token
+    }
+
+    /// Auto-dismiss task for the failure surface (#A69). Held so a
+    /// later `show()` / `showFailure()` can cancel the prior timer
+    /// before scheduling its own.
+    private var autoDismissTask: Task<Void, Never>?
 
     /// Mark the underlying task as complete WITHOUT closing the
     /// panel. The View shows a green "✓ Done · X.Xs" pill in
@@ -243,12 +317,16 @@ struct MiniHUDView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Top row: spinner OR completion check + action title +
-            // close button. The spinner ↔ checkmark swap is the
-            // primary "your AI call landed" signal — paired with the
-            // green tint on the elapsed pill below.
+            // Top row: spinner / completion check / failure ✕ + action
+            // title + close button. The spinner ↔ checkmark swap is the
+            // primary "your AI call landed" signal; the ✕ (#A69) replaces
+            // both when the action failed.
             HStack(spacing: 10) {
-                if state.completed {
+                if state.failure != nil {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.red)
+                        .font(.system(size: 13, weight: .semibold))
+                } else if state.completed {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                         .font(.system(size: 13, weight: .semibold))
@@ -267,6 +345,33 @@ struct MiniHUDView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Dismiss")
+            }
+            // #A69 — failure reason + optional recovery button. The
+            // reason line shares the same monospaced 11 pt style as
+            // the inflight provider row so the panel stays visually
+            // balanced when switching between the two surfaces.
+            if let failure = state.failure {
+                Text(failure.reason)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.red.opacity(0.92))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let title = failure.recoveryTitle,
+                   let action = failure.recoveryAction {
+                    HStack {
+                        Spacer(minLength: 0)
+                        Button(action: action) {
+                            Text(title)
+                                .font(.system(size: 11, weight: .semibold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(Color.accentColor.opacity(0.22)))
+                                .foregroundStyle(Color.accentColor)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
             }
             // AI inflight row — provider / model + ticking elapsed
             // counter. On completion the elapsed capsule turns

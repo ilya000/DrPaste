@@ -28,6 +28,9 @@ enum CuratedDefaults {
         "builtin.lowercase",
         "builtin.sort_lines",
         "builtin.word_count",
+        // #A20 unit conversion — high-value for users straddling
+        // metric / imperial.
+        "builtin.unit_conversion",
         "builtin.generate_qr",               // QR from URL.
 
         // Rich text — all four (narrow category).
@@ -77,6 +80,12 @@ enum CuratedDefaults {
         "builtin.image_rotate",         // right (90° CW)
         "builtin.image_rotate_left",    // left (90° CCW)
         "builtin.image_ascii_art",
+        // #A14 universal resize — image/files/richText. Curated on so
+        // users see it as a first-class image cleanup option without
+        // having to enable it from the palette.
+        "builtin.image_resize_universal",
+        // #A21 file → image extraction (PDF page 1, HEIC/TIFF/BMP/GIF).
+        "builtin.file_to_image",
 
         // NOTE: AI image styles (Pencil sketch / Watercolor / Cartoon)
         // are NOT listed here. They're CustomAIDescriptor entries
@@ -123,7 +132,26 @@ enum CuratedDefaults {
         // Cyrillic transliteration — small but high-utility helper for
         // Russian / Ukrainian / Belarusian / Bulgarian / Serbian /
         // Macedonian text needing romanization or Latin-only contexts.
-        "builtin.cyrillic_translit"
+        "builtin.cyrillic_translit",
+        // 0.53.0 — Latin → Cyrillic reverse (#A18). Mirrors above; useful
+        // for ASCII-typed Cyrillic recovery, name reverse-romanization,
+        // and chaining into Cyrillic-only contexts.
+        "builtin.latin_to_cyrillic",
+        // 0.53.0 — Pretty Code Local (#A19). Deterministic JSON / XML /
+        // HTML / CSS / generic whitespace cleanup. Curated on so users
+        // discover it without hunting through the palette.
+        "builtin.pretty_code_local",
+        // 0.53.0 — CSV tables (#A15). Both formats curated-on; the wiki
+        // one is text output (broad compatibility), the RTFD one is
+        // rich and best for Mail / Notes / Pages.
+        "builtin.csv_to_wiki_table",
+        "builtin.csv_to_rtfd_table"
+
+        // NOTE: #A70 Fun / Internet Slang trio (Leetspeak / UwU / Zalgo)
+        // is intentionally *not* curated-on. They live in the palette
+        // and the user enables them when they want them — keeps the
+        // default chip strip serious by default while still being
+        // available within two clicks.
 
         // AI actions (ids beginning with "ai.") are managed separately by the
         // provider registry; their enabled state does not flow through this table.

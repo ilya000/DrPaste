@@ -93,20 +93,43 @@ struct AIImageAction: ClipboardAction {
                 recovery: nil
             )
         }
-        // Hard cap source size at 4 MB — most image-edit endpoints
-        // reject larger uploads. Failing here with a clear message
-        // beats handing the user an opaque HTTP 413.
-        guard sourcePNG.count <= 4 * 1024 * 1024 else {
+        // Preflight (#A55): cap source size at 4 MB and auto-resize
+        // when above. Most image-edit endpoints reject larger uploads,
+        // so a direct-trigger AI image hotkey on a large screenshot
+        // would previously fail with no recovery. Now: if > 4 MB,
+        // downscale longer side to 2048 px and re-encode PNG. If still
+        // too large, fall through to the explicit failure (extremely
+        // dense content over 2048 px is rare). Off-main because PNG
+        // encode is CPU-bound and the source can be 10+ MB.
+        let preflightLimit = 4 * 1024 * 1024
+        var uploadPNG = sourcePNG
+        var wasResized = false
+        if sourcePNG.count > preflightLimit {
+            let resized = await Task.detached(priority: .userInitiated) {
+                return AIImageHTTP.downscaleToFit(sourcePNG: sourcePNG,
+                                                  maxLongSide: 2048)
+            }.value
+            if let resized = resized, resized.count < sourcePNG.count {
+                uploadPNG = resized
+                wasResized = true
+            }
+        }
+        guard uploadPNG.count <= preflightLimit else {
             return .failed(
                 original: item,
-                reason: "Image is \(sourcePNG.count / 1024 / 1024) MB. Image-edit endpoints " +
-                        "cap at 4 MB — chain ‘Compress JPEG’ or ‘Resize to 1920px’ first.",
+                reason: "Image is \(uploadPNG.count / 1024 / 1024) MB even after auto-resize. " +
+                        "Try ‘Compress JPEG’ or a sharper resize first.",
                 recovery: nil
             )
         }
+        if wasResized {
+            NSLog("DrPaste: AI image preflight resized %d MB → %d KB (longer side 2048)",
+                  sourcePNG.count / 1024 / 1024, uploadPNG.count / 1024)
+        }
+        let sourcePNGFinal = uploadPNG
         do {
             let resultPNG = try await AIImageHTTP.runEdit(
-                sourcePNG: sourcePNG,
+                sourcePNG: sourcePNGFinal,
                 prompt: promptTemplate,
                 resolved: resolved
             )
@@ -344,6 +367,39 @@ struct AITextToImageAction: ClipboardAction {
 /// so the action stays read-only / value-typed and the HTTP code can
 /// be unit-tested in isolation if needed.
 enum AIImageHTTP {
+
+    /// Preflight downscale (#A55) — used by AIImageAction when the
+    /// source PNG exceeds the provider's image-edit cap. Re-encodes
+    /// PNG at a new pixel size with the longer side capped at
+    /// `maxLongSide`. Returns nil if the source can't be decoded;
+    /// callers fall back to the original failure path in that case.
+    /// Pure function; safe to call off-main.
+    static func downscaleToFit(sourcePNG: Data, maxLongSide: Int) -> Data? {
+        guard let image = NSImage(data: sourcePNG),
+              let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return nil
+        }
+        let srcW = cg.width
+        let srcH = cg.height
+        let longer = max(srcW, srcH)
+        guard longer > maxLongSide else { return sourcePNG }
+        let scale = Double(maxLongSide) / Double(longer)
+        let dstW = max(1, Int(Double(srcW) * scale))
+        let dstH = max(1, Int(Double(srcH) * scale))
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(data: nil,
+                                  width: dstW, height: dstH,
+                                  bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: colorSpace,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            return nil
+        }
+        ctx.interpolationQuality = .high
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: dstW, height: dstH))
+        guard let resized = ctx.makeImage() else { return nil }
+        let rep = NSBitmapImageRep(cgImage: resized)
+        return rep.representation(using: .png, properties: [:])
+    }
 
     /// Load the source PNG bytes for `item`, in priority order:
     /// 1. The preview image on disk (highest quality, full-resolution).

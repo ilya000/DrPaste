@@ -45,6 +45,11 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
     case urlStripTracking  = "url_strip_tracking"
     case unicodeStyle      = "unicode_style"        // style: bold/italic/script/...
     case cyrillicToLatin   = "cyrillic_to_latin"    // auto-detects ru/uk/be/bg/sr/mk
+    case latinToCyrillic   = "latin_to_cyrillic"    // target: russian/ukrainian/bulgarian/serbian
+    case prettyCodeLocal   = "pretty_code_local"    // JSON / XML / HTML / CSS / generic
+    case leetspeak         = "leetspeak"            // a→4 e→3 ... aggressive flag
+    case uwuSpeak          = "uwu_speak"            // r/l→w, n+vowel→ny+vowel, face injection
+    case zalgo             = "zalgo"                // combining-mark corruption
 
     var id: String { rawValue }
 
@@ -76,6 +81,11 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
         case .urlStripTracking:  return "Strip URL tracking params"
         case .unicodeStyle:      return "Stylize (Unicode font)"
         case .cyrillicToLatin:   return "Cyrillic → Latin transliteration"
+        case .latinToCyrillic:   return "Latin → Cyrillic transliteration"
+        case .prettyCodeLocal:   return "Pretty Code (local)"
+        case .leetspeak:         return "Leetspeak / 1337"
+        case .uwuSpeak:          return "UwU speech"
+        case .zalgo:             return "Zalgo corruption"
         }
     }
 
@@ -107,6 +117,11 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
         case .urlStripTracking:  return "shield.lefthalf.filled"
         case .unicodeStyle:      return "textformat"
         case .cyrillicToLatin:   return "character.book.closed"
+        case .latinToCyrillic:   return "character.book.closed.fill"
+        case .prettyCodeLocal:   return "curlybraces.square"
+        case .leetspeak:         return "number.square"
+        case .uwuSpeak:          return "face.smiling"
+        case .zalgo:             return "tornado"
         }
     }
 
@@ -164,6 +179,16 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
             return "Convert ASCII letters and digits into a stylized Unicode pseudo-font (Bold, Italic, Script, Fraktur, Double-struck, Monospace, Fullwidth, Small Caps, Circled, Upside-down, etc.). Plain reverses any styled input back to ASCII."
         case .cyrillicToLatin:
             return "Transliterate Cyrillic text (Russian, Ukrainian, Belarusian, Bulgarian, Serbian, Macedonian) to Latin. Auto-detects the script variant by marker letters: ћ ђ ј љ њ џ ѓ ќ ѕ → Serbian/Macedonian (Gaj's diacritic scheme: ж→ž, ч→č, ш→š); ъ without ы/э/ё → Bulgarian (Streamlined 2009: щ→sht, ъ→a); є ї ґ → Ukrainian; ў → Belarusian; otherwise Russian default. Preserves word case (Привет→Privet, ПРИВЕТ→PRIVET). Useful for URL slugs, name romanization, plain-Latin contexts, and chaining into Unicode pseudo-font styling."
+        case .latinToCyrillic:
+            return "Reverse-transliterate Latin to Cyrillic using a target-language scheme: Russian (default), Ukrainian, Bulgarian, or Serbian. Recognizes digraphs (zh→ж, ch→ч, sh→ш, shch→щ, yo→ё, yu→ю, ya→я) and falls back to a single-letter map otherwise. Preserves case (Privet→Привет, PRIVET→ПРИВЕТ). Deterministic and offline — for name transliteration, ASCII-typed Cyrillic recovery, or simple Cyrillic intent."
+        case .prettyCodeLocal:
+            return "Deterministic code reformatter. Auto-detects format by leading characters: { / [ → JSON via JSONSerialization (.prettyPrinted + .sortedKeys); <?xml → XMLDocument .nodePrettyPrint; <!DOCTYPE / <html → HTML reflow (newlines after tags, tag-depth indent, collapse multi-space); selector + { → CSS (newline after ;, indent rule body 2 spaces); otherwise generic whitespace normalization (trim trailing whitespace, collapse 3+ blank lines, tabs → 4 spaces, normalize LF). Fully offline, sub-50 ms for typical sizes. AI Pretty Code is a separate action for arbitrary languages with idiomatic style."
+        case .leetspeak:
+            return "Convert text to 1337 leetspeak by substituting common letters with digits: a→4, e→3, i→1, o→0, s→5, t→7. With Aggressive mode also maps l→1, g→9, b→8. Useful for nostalgia, themed posts, and screenshot-able internet humor."
+        case .uwuSpeak:
+            return "Convert text to UwU speech: r and l become w (preserving case), n followed by a vowel becomes ny+vowel, hops, and faces (UwU / OwO / nya~) inject after sentence-ending punctuation when Faces is on. Idempotent-ish — re-running compounds the cuteness rather than mangling the text."
+        case .zalgo:
+            return "Corrupt text with overlapping Unicode combining marks (the \"Zalgo\" effect). Intensity parameter controls density: Light adds 1 mark above and 1 below per character; Medium adds up to 3 above, 3 below, 1 middle; Heavy adds up to 8 above, 8 below, 2 middle. Whitespace stays clean. Use sparingly — heavy Zalgo breaks line wrapping in some apps."
         }
     }
 
@@ -180,6 +205,10 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
         case .uniqueLines:  return [:]
         case .jsonFormat:   return ["operation": "pretty"]
         case .unicodeStyle: return ["style": UnicodeFontStyle.bold.rawValue]
+        case .latinToCyrillic: return ["target": "russian"]
+        case .leetspeak:    return ["aggressive": "false"]
+        case .uwuSpeak:     return ["faces": "true"]
+        case .zalgo:        return ["intensity": "medium"]
         case .trim,
              .camelCase, .snakeCase, .kebabCase,
              .base64Encode, .base64Decode,
@@ -187,7 +216,8 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
              .slugify, .wordCount,
              .mdToPlain, .mdExtractHeadings, .mdExtractLinks,
              .urlStripTracking,
-             .cyrillicToLatin:
+             .cyrillicToLatin,
+             .prettyCodeLocal:
             return [:]
         }
     }
@@ -214,7 +244,10 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
              .slugify, .wordCount,
              .mdToPlain, .mdExtractHeadings, .mdExtractLinks,
              .urlStripTracking,
-             .cyrillicToLatin:
+             .cyrillicToLatin,
+             .latinToCyrillic,
+             .prettyCodeLocal,
+             .leetspeak, .uwuSpeak, .zalgo:
             return false
         }
     }
@@ -237,7 +270,8 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
     /// plain-text path — the result is always plain text by design.
     var preservesRichTextFormatting: Bool {
         switch self {
-        case .caseChange, .unicodeStyle, .cyrillicToLatin,
+        case .caseChange, .unicodeStyle, .cyrillicToLatin, .latinToCyrillic,
+             .leetspeak, .uwuSpeak,
              .trim, .wrap, .prepend, .append:
             return true
         case .regexReplace, .findReplace, .lineFilter,
@@ -247,7 +281,13 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
              .urlPercentEncode, .urlPercentDecode,
              .slugify, .wordCount,
              .mdToPlain, .mdExtractHeadings, .mdExtractLinks,
-             .urlStripTracking:
+             .urlStripTracking,
+             .prettyCodeLocal,
+             // Zalgo restructures the visual layout — combining marks
+             // multiply char counts and per-attributed-run application
+             // would visually misalign the marks with their base chars.
+             // Keep the plain-text path.
+             .zalgo:
             return false
         }
     }
@@ -399,6 +439,11 @@ enum TransformationRuntime {
         case .urlStripTracking:  return urlStripTracking(input)
         case .unicodeStyle:      return unicodeStyle(input, params: params)
         case .cyrillicToLatin:   return cyrillicTransliterate(input)
+        case .latinToCyrillic:   return latinToCyrillicTransliterate(input, params: params)
+        case .prettyCodeLocal:   return prettyCodeLocal(input)
+        case .leetspeak:         return leetspeak(input, params: params)
+        case .uwuSpeak:          return uwuSpeak(input, params: params)
+        case .zalgo:             return zalgo(input, params: params)
         }
     }
 
@@ -452,7 +497,8 @@ enum TransformationRuntime {
             result.append(NSAttributedString(string: params["suffix"] ?? ""))
             return result
 
-        case .caseChange, .unicodeStyle, .cyrillicToLatin:
+        case .caseChange, .unicodeStyle, .cyrillicToLatin, .latinToCyrillic,
+             .leetspeak, .uwuSpeak:
             return try applyPerRun(engine: engine, input: input, params: params)
 
         // Everything else either isn't reachable (gated by
@@ -894,5 +940,345 @@ enum TransformationRuntime {
             if comps.queryItems?.isEmpty == true { comps.queryItems = nil }
         }
         return comps.string ?? input
+    }
+
+    // MARK: - Latin → Cyrillic transliteration (#A18)
+
+    /// Reverse-transliterate Latin → Cyrillic with a per-language target
+    /// scheme. Greedy multi-char digraph matching first (sh, ch, zh, shch,
+    /// yo, yu, ya) before single-letter substitution. Case is preserved
+    /// per source word run: "Privet"→"Привет", "PRIVET"→"ПРИВЕТ", lone
+    /// "P"→"П". Non-letter chars pass through.
+    private static func latinToCyrillicTransliterate(_ input: String,
+                                                      params: [String: String]) -> String {
+        let target = params["target"] ?? "russian"
+        let map = latinToCyrillicMap(for: target)
+        let chars = Array(input)
+        var out = ""
+        out.reserveCapacity(chars.count)
+        var i = 0
+        while i < chars.count {
+            // Greedy longest-match against the digraph/trigraph table.
+            var matched = false
+            for length in stride(from: min(4, chars.count - i), through: 1, by: -1) {
+                let slice = String(chars[i..<(i + length)]).lowercased()
+                guard let cyrillic = map[slice] else { continue }
+                // Case decision from the source slice. If any letter in
+                // the slice is uppercase + the previous source letter was
+                // also uppercase → ALL CAPS output. Else if first letter
+                // of slice is uppercase → Title case. Else lowercase.
+                let firstSourceChar = chars[i]
+                let allCapsRun = firstSourceChar.isUppercase
+                    && (length == 1 || chars[i + 1].isUppercase)
+                if allCapsRun {
+                    out.append(cyrillic.uppercased())
+                } else if firstSourceChar.isUppercase {
+                    if let f = cyrillic.first {
+                        out.append(String(f).uppercased())
+                        out.append(String(cyrillic.dropFirst()))
+                    }
+                } else {
+                    out.append(cyrillic)
+                }
+                i += length
+                matched = true
+                break
+            }
+            if !matched {
+                out.append(chars[i])
+                i += 1
+            }
+        }
+        return out
+    }
+
+    /// Latin → Cyrillic map for the given target language. Digraphs first
+    /// (matched greedily by the caller), single letters second.
+    /// Russian default. Ukrainian/Bulgarian/Serbian apply overrides.
+    private static func latinToCyrillicMap(for target: String) -> [String: String] {
+        // Russian base — digraphs precede single-letter for greedy match.
+        var m: [String: String] = [
+            // Trigraph
+            "shch": "щ",
+            // Digraphs
+            "sh": "ш", "ch": "ч", "zh": "ж", "kh": "х", "ts": "ц",
+            "yo": "ё", "yu": "ю", "ya": "я",
+            "ye": "е",
+            // Single letters
+            "a": "а", "b": "б", "v": "в", "g": "г", "d": "д",
+            "e": "е", "z": "з", "i": "и", "y": "й",
+            "k": "к", "l": "л", "m": "м", "n": "н", "o": "о",
+            "p": "п", "r": "р", "s": "с", "t": "т", "u": "у",
+            "f": "ф", "h": "х", "c": "ц",
+            "j": "й",
+            "w": "в", "x": "кс", "q": "к"
+        ]
+        switch target {
+        case "ukrainian":
+            m["y"] = "и"           // у Ukrainian "y" чаще "и", а не "й"
+            m["yi"] = "ї"
+            m["ye"] = "є"
+            m["g"] = "г"           // ґ available via apostrophe; "g" → "г" by default
+            m["i"] = "і"
+        case "bulgarian":
+            // Streamlined 2009 reverse.
+            m["sht"] = "щ"
+            m["a"] = "а"
+            // Bulgarian doesn't use ы/э/ё; clear those.
+            m["yo"] = "йо"
+            m["yu"] = "ю"; m["ya"] = "я"
+        case "serbian":
+            // Gaj's Latin reverse — single-letter only (no digraphs).
+            m["ž"] = "ж"; m["č"] = "ч"; m["š"] = "ш"
+            m["ć"] = "ћ"; m["đ"] = "ђ"
+            m["lj"] = "љ"; m["nj"] = "њ"; m["dž"] = "џ"
+            m["j"] = "ј"
+            m["h"] = "х"; m["c"] = "ц"
+            // Strip Russian-only digraphs.
+            m.removeValue(forKey: "sh"); m.removeValue(forKey: "ch")
+            m.removeValue(forKey: "zh"); m.removeValue(forKey: "kh")
+            m.removeValue(forKey: "ts"); m.removeValue(forKey: "yo")
+            m.removeValue(forKey: "yu"); m.removeValue(forKey: "ya")
+            m.removeValue(forKey: "shch")
+        default:
+            break // russian default already applied
+        }
+        return m
+    }
+
+    // MARK: - Pretty Code Local (#A19)
+
+    /// Deterministic offline reformatter for JSON / XML / HTML / CSS plus
+    /// a generic whitespace-normalization fallback. Format auto-detected
+    /// by leading characters; never enlarges output, never reorders
+    /// content beyond what each format's pretty-printer does.
+    private static func prettyCodeLocal(_ input: String) -> String {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return input }
+        let firstChar = trimmed.first!
+        let lower = trimmed.lowercased()
+
+        // JSON: leading { or [
+        if firstChar == "{" || firstChar == "[" {
+            if let data = trimmed.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: data, options: [.allowFragments]),
+               let pretty = try? JSONSerialization.data(withJSONObject: obj,
+                                                        options: [.prettyPrinted, .sortedKeys]),
+               let s = String(data: pretty, encoding: .utf8) {
+                return s
+            }
+            return input
+        }
+        // XML: leading <?xml or <tag without DOCTYPE/html
+        if lower.hasPrefix("<?xml") || (firstChar == "<" && !lower.hasPrefix("<!doctype") && !lower.hasPrefix("<html")) {
+            if let data = trimmed.data(using: .utf8),
+               let doc = try? XMLDocument(data: data, options: []) {
+                let pretty = doc.xmlData(options: [.nodePrettyPrint])
+                if let s = String(data: pretty, encoding: .utf8) { return s }
+            }
+            // Fall through to HTML if XML failed.
+        }
+        // HTML: leading <!DOCTYPE or <html
+        if lower.hasPrefix("<!doctype") || lower.hasPrefix("<html") || (firstChar == "<" && lower.contains("</")) {
+            return prettyHTMLLike(trimmed)
+        }
+        // CSS: contains "{...}" structure.
+        if trimmed.contains("{") && trimmed.contains("}") && trimmed.contains(":") {
+            return prettyCSS(trimmed)
+        }
+        // Generic whitespace cleanup.
+        return prettyGeneric(trimmed)
+    }
+
+    /// Simple regex-driven HTML reflow: newline after `>` between elements,
+    /// indent by tag depth, collapse runs of inline whitespace. Targets the
+    /// 90% common case of "ugly minified HTML" → readable.
+    private static func prettyHTMLLike(_ s: String) -> String {
+        var src = s
+        // Normalize line endings + collapse runs of 2+ spaces between tags.
+        src = src.replacingOccurrences(of: "\r\n", with: "\n")
+        src = src.replacingOccurrences(of: "\r", with: "\n")
+        // Add a newline between adjacent tags.
+        src = src.replacingOccurrences(of: ">\\s*<",
+                                       with: ">\n<",
+                                       options: .regularExpression)
+        let lines = src.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var indent = 0
+        var out: [String] = []
+        let voidTags: Set<String> = ["br", "hr", "img", "input", "meta", "link",
+                                     "area", "base", "col", "embed", "param",
+                                     "source", "track", "wbr"]
+        for raw in lines {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty else { continue }
+            let lowered = line.lowercased()
+            let isClosing = lowered.hasPrefix("</")
+            if isClosing { indent = max(0, indent - 1) }
+            out.append(String(repeating: "  ", count: indent) + line)
+            // Self-closing or void → don't push indent.
+            let isSelfClosing = lowered.hasSuffix("/>")
+            let openedTag: String = {
+                guard lowered.hasPrefix("<") && !isClosing && !isSelfClosing else { return "" }
+                let body = lowered.dropFirst()
+                let nameEnd = body.firstIndex(where: { !$0.isLetter && !$0.isNumber }) ?? body.endIndex
+                return String(body[body.startIndex..<nameEnd])
+            }()
+            let isVoid = voidTags.contains(openedTag)
+            // Single-line element like <p>hi</p> — depth unchanged.
+            let hasInlineClose = lowered.contains("</\(openedTag)>") && !openedTag.isEmpty
+            if !isClosing && !isSelfClosing && !isVoid && !hasInlineClose && lowered.hasPrefix("<") {
+                indent += 1
+            }
+        }
+        return out.joined(separator: "\n")
+    }
+
+    private static func prettyCSS(_ s: String) -> String {
+        var src = s
+        src = src.replacingOccurrences(of: "\r\n", with: "\n")
+        // Standardize one rule per block.
+        src = src.replacingOccurrences(of: "\\s*\\{\\s*",
+                                       with: " {\n  ",
+                                       options: .regularExpression)
+        src = src.replacingOccurrences(of: "\\s*;\\s*(?!})",
+                                       with: ";\n  ",
+                                       options: .regularExpression)
+        src = src.replacingOccurrences(of: "\\s*}\\s*",
+                                       with: "\n}\n\n",
+                                       options: .regularExpression)
+        // Tidy any leftover trailing whitespace.
+        let lines = src.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .init(charactersIn: " \t")) }
+        return lines.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Generic fallback: trim trailing whitespace per line, normalize
+    /// line endings, expand tabs → 4 spaces, collapse 3+ blank lines.
+    private static func prettyGeneric(_ s: String) -> String {
+        var src = s.replacingOccurrences(of: "\r\n", with: "\n")
+        src = src.replacingOccurrences(of: "\t", with: "    ")
+        src = src.replacingOccurrences(of: "\n{3,}",
+                                       with: "\n\n",
+                                       options: .regularExpression)
+        let lines = src.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .init(charactersIn: " \t")) }
+        return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Leetspeak / 1337 (#A70)
+
+    /// Pure table-driven leet substitution. Aggressive mode adds three
+    /// extra mappings that are noisier-looking but more distinctive.
+    private static func leetspeak(_ input: String, params: [String: String]) -> String {
+        let aggressive = (params["aggressive"] ?? "false") == "true"
+        var map: [Character: Character] = [
+            "a": "4", "e": "3", "i": "1", "o": "0", "s": "5", "t": "7"
+        ]
+        if aggressive {
+            map["l"] = "1"; map["g"] = "9"; map["b"] = "8"
+        }
+        return String(input.map { ch -> Character in
+            let lower = Character(String(ch).lowercased())
+            return map[lower] ?? ch
+        })
+    }
+
+    // MARK: - UwU speech (#A70)
+
+    /// UwU transformations:
+    ///   • r / l → w (preserve case)
+    ///   • n + vowel → ny + vowel (lowercase + uppercase variants)
+    ///   • Optional face injection after sentence-ending punctuation.
+    private static func uwuSpeak(_ input: String, params: [String: String]) -> String {
+        let facesOn = (params["faces"] ?? "true") == "true"
+        // r / l → w (case-preserving).
+        var s = String(input.map { ch -> Character in
+            switch ch {
+            case "r", "l": return "w"
+            case "R", "L": return "W"
+            default:       return ch
+            }
+        })
+        // n + vowel → ny + vowel (case-preserving on the leading n).
+        s = s.replacingOccurrences(of: "n([aeiouAEIOU])",
+                                   with: "ny$1",
+                                   options: .regularExpression)
+        s = s.replacingOccurrences(of: "N([aeiouAEIOU])",
+                                   with: "Ny$1",
+                                   options: .regularExpression)
+        guard facesOn else { return s }
+        // Inject UwU / OwO / nya~ after sentence-ending punctuation,
+        // rotating through the face list for variety.
+        let faces = [" UwU", " OwO", " nya~"]
+        guard let re = try? NSRegularExpression(pattern: "([.!?])(\\s+|$)",
+                                                options: []) else { return s }
+        let ns = s as NSString
+        let matches = re.matches(in: s, options: [],
+                                 range: NSRange(location: 0, length: ns.length))
+        guard !matches.isEmpty else { return s }
+        var result = ""
+        var cursor = 0
+        var idx = 0
+        for m in matches {
+            let punctRange = m.range(at: 1)
+            let tailRange = m.range(at: 2)
+            let punctEnd = punctRange.location + punctRange.length
+            if cursor < punctEnd {
+                result += ns.substring(with: NSRange(location: cursor,
+                                                     length: punctEnd - cursor))
+            }
+            result += faces[idx % faces.count]
+            idx += 1
+            if tailRange.length > 0 {
+                result += ns.substring(with: tailRange)
+            }
+            cursor = tailRange.location + tailRange.length
+        }
+        if cursor < ns.length {
+            result += ns.substring(with: NSRange(location: cursor,
+                                                 length: ns.length - cursor))
+        }
+        return result
+    }
+
+    // MARK: - Zalgo corruption (#A70)
+
+    /// Add overlapping Unicode combining marks to non-whitespace
+    /// characters. Intensity controls density. Whitespace passes through
+    /// untouched so word boundaries stay scannable.
+    private static func zalgo(_ input: String, params: [String: String]) -> String {
+        let intensity = params["intensity"] ?? "medium"
+        let (up, down, mid): (Int, Int, Int)
+        switch intensity {
+        case "light":  (up, down, mid) = (1, 1, 0)
+        case "heavy":  (up, down, mid) = (8, 8, 2)
+        default:       (up, down, mid) = (3, 3, 1)
+        }
+        let combiningUp: [Character] = (0x0300...0x036F).compactMap {
+            UnicodeScalar($0).map(Character.init)
+        }
+        let combiningDown: [Character] = (0x0316...0x0362).compactMap {
+            UnicodeScalar($0).map(Character.init)
+        }
+        let combiningMid: [Character] = (0x0334...0x0338).compactMap {
+            UnicodeScalar($0).map(Character.init)
+        }
+        var out = ""
+        out.reserveCapacity(input.count * (1 + up + down + mid))
+        for ch in input {
+            out.append(ch)
+            guard !ch.isWhitespace, !ch.isNewline else { continue }
+            for _ in 0..<Int.random(in: 0...up) {
+                if let c = combiningUp.randomElement() { out.append(c) }
+            }
+            for _ in 0..<Int.random(in: 0...down) {
+                if let c = combiningDown.randomElement() { out.append(c) }
+            }
+            for _ in 0..<Int.random(in: 0...mid) {
+                if let c = combiningMid.randomElement() { out.append(c) }
+            }
+        }
+        return out
     }
 }

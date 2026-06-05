@@ -58,6 +58,13 @@ final class BigHUDState: ObservableObject {
     @Published var mode: BigHUDMode = .gesture
     @Published var engineLabel: String = ""
 
+    /// When true, the HUD does NOT auto-close on commit. The user
+    /// can run several commits in a row from the same HUD session
+    /// (e.g. paste a series of action results into different fields).
+    /// Per-session: resets to false on every fresh HUD open.
+    /// Toggled via the pin icon in the HUD header (#A30).
+    @Published var isPinned: Bool = false
+
     /// Content meta for the focused item — computed lazily via ContentMetaCache.
     @Published var contentMeta: String? = nil
 
@@ -308,6 +315,26 @@ struct BigHUDView: View {
             // confusing to users (especially "tap", which looked like "tab"
             // at small monospace sizes). Mode is already conveyed by the
             // footer key hint (release vs ⏎), so the badge has been removed.
+            // Pin toggle (#A30). When pinned, commit (release ⌥⌘
+            // in Gesture Mode / Enter in Limited Mode) does not
+            // close the HUD — useful for chained pastes across
+            // several target fields without re-opening the HUD
+            // each time. Per-session: resets on every fresh HUD
+            // open. Icon mirrors macOS conventions: `pin` for
+            // unpinned (action available), `pin.fill` for pinned.
+            Button {
+                state.isPinned.toggle()
+            } label: {
+                Image(systemName: state.isPinned ? "pin.fill" : "pin")
+                    .symbolRenderingMode(.hierarchical)
+                    .font(.system(size: sz(13)))
+                    .foregroundStyle(state.isPinned ? Color.accentColor : .secondary)
+                    .rotationEffect(.degrees(state.isPinned ? 0 : 30))
+            }
+            .buttonStyle(.plain)
+            .help(state.isPinned ? "Unpin — close HUD after next paste"
+                                 : "Pin — keep HUD open across pastes")
+            .accessibilityLabel(state.isPinned ? "Unpin HUD" : "Pin HUD")
             Button(action: onClose) {
                 Image(systemName: "xmark.circle.fill")
                     .symbolRenderingMode(.hierarchical)
@@ -386,15 +413,7 @@ struct BigHUDView: View {
 
     @ViewBuilder private var content: some View {
         if state.items.isEmpty {
-            VStack(spacing: 8) {
-                Image(systemName: "doc.on.clipboard")
-                    .font(.system(size: sz(28)))
-                    .foregroundStyle(.secondary)
-                Text("History is empty")
-                    .font(.system(size: sz(13)))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            emptyHistoryOnboarding
         } else {
             HStack(spacing: 12) {
                 historyColumn.frame(width: 260, alignment: .leading)
@@ -406,6 +425,61 @@ struct BigHUDView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
+        }
+    }
+
+    // MARK: empty-history onboarding (#A61)
+
+    /// Inline onboarding panel shown when `state.items.isEmpty`.
+    /// Replaces the prior "History is empty" two-line placeholder with
+    /// a brief explainer of what just happened + a concrete next step.
+    /// Reached on first launch, after Factory Reset, and after the user
+    /// manually clears history. The HUD's action bar is also hidden in
+    /// this state (no actions apply to nothing) — release / esc just
+    /// close without a failure sound (`hudCommit` early-outs when the
+    /// items list is empty).
+    private var emptyHistoryOnboarding: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "doc.on.clipboard")
+                .font(.system(size: sz(36), weight: .light))
+                .foregroundStyle(.secondary)
+            VStack(spacing: 4) {
+                Text("Your clipboard history is empty")
+                    .font(.system(size: sz(14), weight: .semibold))
+                    .foregroundStyle(.primary)
+                Text("Copy something with ⌘C and try again — DrPaste will record it here.")
+                    .font(.system(size: sz(11)))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 24)
+            }
+            HStack(spacing: 8) {
+                keyChip("⌘C", label: "Copy")
+                Text("•").foregroundStyle(.tertiary)
+                keyChip("⌥⌘V", label: "Re-open")
+                Text("•").foregroundStyle(.tertiary)
+                keyChip("esc", label: "Close")
+            }
+            .font(.system(size: sz(10)))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 16)
+    }
+
+    /// Small chip used by the empty-history onboarding to surface a
+    /// keyboard shortcut next to its meaning. Keeps the visual weight
+    /// muted so the chips don't compete with the headline.
+    private func keyChip(_ key: String, label: String) -> some View {
+        HStack(spacing: 4) {
+            Text(key)
+                .font(.system(size: sz(10), weight: .semibold, design: .monospaced))
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.primary.opacity(0.10)))
+            Text(label)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -797,11 +871,22 @@ struct BigHUDView: View {
         }
         .padding(.horizontal, 8).padding(.vertical, 4)
         .background(
+            // #A63 — clip selection (history strip) keeps the solid
+            // accent fill because clips ARE objects. Action selection
+            // switches to a thinner accent outline + faint tint so it
+            // reads as a "command" rather than another contained object
+            // — disambiguates the two surfaces visually when both are
+            // focused under release-to-paste.
             Capsule().fill(
                 isActive
-                ? accent.opacity(0.28)
+                ? accent.opacity(0.10)
                 : (isHover ? Color.primary.opacity(0.10) : Color.primary.opacity(0.06))
             )
+        )
+        .overlay(
+            Capsule()
+                .strokeBorder(isActive ? accent.opacity(0.95) : Color.clear,
+                              lineWidth: isActive ? 1.5 : 0)
         )
         .contentShape(Capsule())
         .onHover { hovering in hoveredActionID = hovering ? a.id : nil }

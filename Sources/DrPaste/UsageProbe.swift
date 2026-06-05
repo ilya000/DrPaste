@@ -142,7 +142,7 @@ struct OpenAIUsageProbe: UsageProbe {
         req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         req.timeoutInterval = 15
 
-        let (data, response) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await AIHTTP.session.data(for: req)
         guard let http = response as? HTTPURLResponse else {
             throw UsageProbeError.transport("no http response")
         }
@@ -206,7 +206,7 @@ struct OpenRouterUsageProbe: UsageProbe {
         req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         req.timeoutInterval = 15
 
-        let (data, response) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await AIHTTP.session.data(for: req)
         guard let http = response as? HTTPURLResponse else {
             throw UsageProbeError.transport("no http response")
         }

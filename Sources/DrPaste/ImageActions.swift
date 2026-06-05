@@ -31,10 +31,29 @@ private func imageActionApplies(item: ClipboardItem, context: ContentContext) ->
     context.contains(.image) || RichTextImageExtractor.hasEmbeddedImage(item)
 }
 
+/// Loads the **original** (full-size) image for an image transformation.
+/// Priority (#A48): raw pasteboard representation > thumbnail preview.
+///
+/// Why this matters: `previewImageRel` is a downscaled thumbnail
+/// (max 600 pt via `PreviewSynthesizer.imageRelative`) created at
+/// snapshot time for fast HUD rendering. Image transformations
+/// (OCR, Grayscale, Rotate, AI Watercolor) **must** operate on the
+/// original bytes — running Grayscale on a 600pt thumbnail of a
+/// 5K screenshot loses 95% of the data. The previous order — check
+/// `previewImageRel` first — silently degraded every transformation
+/// to thumbnail resolution when both were stored. Now raw
+/// representations are preferred, and the thumbnail is the
+/// last-resort fallback.
+///
+/// Use `loadPreviewImage(_:)` for HUD chrome / Settings list / any
+/// place where thumbnail resolution is what's wanted.
 private func loadImage(_ item: ClipboardItem) -> NSImage? {
-    if let rel = item.previewImageRel {
-        return NSImage(contentsOf: AppStorage.imagesDir.appendingPathComponent(rel))
-    }
+    return loadOriginalImage(item) ?? loadPreviewImage(item)
+}
+
+/// Loads the full-size original from a raw pasteboard representation,
+/// or nil if no original is stored. Image transformations use this.
+private func loadOriginalImage(_ item: ClipboardItem) -> NSImage? {
     let imageTypes = ["public.png", "public.tiff", "public.jpeg", "public.heic"]
     for type in imageTypes {
         if let rel = item.representations[type],
@@ -43,10 +62,20 @@ private func loadImage(_ item: ClipboardItem) -> NSImage? {
             return img
         }
     }
-    // Rich text fallback: pull the first embedded image (NSTextAttachment) out
-    // of any RTF / RTFD / HTML representation.
+    // Rich-text embedded attachment: still original-resolution because
+    // the attachment carries the source bytes.
     if item.semantic == .richText, let img = RichTextImageExtractor.firstImage(in: item) {
         return img
+    }
+    return nil
+}
+
+/// Loads the thumbnail preview image. Used as last-resort fallback
+/// by transformations when no raw representation is stored, and as
+/// the primary path by HUD chrome / Settings list.
+private func loadPreviewImage(_ item: ClipboardItem) -> NSImage? {
+    if let rel = item.previewImageRel {
+        return NSImage(contentsOf: AppStorage.imagesDir.appendingPathComponent(rel))
     }
     return nil
 }
@@ -157,7 +186,12 @@ enum RichTextImageExtractor {
 /// image. Closure result must be Sendable — `ClipboardItem` and
 /// `String` are; `NSImage` stays inside the closure and never
 /// escapes the detached task.
-private func runOffMain<T: Sendable>(
+///
+/// Internal (not file-private) so 0.52.0 sibling files
+/// (ImageResizeAction, FileToImageAction, UnitConversion) can hop
+/// off-main with the same helper instead of duplicating the
+/// `Task.detached(priority:operation:).value` boilerplate.
+func runOffMain<T: Sendable>(
     _ work: @Sendable @escaping () -> T
 ) async -> T {
     await Task.detached(priority: .userInitiated, operation: work).value
@@ -636,12 +670,15 @@ enum ImageActionsPack {
     static var all: [ClipboardAction] {
         [
             ImageOCRAction(), ImageDecodeQRAction(),
-            ImageStripMetadataAction(), ImageResize1920Action(),
+            ImageStripMetadataAction(),
+            ImageResize1920Action(),           // legacy image-only resize
+            ImageResizeAction(maxLongSide: 1920),  // #A14 universal resize (image/files/richText)
             ImageCompressJPEGAction(),
             ImageGrayscaleAction(),
             ImageRotateRightAction(), ImageRotateLeftAction(),
             ImageInvertAction(),
-            ImageToASCIIArtAction()
+            ImageToASCIIArtAction(),
+            FileToImageAction()                // #A21 PDF page 1, HEIC/TIFF/BMP/GIF → PNG
         ]
     }
 }
