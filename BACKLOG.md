@@ -3334,7 +3334,15 @@ recompute, define the detector entry point and its per-open budget.
 
 ### #A77 — Transliteration default visibility (locale-aware Latin→Cyrillic)
 
-**Status:** planned. Depends on cheap-trait gating from #A75.
+**Status:** SHIPPED (0.57.0). Content gate (containsLatin AND NOT
+containsCyrillic) set on the built-in; `likelyTransliterable` not introduced.
+Default-on is now locale-aware: `CuratedDefaults.localePrefersCyrillic` checks
+`Locale.preferredLanguages` (explicit `-Latn` script subtags excluded), and
+`isEnabledByDefault("builtin.text.latin_to_cyrillic")` returns it — curated-on
+for Cyrillic-script users, palette-only otherwise. Cyrillic→Latin stays on
+everywhere.
+
+**Status (original):** planned. Depends on cheap-trait gating from #A75.
 **Touches:** `CuratedDefaults`, `DefaultTransformationSeed`, transliteration
 actions, `ContextDetector` (containsCyrillic / containsLatin).
 **Context:** Cyrillic→Latin has an honest content trigger (containsCyrillic).
@@ -3377,7 +3385,15 @@ for a no-trait text clip.
 
 ### #A79 — AI action onboarding affordance when no provider configured
 
-**Status:** planned (near-term; small).
+**Status:** SHIPPED (0.57.0). The no-provider / missing-key paths already
+returned `.failed(… recovery: .openProvidersConfig)` (recovery button →
+Settings → AI); the copy is now onboarding-framed: "Connect an AI provider to
+get a result — open Settings → AI." across all four AI execution sites
+(run + stream × no-provider + missing-key). Deferred nicety: suppress the
+failure chime specifically for this onboarding case (needs a distinct outcome
+flag) — minor, not done.
+
+**Status (original):** planned (near-term; small).
 **Touches:** AI action execution path, MiniHUD / BigHUD preview, ActionEditor
 preview.
 **Context:** AI actions stay visible by default even with no provider

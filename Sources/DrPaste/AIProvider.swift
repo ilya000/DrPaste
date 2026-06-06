@@ -1324,7 +1324,7 @@ struct AIAction: ClipboardAction {
         let provider: AIProvider? = await MainActor.run { resolveProvider() }
         guard let provider = provider else {
             return .failed(original: item,
-                          reason: "AI provider not configured. Add API key in Settings.",
+                          reason: "Connect an AI provider to get a result — open Settings → AI.",
                           recovery: .openProvidersConfig)
         }
         do {
@@ -1348,7 +1348,7 @@ struct AIAction: ClipboardAction {
             return .preview(makeTextItem(result, from: item))
         } catch AIProviderError.missingAPIKey {
             return .failed(original: item,
-                          reason: "AI provider not configured. Add API key in Settings.",
+                          reason: "Connect an AI provider to get a result — open Settings → AI.",
                           recovery: .openProvidersConfig)
         } catch AIProviderError.http(let status, _) {
             return .failed(original: item,
@@ -1393,7 +1393,7 @@ struct AIAction: ClipboardAction {
         let provider: AIProvider? = await MainActor.run { resolveProvider() }
         guard let provider = provider else {
             return .failed(original: item,
-                          reason: "AI provider not configured. Add API key in Settings.",
+                          reason: "Connect an AI provider to get a result — open Settings → AI.",
                           recovery: .openProvidersConfig)
         }
 
@@ -1430,7 +1430,7 @@ struct AIAction: ClipboardAction {
             return .preview(makeTextItem(accumulated, from: item))
         } catch AIProviderError.missingAPIKey {
             return .failed(original: item,
-                          reason: "AI provider not configured. Add API key in Settings.",
+                          reason: "Connect an AI provider to get a result — open Settings → AI.",
                           recovery: .openProvidersConfig)
         } catch AIProviderError.http(let status, _) {
             return .failed(original: item,

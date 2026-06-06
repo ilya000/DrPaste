@@ -49,9 +49,12 @@ enum CuratedDefaults {
         "builtin.html.strip_tags",
         "builtin.text.extract_emails",
 
-        // Text — transliteration.
+        // Text — transliteration. Cyrillic→Latin is curated everywhere
+        // (honest trigger: containsCyrillic). Latin→Cyrillic's default is
+        // locale-aware (#A77) — handled in `isEnabledByDefault`, not listed
+        // here, because Latin text is ubiquitous and the action is only
+        // routinely wanted by Cyrillic-script users.
         "builtin.text.cyrillic_to_latin",
-        "builtin.text.latin_to_cyrillic",
 
         // Text — Unicode pseudo-fonts (all 22).
         "builtin.text.font_bold",
@@ -158,6 +161,29 @@ enum CuratedDefaults {
         // AI seeds (`ai.*`) and user-created custom actions (`user.*`)
         // are always default-enabled.
         if actionID.hasPrefix("ai.") || actionID.hasPrefix("user.") { return true }
+        // #A77 — Latin→Cyrillic is curated-on only for Cyrillic-script users.
+        // (Cyrillic→Latin has an honest content trigger and is on everywhere.)
+        if actionID == "builtin.text.latin_to_cyrillic" { return localePrefersCyrillic }
         return enabledByDefault.contains(actionID)
     }
+
+    /// True when any of the user's preferred languages is written in
+    /// Cyrillic. An explicit Latin script subtag (e.g. `sr-Latn`, `kk-Latn`)
+    /// is respected and excluded. Computed once.
+    static let localePrefersCyrillic: Bool = {
+        let cyrillicCodes: Set<String> = [
+            "ru", "uk", "be", "bg", "sr", "mk", "kk", "ky", "tg", "mn",
+            "tt", "ba", "cv", "ce", "ab", "os", "kv", "sah", "tk", "cu"
+        ]
+        for lang in Locale.preferredLanguages {
+            let l = Locale.Language(identifier: lang)
+            if let script = l.script?.identifier {
+                if script == "Cyrl" { return true }
+                if script == "Latn" { continue }
+            }
+            let code = (l.languageCode?.identifier ?? String(lang.prefix(2))).lowercased()
+            if cyrillicCodes.contains(code) { return true }
+        }
+        return false
+    }()
 }
