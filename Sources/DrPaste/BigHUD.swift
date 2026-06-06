@@ -416,6 +416,23 @@ struct BigHUDView: View {
         .frame(height: sz(14))
     }
 
+    /// TEMPORARY debug overlay (#A75 testing) — shows the ContentContext
+    /// flags detected for the focused clip, so it's obvious which signals are
+    /// present and therefore which trait-gated actions should appear. NOT for
+    /// end users; candidate to move behind a Settings → General toggle, or to
+    /// remove once trait gating is trusted.
+    @ViewBuilder private var debugTraitsRow: some View {
+        if let item = state.currentItem {
+            let names = ContextDetector.detect(item).activeNames
+            Text("🐞 traits: " + (names.isEmpty ? "—" : names.joined(separator: " ")))
+                .font(.system(size: sz(9), design: .monospaced))
+                .foregroundStyle(Color.orange.opacity(0.85))
+                .lineLimit(2)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
     // MARK: content
 
     @ViewBuilder private var content: some View {
@@ -438,6 +455,7 @@ struct BigHUDView: View {
                     Divider().opacity(0.2)
                     VStack(alignment: .leading, spacing: 4) {
                         contentMetaRow                  // meta row above the preview pane
+                        debugTraitsRow                  // TEMP debug — detected traits
                         previewPane
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     }

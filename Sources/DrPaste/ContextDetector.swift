@@ -45,6 +45,26 @@ struct ContentContext: OptionSet, Hashable {
     static let fromOCR          = ContentContext(rawValue: 1 << 22)  // provenance: produced by OCR (stored tag)
 }
 
+extension ContentContext {
+    /// Human-readable names of the flags currently set. DEBUG ONLY — used by
+    /// the temporary HUD trait overlay so the detected signals are visible
+    /// while testing trait gating. Not a user-facing API.
+    var activeNames: [String] {
+        let table: [(ContentContext, String)] = [
+            (.plain, "plain"), (.richText, "rich"), (.url, "url"), (.email, "email"),
+            (.json, "json"), (.code, "code"), (.markdown, "md"), (.table, "table"),
+            (.image, "image"), (.files, "files"), (.pdf, "pdf"),
+            (.multiline, "multiline"), (.mixedScript, "mixedScript"),
+            (.layoutWrong, "layoutWrong"), (.qrEligible, "qrEligible"),
+            (.containsEmails, "containsEmails"), (.containsURLs, "containsURLs"),
+            (.containsCyrillic, "containsCyrillic"), (.containsLatin, "containsLatin"),
+            (.uppercaseHeavy, "uppercaseHeavy"), (.messySpacing, "messySpacing"),
+            (.wrappedLines, "wrappedLines"), (.fromOCR, "fromOCR")
+        ]
+        return table.compactMap { contains($0.0) ? $0.1 : nil }
+    }
+}
+
 enum ContextDetector {
 
     /// Provenance tag stamped on clips produced by the OCR action, so a
