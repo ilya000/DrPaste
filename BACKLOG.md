@@ -3360,9 +3360,10 @@ then (3) `"interslavic"` as a LAST RESORT only. A specific Slavic language is
 always preferred; Interslavic is rare in practice. `"interslavic"` is the
 established pan-Slavic orthography (Medžuslovjansky): /j/→ј, iotation
 decomposed (ja→ја, ju→ју, jo→јо, je→је, ji→ји), y→и (no ы/й), shch→шч — every
-output letter decomposable and readable across Slavic, never privileging
-Russian. Russian remains a full explicit target (y→ы, j→й, '→ь, ''→ъ; ё from
-yo) but is no longer the default. Editor picker: Auto · Interslavic · 14 langs.
+output letter decomposable and readable across Slavic, with no single language
+privileged as the default. All 14 specific languages stay as explicit targets,
+each with its own scheme (e.g. Russian y→ы/j→й/'→ь/''→ъ, Ukrainian г→h/и→y).
+Editor picker: Auto · Interslavic · 14 langs.
 
 **Status (original):** planned. Depends on cheap-trait gating from #A75.
 **Touches:** `CuratedDefaults`, `DefaultTransformationSeed`, transliteration

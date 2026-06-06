@@ -405,7 +405,7 @@ All Cyrillic-script languages with more than ~1 million speakers. Each uses its 
 
 | Language | Example | Romanized | Detected by |
 |---|---|---|---|
-| Russian | Привет мир | Privet mir | default (no marker) |
+| Russian | Привет мир | Privet mir | (no distinctive letter) |
 | Ukrainian | Привіт Київ | Pryvit Kyyiv | і ї є ґ |
 | Kazakh | Қазақстан | Qazaqstan | ұ қ ғ ә |
 | Serbian | Џек и Ђоко | Džek i Đoko | ћ ђ џ |
@@ -424,7 +424,7 @@ All Cyrillic-script languages with more than ~1 million speakers. Each uses its 
 
 The detector compares the text against each language's **full alphabet**. A language is ruled out the moment the text contains a letter its alphabet can't spell — so a word is never assigned to a language that physically couldn't write it. Among the languages that *can* spell the text, the **more widely spoken** one wins.
 
-In practice: «Џек» contains `џ`, which does not exist in Russian, so Russian is excluded outright; the word is valid in both Serbian and Macedonian, and the more widespread Serbian is chosen. Likewise a Tatar sentence with `җ` rules out Kazakh, since Kazakh has no `җ`. Bulgarian — whose alphabet is a subset of Russian's — is the one special case: it's recognized by a hard sign `ъ` used as a vowel with no Russian-only `ы/э/ё`. If nothing distinguishes the text, it's treated as Russian.
+In practice: «Џек» contains `џ`, which does not exist in Russian, so Russian is excluded outright; the word is valid in both Serbian and Macedonian, and the more widespread Serbian is chosen. Likewise a Tatar sentence with `җ` rules out Kazakh, since Kazakh has no `җ`. Bulgarian — whose alphabet is a subset of Russian's — is the one special case: it's recognized by a hard sign `ъ` used as a vowel with no Russian-only `ы/э/ё`. If nothing distinguishes the text, the most widely spoken matching language is used.
 
 When two languages fit the text equally, your **system locale** breaks the tie *before* speaker count: on Serbian/Macedonian-ambiguous text a Serbia locale picks Serbian, and a Ukraine locale romanizes `и → y` where a Russia locale gives `и → i`.
 
@@ -439,8 +439,8 @@ back to a neutral one as a last resort:
    `ž/č/š/ć/đ → Serbian`, `gj/kj → Macedonian`, `q/ğ/ñ → Kazakh`, `ı/ç → Tatar`,
    `ź/ś → Bashkir`, `ă/ĕ → Chuvash`, `ī → Tajik`.
 2. **Your system locale.** If the letters are inconclusive (plain ASCII like
-   `Privet`), your locale decides — a Russia locale → Russian, Ukraine →
-   Ukrainian, Serbia → Serbian, and so on.
+   `Privet`), your locale decides — Ukraine → Ukrainian, Serbia → Serbian,
+   Bulgaria → Bulgarian, and so on for each Cyrillic-script locale.
 3. **Interslavic** *(last resort only).** When neither letters nor locale say
    anything (plain ASCII on a non-Cyrillic locale), the output uses
    **Interslavic** (Интерславик) — the established pan-Slavic auxiliary
@@ -452,8 +452,8 @@ back to a neutral one as a last resort:
 
 **Pinning a language.** Open the action in **Settings → Actions** and pick from
 the **Language** dropdown: `Auto` (default), `Interslavic`, or any of the 14
-specific languages — **Russian is fully available** (with its `ы/э/ъ/ё`), it
-just isn't the default. A pinned action always uses that one target. Create
+specific languages (Russian, Ukrainian, Kazakh, Serbian, Bulgarian, …), each
+with its own letters. A pinned action always uses that one target. Create
 separate per-language actions (Duplicate → pick a language) when you regularly
 transliterate into more than one.
 
