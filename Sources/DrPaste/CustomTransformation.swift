@@ -801,21 +801,52 @@ enum TransformationRuntime {
     /// but valid in Serbian and Macedonian, resolves to Serbian. Bulgarian,
     /// whose alphabet is a subset of Russian's, is recovered from its
     /// signature ъ-as-vowel with no Russian-only ы/э/ё.
+    /// The `cyrillicLangs` id matching the user's locale, if any (e.g. a
+    /// Serbia locale → "serbian"). Used to break detection ties: when the
+    /// text fits two languages equally (Serbian vs Macedonian share most
+    /// letters), the user's own locale is a far better signal than raw
+    /// speaker count. Script subtag is ignored — an sr-Latn user still reads
+    /// Serbian. Computed once.
+    // `var` (not `let`) only so tests can pin it for machine-locale-
+    // independent assertions; production sets it once from the system locale.
+    static var localeCyrillicLanguageID: String? = {
+        let codeToID: [String: String] = [
+            "ru": "russian", "uk": "ukrainian", "be": "belarusian",
+            "bg": "bulgarian", "sr": "serbian", "mk": "macedonian",
+            "kk": "kazakh", "ky": "kyrgyz", "tg": "tajik", "mn": "mongolian",
+            "tt": "tatar", "ba": "bashkir", "cv": "chuvash", "ce": "chechen"
+        ]
+        for lang in Locale.preferredLanguages {
+            let code = (Locale.Language(identifier: lang).languageCode?.identifier
+                        ?? String(lang.prefix(2))).lowercased()
+            if let id = codeToID[code] { return id }
+        }
+        return nil
+    }()
+
     private static func detectCyrillicLanguage(_ s: String) -> CyrillicLang {
         var present = Set(s.lowercased())
         present.formUnion(s)
         let textCyr = present.intersection(allCyrillicLetters)
         guard !textCyr.isEmpty else { return cyrillicLang(id: "russian") }
-        var best = cyrillicLangs[0]                       // Russian baseline
-        var bestForeign = textCyr.subtracting(best.letters).count
-        for lang in cyrillicLangs.dropFirst() {
-            let foreign = textCyr.subtracting(lang.letters).count
-            if foreign < bestForeign
-                || (foreign == bestForeign && lang.prevalence > best.prevalence) {
-                bestForeign = foreign
-                best = lang
-            }
+
+        // Score every language by how many text letters its alphabet can't
+        // spell; the fewest "foreign" letters wins.
+        let scored = cyrillicLangs.map { ($0, textCyr.subtracting($0.letters).count) }
+        let minForeign = scored.map(\.1).min() ?? 0
+        let tied = scored.filter { $0.1 == minForeign }.map(\.0)
+
+        let best: CyrillicLang
+        if let localeID = localeCyrillicLanguageID,
+           let localeMatch = tied.first(where: { $0.id == localeID }) {
+            // Locale breaks the tie — Serbia locale on Serbian/Macedonian-
+            // ambiguous text picks Serbian, regardless of speaker count.
+            best = localeMatch
+        } else {
+            // Otherwise the more widely spoken tied language.
+            best = tied.max(by: { $0.prevalence < $1.prevalence }) ?? cyrillicLangs[0]
         }
+
         if best.id == "russian"
             && textCyr.contains("ъ")
             && textCyr.isDisjoint(with: ["ы", "э", "ё"]) {

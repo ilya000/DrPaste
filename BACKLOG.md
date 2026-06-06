@@ -3342,6 +3342,15 @@ Default-on is now locale-aware: `CuratedDefaults.localePrefersCyrillic` checks
 for Cyrillic-script users, palette-only otherwise. Cyrillic→Latin stays on
 everywhere.
 
+Plus a related detection refinement (same spirit): `detectCyrillicLanguage`
+now breaks ties by the user's **locale** before speaker-count prevalence —
+`localeCyrillicLanguageID` from `Locale.preferredLanguages`. When text fits
+several languages equally (e.g. Serbian/Macedonian share most letters), a
+Serbia locale picks Serbian. (For the Serbian/Macedonian pair the romanized
+output is identical anyway — they romanize every shared letter the same — but
+for pairs that differ on shared letters, e.g. Russian и→i vs Ukrainian и→y,
+the locale now decides.) `localeCyrillicLanguageID` is test-pinnable.
+
 **Status (original):** planned. Depends on cheap-trait gating from #A75.
 **Touches:** `CuratedDefaults`, `DefaultTransformationSeed`, transliteration
 actions, `ContextDetector` (containsCyrillic / containsLatin).

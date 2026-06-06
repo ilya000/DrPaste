@@ -11,6 +11,14 @@ import XCTest
 
 final class TransformationRuntimeTests: XCTestCase {
 
+    /// Pin the Cyrillic-detection locale tie-breaker off by default so
+    /// auto-detect assertions are deterministic regardless of the runner's
+    /// system locale (the locale tie-break gets its own explicit test).
+    override func setUp() {
+        super.setUp()
+        TransformationRuntime.localeCyrillicLanguageID = nil
+    }
+
     // MARK: - Case engines
 
     func testCaseChangeUpper() throws {
@@ -354,5 +362,18 @@ final class TransformationRuntimeTests: XCTestCase {
                                                   input: "a\t\tb \u{00A0}\u{00A0}c   d",
                                                   params: [:])
         XCTAssertEqual(out, "a b c d")
+    }
+
+    /// #A77 — when the text fits several languages equally, the user's locale
+    /// breaks the tie over raw speaker count. "рим" is spellable by many; the
+    /// locale decides и's romanization (Russian и→i vs Ukrainian и→y).
+    func testCyrillicDetectionLocaleBreaksTie() throws {
+        defer { TransformationRuntime.localeCyrillicLanguageID = nil }
+        TransformationRuntime.localeCyrillicLanguageID = "russian"
+        XCTAssertEqual(try TransformationRuntime.apply(engine: .cyrillicToLatin,
+                                                       input: "рим", params: [:]), "rim")
+        TransformationRuntime.localeCyrillicLanguageID = "ukrainian"
+        XCTAssertEqual(try TransformationRuntime.apply(engine: .cyrillicToLatin,
+                                                       input: "рим", params: [:]), "rym")
     }
 }
