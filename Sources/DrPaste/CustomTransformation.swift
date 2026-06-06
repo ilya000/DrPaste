@@ -703,7 +703,14 @@ enum TransformationRuntime {
     /// (incl. diacritics like ä/ö/ü/ñ where the scheme uses them).
     private static let cyrillicLangs: [CyrillicLang] = [
         CyrillicLang("russian", "Russian", 150,
-            letters: ruCore),
+            letters: ruCore,
+            // Russian-specific Latin→Cyrillic so the explicit Russian target
+            // produces its characteristic letters (the neutral `slavic`
+            // scheme deliberately omits these): y→ы, j→й, apostrophes→ь/ъ.
+            // ё comes from the base yo→ё. (э is intentionally NOT mapped —
+            // no unambiguous Latin source; "eh" would false-trigger in
+            // ordinary words like "tehnika".)
+            lat2cyr: ["y": "ы", "j": "й", "'": "ь", "''": "ъ"]),
         CyrillicLang("ukrainian", "Ukrainian", 33,
             letters: "абвгґдеєжзиіїйклмнопрстуфхцчшщьюя",
             cyr2lat: ["г": "h", "и": "y"],
@@ -1316,8 +1323,14 @@ enum TransformationRuntime {
             "j": "й",
             "w": "в", "x": "кс", "q": "к"
         ]
-        // The neutral common-Slavic scheme itself — no language overrides.
-        if target == "slavic" { return m }
+        // The neutral common-Slavic scheme: strip the only non-neutral output
+        // the base carries (Russian ё) by writing yo→йо. The base already
+        // emits no Russian ы/э/ъ nor Ukrainian ї/і, so the result uses only
+        // letters shared broadly across Slavic Cyrillic.
+        if target == "slavic" {
+            m["yo"] = "йо"
+            return m
+        }
         let lang = cyrillicLang(id: target)
         for key in lang.lat2cyrDrop { m.removeValue(forKey: key) }
         for (k, v) in lang.lat2cyr { m[k] = v }

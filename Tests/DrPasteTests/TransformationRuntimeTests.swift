@@ -421,4 +421,22 @@ final class TransformationRuntimeTests: XCTestCase {
                                                        input: "Privet", params: ["target": "auto"]),
                        "Прівет")
     }
+
+    func testLatinToCyrillicRussianHasCharacteristicLetters() throws {
+        // The explicit Russian target keeps Russian-specific letters.
+        XCTAssertEqual(try TransformationRuntime.apply(engine: .latinToCyrillic,
+                                                       input: "syn", params: ["target": "russian"]), "сын")     // y→ы
+        XCTAssertEqual(try TransformationRuntime.apply(engine: .latinToCyrillic,
+                                                       input: "yolka", params: ["target": "russian"]), "ёлка")  // yo→ё
+        XCTAssertEqual(try TransformationRuntime.apply(engine: .latinToCyrillic,
+                                                       input: "Vasil'ev", params: ["target": "russian"]), "Васильев") // '→ь
+    }
+
+    func testSlavicSchemeOmitsRussianYoAndYi() throws {
+        // Neutral scheme: yo→йо (never ё); y→й (not ы); no Ukrainian і/ї.
+        let out = try TransformationRuntime.apply(engine: .latinToCyrillic,
+                                                  input: "yolka syn", params: ["target": "slavic"])
+        XCTAssertEqual(out, "йолка сйн")
+        XCTAssertFalse(out.contains("ё") || out.contains("ы") || out.contains("і") || out.contains("ї"))
+    }
 }
