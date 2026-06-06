@@ -31,9 +31,11 @@ enum CuratedDefaults {
         "builtin.text.uppercase",
         "builtin.text.lowercase",
 
-        // Text — whitespace / lines (core 2 + #A74 join).
-        "builtin.text.sort_lines",
-        "builtin.text.remove_line_breaks",        // #A74 new
+        // Text — whitespace / lines. "Tidy text" (builtin.text.trim) is now
+        // the one universal cleanup: it trims, normalises spacing, collapses
+        // blank lines AND reflows PDF-wrapped lines, so sort_lines (niche) and
+        // remove_line_breaks (merged) are OFF by default.
+        "builtin.text.trim",
 
         // Text — derived.
         "builtin.text.word_count",
@@ -45,9 +47,12 @@ enum CuratedDefaults {
         // URL — decode is common.
         "builtin.url.decode",
 
-        // HTML / extraction (curated subset from 0.55).
+        // HTML / extraction (curated subset from 0.55). The universal
+        // "Extract links" (text.extract_links, gated by containsURLs) is the
+        // one kept on — the markdown-only md.extract_links duplicate is off.
         "builtin.html.strip_tags",
         "builtin.text.extract_emails",
+        "builtin.text.extract_links",
 
         // Text — transliteration. Cyrillic→Latin is curated everywhere
         // (honest trigger: containsCyrillic). Latin→Cyrillic's default is
@@ -56,28 +61,19 @@ enum CuratedDefaults {
         // routinely wanted by Cyrillic-script users.
         "builtin.text.cyrillic_to_latin",
 
-        // Text — Unicode pseudo-fonts (all 22).
+        // Text — Unicode pseudo-fonts. Only the handful that are genuinely
+        // useful + visually striking are ON by default; the long tail (sans
+        // variants, fraktur, double-struck, circled/squared, upside-down, …)
+        // stays available but OFF so the HUD isn't buried under 20 near-
+        // identical "fancy text" rows. `font_plain` is gone from the defaults
+        // entirely — the universal "Plain text" cleaner now denormalises
+        // Unicode styling, so a dedicated reverse action is redundant.
         "builtin.text.font_bold",
         "builtin.text.font_italic",
         "builtin.text.font_bold_italic",
         "builtin.text.font_script",
-        "builtin.text.font_bold_script",
-        "builtin.text.font_fraktur",
-        "builtin.text.font_bold_fraktur",
-        "builtin.text.font_double_struck",
-        "builtin.text.font_sans",
-        "builtin.text.font_sans_bold",
-        "builtin.text.font_sans_italic",
-        "builtin.text.font_sans_bold_italic",
         "builtin.text.font_monospace",
-        "builtin.text.font_fullwidth",
         "builtin.text.font_small_caps",
-        "builtin.text.font_circled",
-        "builtin.text.font_filled_circled",
-        "builtin.text.font_squared",
-        "builtin.text.font_filled_squared",
-        "builtin.text.font_upside_down",
-        "builtin.text.font_plain",
 
         // Text — type slowly bypass.
         "builtin.text.type_slowly",
@@ -93,8 +89,9 @@ enum CuratedDefaults {
         "builtin.url.extract_domain",
         "builtin.url.preview_card",
 
-        // JSON — core 4.
-        "builtin.json.pretty",
+        // JSON — `json.pretty` is OFF by default: "Pretty Code (local)" now
+        // covers JSON with byte-identical output, so the dedicated action is
+        // redundant.
         "builtin.json.minify",
         "builtin.json.extract_keys",
         "builtin.json.validate",
@@ -105,21 +102,23 @@ enum CuratedDefaults {
         "builtin.table.to_wiki",
         "builtin.table.to_rich",
 
-        // Markdown — core 3.
-        "builtin.md.to_plain",
+        // Markdown — core. `md.to_plain` is OFF by default: the universal
+        // "Plain text" cleaner now also strips Markdown, so it's redundant.
         "builtin.md.to_rich",
+        "builtin.md.to_wiki",
         "builtin.md.extract_headings",
 
-        // Code — core 3.
+        // Code — core. Indentation flips (tabs_to_spaces / spaces_to_tabs) are
+        // OFF by default: Pretty Code (local) handles indentation as part of
+        // formatting, so the standalone flips just clutter the Code tab.
         "builtin.code.wrap_block",
-        "builtin.code.tabs_to_spaces",
         "builtin.code.pretty_local",
 
         // Image — core 10 (the strong defaults).
         "builtin.image.ocr",
         "builtin.image.decode_qr",
+        "builtin.image.info",
         "builtin.image.strip_metadata",
-        "builtin.image.resize_max_1920",
         "builtin.image.to_grayscale",
         "builtin.image.rotate_right",
         "builtin.image.rotate_left",
@@ -157,10 +156,23 @@ enum CuratedDefaults {
     /// standalone trim, standalone clean formatting, html_link, query_params, json_flatten,
     /// json_nulls, md_extract_links, spaces_to_tabs, image_rotate, image_invert,
     /// image_compress, sha256, bash_list, parent_folder, file_paths_html, and so on.
+    /// AI seeds that ship OFF by default — novelty / niche / expensive. The
+    /// core writing, code-understanding and OCR-cleanup AI actions stay on; the
+    /// rest are discoverable in the list but don't clutter the HUD.
+    static let aiOffByDefault: Set<String> = [
+        "ai.text.ipa_transcription",     // phonetic transcription (niche)
+        "ai.text.latin_to_cyrillic",     // local sibling covers 80%
+        "ai.code.translate",             // requires a target language
+        "ai.code.pretty",                // local "Pretty Code" covers it
+        "ai.image.sketch", "ai.image.watercolor", "ai.image.cartoon",
+        "ai.text.image_whiteboard"       // text→image styles (generate cost)
+    ]
+
     static func isEnabledByDefault(_ actionID: String) -> Bool {
-        // AI seeds (`ai.*`) and user-created custom actions (`user.*`)
-        // are always default-enabled.
-        if actionID.hasPrefix("ai.") || actionID.hasPrefix("user.") { return true }
+        // AI seeds: on by default EXCEPT the curated novelty/niche set.
+        if actionID.hasPrefix("ai.") { return !aiOffByDefault.contains(actionID) }
+        // User-created custom actions are always default-enabled.
+        if actionID.hasPrefix("user.") { return true }
         // #A77 — Latin→Cyrillic is curated-on only for Cyrillic-script users.
         // (Cyrillic→Latin has an honest content trigger and is on everywhere.)
         if actionID == "builtin.text.latin_to_cyrillic" { return localePrefersCyrillic }

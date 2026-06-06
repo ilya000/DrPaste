@@ -15,22 +15,91 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+// MARK: - Enabled checkbox style
+
+/// Custom checkbox for the per-action "enabled" toggle. The native macOS
+/// checkbox is fixed to the system accent colour (and ignores `.tint` for the
+/// checkbox style), so we draw our own box to encode two things at once:
+///   • the CHECKMARK = enabled vs disabled (present / absent)
+///   • the FILL COLOUR = whether the action is guaranteed in the HUD
+///       – green  → always offered (no trait condition)
+///       – yellow → conditional (has an active trait; shows only when the
+///                  clip matches)
+/// Behaviour (click to toggle, disabled state) matches a normal Toggle.
+struct EnabledCheckboxToggleStyle: ToggleStyle {
+    var onColor: Color = .green
+    /// Checkmark colour — kept high-contrast against `onColor` (white on
+    /// green, dark on bright yellow).
+    var checkColor: Color = .white
+
+    func makeBody(configuration: Configuration) -> some View {
+        Button {
+            configuration.isOn.toggle()
+        } label: {
+            // Pad out the hit area to ~20×20 and stamp a rectangular content
+            // shape so the WHOLE region (not just the painted box) is
+            // clickable. Critical for the OFF state: a `Color.clear` fill is
+            // not hit-tested, which made an unchecked action impossible to
+            // re-enable.
+            box(isOn: configuration.isOn)
+                .padding(3)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(configuration.isOn ? [.isSelected] : [])
+    }
+
+    private func box(isOn: Bool) -> some View {
+        RoundedRectangle(cornerRadius: 4, style: .continuous)
+            // OFF state uses a faint visible fill (never `Color.clear`) so the
+            // empty checkbox both reads as clickable and is hit-testable.
+            .fill(isOn ? onColor : Color.secondary.opacity(0.12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .strokeBorder(isOn ? onColor : Color.secondary.opacity(0.55),
+                                  lineWidth: 1)
+            )
+            .frame(width: 14, height: 14)
+            .overlay(
+                Image(systemName: "checkmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(checkColor)
+                    .opacity(isOn ? 1 : 0)
+            )
+    }
+}
+
 // MARK: - Controller (NSWindow lifecycle)
+
+/// Drives which Settings tab is shown. Held by the controller and observed by
+/// `SettingsView` so deep links (`drpaste://settings/ai`, …) and the HUD
+/// recovery action can jump straight to a specific tab.
+@MainActor
+final class SettingsNavigation: ObservableObject {
+    /// Tab tags: "general", "ai", or a `SemanticKind.rawValue` for content tabs.
+    @Published var selectedTab: String = SettingsNavigation.generalTab
+    static let generalTab = "general"
+    static let aiTab = "ai"
+}
 
 @MainActor
 final class SettingsWindowController {
     private var window: NSWindow?
     let registry: ActionRegistry
     let store: ClipboardStore
+    let navigation = SettingsNavigation()
 
     init(registry: ActionRegistry, store: ClipboardStore) {
         self.registry = registry
         self.store = store
     }
 
-    func show() {
+    /// Show Settings, optionally jumping to a specific tab. `tab` is a tag:
+    /// "general", "ai", or a `SemanticKind.rawValue` (e.g. "text"). Passing nil
+    /// leaves the current tab selection untouched.
+    func show(tab: String? = nil) {
         if window == nil {
-            let view = SettingsView(registry: registry, store: store)
+            let view = SettingsView(registry: registry, store: store, navigation: navigation)
             let host = NSHostingController(rootView: view)
             let w = NSWindow(contentViewController: host)
             w.title = "DrPaste Settings"
@@ -40,6 +109,7 @@ final class SettingsWindowController {
             w.isReleasedWhenClosed = false
             window = w
         }
+        if let tab { navigation.selectedTab = tab }
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -52,16 +122,20 @@ final class SettingsWindowController {
 struct SettingsView: View {
     @ObservedObject var registry: ActionRegistry
     let store: ClipboardStore
+    @ObservedObject var navigation: SettingsNavigation
 
     var body: some View {
-        TabView {
+        TabView(selection: $navigation.selectedTab) {
             GeneralTab(registry: registry)
                 .tabItem { Label("General", systemImage: "gear") }
+                .tag(SettingsNavigation.generalTab)
             AIProvidersTab(registry: registry)
                 .tabItem { Label("AI", systemImage: "sparkles") }
+                .tag(SettingsNavigation.aiTab)
             ForEach(visibleContentTypes, id: \.self) { kind in
                 ContentTypeTab(kind: kind, registry: registry, store: store)
                     .tabItem { Label(kind.displayName, systemImage: kind.sfSymbol) }
+                    .tag(kind.rawValue)
             }
         }
         .padding()
@@ -149,7 +223,13 @@ struct GeneralTab: View {
             Section("Sound feedback") {
                 HStack {
                     Text("Volume:")
-                    Slider(value: $soundVolume, in: 0...1)
+                    Slider(value: $soundVolume, in: 0...1, onEditingChanged: { editing in
+                        // Preview only when the user finishes dragging the
+                        // slider — never on the programmatic load that happens
+                        // every time the Settings window opens (that stray
+                        // sound on open was the bug).
+                        if !editing { SoundFeedback.playPreview(.copySuccess) }
+                    })
                     Text(String(format: "%.0f%%", soundVolume * 100))
                         .font(.system(.body, design: .monospaced))
                         .frame(width: 50)
@@ -269,9 +349,11 @@ struct GeneralTab: View {
             UserDefaults.standard.set(v, forKey: "drpaste.hud.fontScale")
         }
         .onChange(of: soundVolume) { v in
+            // Apply the volume live (both for the slider drag and the
+            // programmatic load on open) — but DON'T play a preview here, or
+            // opening Settings would chirp every time. The preview fires from
+            // the slider's onEditingChanged instead.
             SoundFeedback.setVolume(Float(v))
-            // Sound preview while the volume slider moves.
-            SoundFeedback.playPreview(.copySuccess)
         }
         .confirmationDialog(
             "Replace configuration from file?",
@@ -1834,7 +1916,12 @@ struct ContentTypeTab: View {
     private var orderedActions: [ClipboardAction] {
         let item = makeSampleItem()
         let ctx = ContextDetector.detect(item)
-        let applicable = registry.actions.filter { $0.isApplicable(item: item, context: ctx) }
+        // Membership is by content TYPE ("Applies to"), NOT by live trait
+        // conditions. A trait gates HUD visibility against the real clip; in
+        // Settings the user must still see and manage every action for the
+        // tab's type — otherwise setting a condition makes the action vanish
+        // from the list and become impossible to find / edit again.
+        let applicable = registry.actions.filter { $0.appliesToContentType(item: item, context: ctx) }
         return registry.reorder(applicable, forContentType: kind)
     }
 
@@ -1861,6 +1948,14 @@ struct ContentTypeTab: View {
                 .frame(width: 12)
             Toggle("", isOn: enabledBinding(action.id))
                 .labelsHidden()
+                .toggleStyle(registry.hasActiveTraits(action.id)
+                    ? EnabledCheckboxToggleStyle(onColor: Color(red: 1.0, green: 0.82, blue: 0.0),
+                                                 checkColor: .black)
+                    : EnabledCheckboxToggleStyle(onColor: Color(red: 0.56, green: 0.85, blue: 0.40),
+                                                 checkColor: .black))
+                .help(registry.hasActiveTraits(action.id)
+                    ? "Conditional — shown in the HUD only when the clip matches this action’s trait condition."
+                    : "Always offered in the HUD when enabled.")
             leadingIcon(for: action)
             // Title row. When the user has renamed the action, the
             // factory default appears inline to the right of the
@@ -2126,7 +2221,17 @@ struct ContentTypeTab: View {
     }
 
     private func run(_ action: ClipboardAction) {
-        let item = makeSampleItem()
+        // Image-info and Strip-metadata need an input that actually carries
+        // metadata to demonstrate anything — the standard PNG sample is
+        // metadata-free.
+        let metadataActions: Set<String> = ["builtin.image.strip_metadata", "builtin.image.info"]
+        let item: ClipboardItem = {
+            if metadataActions.contains(action.id), kind == .image,
+               let rich = ActionTestSamples.makeMetadataRichSampleItem() {
+                return rich
+            }
+            return makeSampleItem()
+        }()
         let ctx = ContextDetector.detect(item)
         runningID = action.id
         runningActionTitle = registry.displayTitle(forActionID: action.id,
@@ -2154,6 +2259,10 @@ struct ContentTypeTab: View {
                 self.runningActionTitle = nil
                 self.stopResultTick()
                 self.resultInflight = nil
+                // Actually perform side-effect actions (e.g. Reveal in Finder)
+                // on Run — otherwise the test only shows a "will do X" notice
+                // and the action never fires.
+                if case .sideEffect(_, let perform) = outcome { perform() }
             }
         }
     }

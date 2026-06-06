@@ -120,6 +120,15 @@ final class ContextDetectorTests: XCTestCase {
         XCTAssertFalse(ContextDetector.detect(item(.text, text: "FBI")).contains(.uppercaseHeavy))
     }
 
+    func testLowercaseHeavy() {
+        // All-lowercase typing (no capitals at all) → flagged.
+        XCTAssertTrue(ContextDetector.detect(item(.text, text: "this is all lowercase text here")).contains(.lowercaseHeavy))
+        // A single sentence-start capital clears it (normal prose).
+        XCTAssertFalse(ContextDetector.detect(item(.text, text: "This is normal sentence text")).contains(.lowercaseHeavy))
+        // Too short to judge.
+        XCTAssertFalse(ContextDetector.detect(item(.text, text: "hi")).contains(.lowercaseHeavy))
+    }
+
     func testMessySpacing() {
         XCTAssertTrue(ContextDetector.detect(item(.text, text: "a\tb")).contains(.messySpacing))
         XCTAssertTrue(ContextDetector.detect(item(.text, text: "a  b")).contains(.messySpacing))
@@ -141,6 +150,18 @@ final class ContextDetectorTests: XCTestCase {
         XCTAssertTrue(ContextDetector.detect(item(.text, text: "a_b")).contains(.containsLatin)) // real letters present
         // Cyrillic + only-symbols must NOT be flagged mixedScript.
         XCTAssertFalse(ContextDetector.detect(item(.text, text: "привет ___")).contains(.mixedScript))
+    }
+
+    func testContainsHTMLMarkup() {
+        // Real HTML → flagged.
+        XCTAssertTrue(ContextDetector.detect(item(.text, text: "<p>hello</p>")).contains(.containsHTMLMarkup))
+        XCTAssertTrue(ContextDetector.detect(item(.text, text: "a <a href=\"x\">link</a> b")).contains(.containsHTMLMarkup))
+        XCTAssertTrue(ContextDetector.detect(item(.text, text: "line<br/>break")).contains(.containsHTMLMarkup))
+        // Angle brackets that are NOT HTML → must NOT be flagged (so Strip HTML
+        // tags never mangles math / generics).
+        XCTAssertFalse(ContextDetector.detect(item(.text, text: "5 < 10 and 20 > 15")).contains(.containsHTMLMarkup))
+        XCTAssertFalse(ContextDetector.detect(item(.code, text: "List<String> items")).contains(.containsHTMLMarkup))
+        XCTAssertFalse(ContextDetector.detect(item(.code, text: "vector<int> v;")).contains(.containsHTMLMarkup))
     }
 
     func testEmptyAndWhitespaceText() {

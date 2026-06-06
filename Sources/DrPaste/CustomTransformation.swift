@@ -76,7 +76,7 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
         case .sortLines:         return "Sort lines"
         case .uniqueLines:       return "Unique lines"
         case .jsonFormat:        return "Format JSON"
-        case .trim:              return "Trim whitespace"
+        case .trim:              return "Tidy text"
         case .camelCase:         return "camelCase"
         case .snakeCase:         return "snake_case"
         case .kebabCase:         return "kebab-case"
@@ -444,6 +444,12 @@ struct CustomTransformationAction: ClipboardAction {
                                   in: context)
     }
 
+    /// Type-only membership (no trait gate) — see ClipboardAction default.
+    func appliesToContentType(item: ClipboardItem, context: ContentContext) -> Bool {
+        applicableSet.contains(item.semantic)
+            || (item.semantic == .richText && applicableSet.contains(.text))
+    }
+
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
         guard let engine = descriptor.engine else {
             return .failed(original: item, reason: "Unknown engine: \(descriptor.engineID)", recovery: nil)
@@ -524,9 +530,21 @@ struct CustomTransformationAction: ClipboardAction {
 
 // MARK: - Runtime
 
-enum TransformationError: Error {
+enum TransformationError: LocalizedError {
     case invalidRegex(String)
     case missingParameter(String)
+
+    /// Human-readable, non-alarming text. Without `LocalizedError`,
+    /// `error.localizedDescription` falls back to the raw Cocoa string
+    /// ("The operation couldn't be completed. (DrPaste.TransformationError
+    /// error 1.)"), which reads like a crash even though many transforms
+    /// simply have nothing to do (e.g. Base64-decoding ordinary text).
+    var errorDescription: String? {
+        switch self {
+        case .invalidRegex(let msg):     return "Invalid regular expression: \(msg)"
+        case .missingParameter(let msg): return msg
+        }
+    }
 }
 
 enum TransformationRuntime {
@@ -1122,11 +1140,48 @@ enum TransformationRuntime {
 
     // MARK: - New parameter-less engines (seeded as builtin.* transformations)
 
+    /// Universal "tidy" cleanup (the merged Trim / Normalize-spaces /
+    /// Collapse-blank-lines action). Removes the cruft a paste typically carries
+    /// — leading/trailing whitespace, tabs / NBSP / multi-space runs, and big
+    /// gaps of blank lines — and reflows PDF-style hard-wrapped lines back into
+    /// paragraphs. The reflow is conservative (only joins a "full" line to a
+    /// lower-case continuation) so lists, code, addresses and intentional breaks
+    /// survive.
     private static func trim(_ input: String) -> String {
-        let lines = input.split(separator: "\n", omittingEmptySubsequences: false)
-        return lines.map { $0.trimmingCharacters(in: .whitespaces) }
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var s = input.replacingOccurrences(of: "\r\n", with: "\n")
+                     .replacingOccurrences(of: "\r", with: "\n")
+        s = dewrapWrapped(s)
+        s = normalizeSpaces(s)
+        s = collapseBlankLines(s)
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Join only the lines that are clearly soft-wrapped continuations: a "full"
+    /// line (≥55 chars) that doesn't end in sentence punctuation, followed by a
+    /// line starting with a lower-case letter. Short lines (list items, table
+    /// rows), sentence ends, and new-sentence starts are left untouched.
+    private static func dewrapWrapped(_ input: String) -> String {
+        let rawLines = input.components(separatedBy: "\n")
+        guard rawLines.count >= 3 else { return input }
+        let terminal: Set<Character> = [".", "!", "?", ":", ";", "\"", ")", "•", "-"]
+        var out: [String] = []
+        var i = 0
+        while i < rawLines.count {
+            var line = rawLines[i]
+            while i + 1 < rawLines.count {
+                let cur = line.trimmingCharacters(in: .whitespaces)
+                let next = rawLines[i + 1].trimmingCharacters(in: .whitespaces)
+                guard !cur.isEmpty, !next.isEmpty,
+                      cur.count >= 55,
+                      let lastCh = cur.last, !terminal.contains(lastCh),
+                      let firstCh = next.first, firstCh.isLowercase else { break }
+                line = cur + " " + next
+                i += 1
+            }
+            out.append(line)
+            i += 1
+        }
+        return out.joined(separator: "\n")
     }
 
     private static func camelCase(_ input: String) -> String {
@@ -1157,7 +1212,7 @@ enum TransformationRuntime {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let data = Data(base64Encoded: trimmed),
               let decoded = String(data: data, encoding: .utf8) else {
-            throw TransformationError.missingParameter("input is not valid Base64")
+            throw TransformationError.missingParameter("This text isn’t valid Base64, so there’s nothing to decode.")
         }
         return decoded
     }
@@ -1187,13 +1242,22 @@ enum TransformationRuntime {
 
     private static func mdToPlain(_ input: String) -> String {
         var s = input
+        // `(?m)` = multiline: `^` matches the start of EVERY line, not just the
+        // whole string — without it only the first line's heading / bullet was
+        // ever stripped (## on line 2+ leaked through).
         let patterns: [(String, String)] = [
-            (#"^#{1,6}\s+"#, ""),
-            (#"\*\*(.+?)\*\*"#, "$1"),
-            (#"\*(.+?)\*"#, "$1"),
-            (#"`([^`]+)`"#, "$1"),
-            (#"\[([^\]]+)\]\([^)]+\)"#, "$1"),
-            (#"^[-*+]\s+"#, "• ")
+            (#"(?m)^\s{0,3}#{1,6}[ \t]+"#, ""),    // ATX headings, every line
+            (#"(?m)^[ \t]*>[ \t]?"#, ""),          // blockquote markers
+            (#"(?m)^[ \t]*```.*$"#, ""),           // fenced code-block markers
+            (#"\*\*\*(.+?)\*\*\*"#, "$1"),         // bold-italic
+            (#"___(.+?)___"#, "$1"),
+            (#"\*\*(.+?)\*\*"#, "$1"),             // bold
+            (#"__(.+?)__"#, "$1"),
+            (#"\*(.+?)\*"#, "$1"),                 // italic
+            (#"~~(.+?)~~"#, "$1"),                 // strikethrough
+            (#"`([^`]+)`"#, "$1"),                 // inline code
+            (#"\[([^\]]+)\]\([^)]+\)"#, "$1"),     // links → label
+            (#"(?m)^[ \t]*[-*+][ \t]+"#, "• ")     // unordered list bullets, every line
         ]
         for (pat, rep) in patterns {
             s = s.replacingOccurrences(of: pat, with: rep, options: .regularExpression)
@@ -1203,9 +1267,15 @@ enum TransformationRuntime {
 
     private static func mdExtractHeadings(_ input: String) throws -> String {
         let lines = input.split(separator: "\n").map(String.init)
-        let headings = lines.filter { $0.hasPrefix("#") && $0.contains(" ") }
+        // Extract heading text WITHOUT the `#` markers — extracting an outline
+        // should give clean titles, not "## Subtitle".
+        let headings = lines.compactMap { line -> String? in
+            guard let r = line.range(of: #"^\s{0,3}#{1,6}[ \t]+"#, options: .regularExpression) else { return nil }
+            let text = String(line[r.upperBound...]).trimmingCharacters(in: .whitespaces)
+            return text.isEmpty ? nil : text
+        }
         if headings.isEmpty {
-            throw TransformationError.missingParameter("no Markdown headings found")
+            throw TransformationError.missingParameter("No Markdown headings to extract here.")
         }
         return headings.joined(separator: "\n")
     }
@@ -1220,7 +1290,7 @@ enum TransformationRuntime {
             return String(input[r])
         }
         if urls.isEmpty {
-            throw TransformationError.missingParameter("no Markdown links found")
+            throw TransformationError.missingParameter("No Markdown links to extract here.")
         }
         return urls.joined(separator: "\n")
     }

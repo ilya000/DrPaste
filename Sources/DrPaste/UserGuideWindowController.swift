@@ -23,7 +23,7 @@
 import AppKit
 
 @MainActor
-final class UserGuideWindowController: NSWindowController {
+final class UserGuideWindowController: NSWindowController, NSTextViewDelegate {
 
     static let shared = UserGuideWindowController()
 
@@ -87,10 +87,71 @@ final class UserGuideWindowController: NSWindowController {
             .cursor: NSCursor.pointingHand
         ]
 
+        // Intercept clicks so `drpaste://` links route to in-app destinations
+        // (Settings tabs, etc.) instead of being handed to NSWorkspace.
+        textView.delegate = self
+
         textView.textStorage?.setAttributedString(renderedGuide())
 
         scroll.documentView = textView
         window.contentView = scroll
+    }
+
+    /// In-document anchor target → character location in the rendered text,
+    /// built while rendering. Lets the Table-of-contents links scroll instead
+    /// of being handed to NSWorkspace (which fails with "can't be opened −50").
+    private var anchorLocations: [String: Int] = [:]
+
+    /// Handle clicks: in-document `#anchor` links scroll to the heading;
+    /// `drpaste://` deep links route to the AppDelegate; everything else
+    /// (https, mailto, …) falls through to the default handler.
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        let url: URL? = (link as? URL) ?? (link as? String).flatMap { URL(string: $0) }
+        guard let url else { return false }
+
+        // Table-of-contents anchor (fragment-only / relative URL).
+        if url.scheme == nil || url.scheme == "applewebdata" || url.absoluteString.hasPrefix("#"),
+           let fragment = anchorFragment(from: url, raw: link) {
+            scrollToAnchor(fragment, in: textView)
+            return true
+        }
+
+        if url.scheme == "drpaste" {
+            return (NSApp.delegate as? AppDelegate)?.openDeepLink(url) ?? false
+        }
+        return false
+    }
+
+    private func anchorFragment(from url: URL, raw: Any) -> String? {
+        if let frag = url.fragment, !frag.isEmpty { return frag.removingPercentEncoding ?? frag }
+        if let s = raw as? String, s.hasPrefix("#") { return String(s.dropFirst()) }
+        let abs = url.absoluteString
+        if let hash = abs.firstIndex(of: "#") { return String(abs[abs.index(after: hash)...]) }
+        return nil
+    }
+
+    private func scrollToAnchor(_ fragment: String, in textView: NSTextView) {
+        guard let loc = anchorLocations[fragment],
+              let lm = textView.layoutManager,
+              let tc = textView.textContainer else { return }
+        let glyphRange = lm.glyphRange(forCharacterRange: NSRange(location: loc, length: 1),
+                                       actualCharacterRange: nil)
+        var rect = lm.boundingRect(forGlyphRange: glyphRange, in: tc)
+        rect.origin.y += textView.textContainerInset.height
+        // Land the heading near the top of the viewport.
+        textView.scroll(NSPoint(x: 0, y: max(0, rect.minY - 8)))
+    }
+
+    /// GitHub-style heading slug: lowercase, drop punctuation / symbols, spaces
+    /// and existing hyphens become hyphens. Consecutive hyphens are preserved
+    /// (matches how the HELP.md TOC anchors are generated).
+    static func headingSlug(_ text: String) -> String {
+        var s = ""
+        for ch in text.lowercased() {
+            if ch.isLetter || ch.isNumber { s.append(ch) }
+            else if ch == " " || ch == "-" { s.append("-") }
+        }
+        return s
     }
 
     /// Load HELP.md from the bundle and render it as an attributed
@@ -156,7 +217,12 @@ final class UserGuideWindowController: NSWindowController {
             applyBaseStyling(to: &attr)
             applyHeadingStyling(to: &attr)
             applyCodeStyling(to: &attr)
-            return NSAttributedString(attr)
+            // CRITICAL: `AttributedString(markdown:)` parses block structure
+            // into `presentationIntent` but inserts NO newlines between blocks,
+            // so headings/paragraphs/list-items render as one continuous run
+            // (everything jammed together). Rebuild the string inserting a
+            // separator at every block boundary.
+            return blockSeparated(attr)
         } catch {
             // Parser failure (shouldn't happen with .returnPartiallyParsedIfPossible
             // but cover the case) — fall back to plain text rendering.
@@ -167,6 +233,53 @@ final class UserGuideWindowController: NSWindowController {
                     .foregroundColor: NSColor.textColor
                 ]
             )
+        }
+    }
+
+    /// Rebuild the parsed document inserting a line break at every block
+    /// boundary (paragraph / heading / list-item / code-block / rule), since
+    /// `AttributedString(markdown:)` carries block structure only as
+    /// `presentationIntent` metadata with no actual newlines. Consecutive
+    /// list items get a single break; everything else a blank line.
+    private func blockSeparated(_ attr: AttributedString) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        anchorLocations = [:]
+        var isFirst = true
+        var lastIntent: PresentationIntent?
+        for run in attr.runs {
+            let intent = run.presentationIntent
+            if !isFirst && lastIntent != intent {
+                let sep = (isListItem(intent) && isListItem(lastIntent)) ? "\n" : "\n\n"
+                result.append(NSAttributedString(string: sep,
+                                                 attributes: [.font: NSFont.systemFont(ofSize: 13)]))
+            }
+            // Record the scroll target for each heading so TOC anchors work.
+            if isHeader(intent), intent != lastIntent {
+                let slug = Self.headingSlug(String(attr[run.range].characters))
+                if !slug.isEmpty, anchorLocations[slug] == nil {
+                    anchorLocations[slug] = result.length
+                }
+            }
+            result.append(NSAttributedString(AttributedString(attr[run.range])))
+            lastIntent = intent
+            isFirst = false
+        }
+        return result
+    }
+
+    private func isListItem(_ intent: PresentationIntent?) -> Bool {
+        guard let intent else { return false }
+        return intent.components.contains { component in
+            if case .listItem = component.kind { return true }
+            return false
+        }
+    }
+
+    private func isHeader(_ intent: PresentationIntent?) -> Bool {
+        guard let intent else { return false }
+        return intent.components.contains { component in
+            if case .header = component.kind { return true }
+            return false
         }
     }
 

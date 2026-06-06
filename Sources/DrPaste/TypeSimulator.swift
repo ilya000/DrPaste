@@ -185,6 +185,10 @@ struct TypeSlowlyAction: ClipboardAction {
 
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         guard context.contains(.plain) else { return false }
+        // Not for Code / JSON — slow-typing a code block or JSON blob is never
+        // what you want; this is for short prose / values into paste-blocked
+        // fields (passwords, forms, terminals).
+        guard !context.contains(.code), !context.contains(.json) else { return false }
         guard let text = item.previewText else { return false }
         return text.count > 0 && text.count <= 500
     }

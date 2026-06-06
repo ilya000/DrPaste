@@ -207,18 +207,30 @@ struct TestOutputPane: View {
                 }
             }
         case .image, .pdf:
-            ImagePreview(item: item)
+            // Caption under the image carries the action's summary text — for
+            // Strip-metadata this is the only visible proof of what changed
+            // (the pixels are identical), e.g. "Removed: GPS … · Camera …".
+            VStack(spacing: 6) {
+                ImagePreview(item: item)
+                if let caption = item.previewText, !caption.isEmpty {
+                    Text(caption)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+            }
         case .files:
-            // Same list shape as BigHUD's `.files` rendering — one
-            // filename per line, monospaced. Image is the only
-            // common other case the test panel can produce; .files
-            // happens only when the action returns file URLs.
+            // Show the full paths — a files clip's content IS the paths, so
+            // "Paste as is" reads back what went in (showing only the
+            // last path component made it look like the action stripped data).
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(filesList(item), id: \.self) { path in
-                        Text(URL(fileURLWithPath: path).lastPathComponent)
+                        Text(path)
                             .font(.system(size: 11, design: .monospaced))
                             .lineLimit(1)
+                            .truncationMode(.middle)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

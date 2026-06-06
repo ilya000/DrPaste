@@ -145,12 +145,29 @@ struct FilesRichRepresentationAction: ClipboardAction {
         let attr = NSMutableAttributedString()
         let ws = NSWorkspace.shared
         for (idx, url) in urls.enumerated() {
+            // The Finder icon is a multi-representation NSImage whose best rep
+            // is huge (512 px). Embedding that as-is made the pasted icons
+            // gigantic. RASTERISE it to a small 32 px bitmap (16 pt @2x — the
+            // Finder small-icon size) and embed THAT via a FileWrapper
+            // attachment — small source PNG, so it stays small regardless of
+            // how the receiving app honours the attachment bounds. FileWrapper
+            // (not `attachment.image`) is also the only form that survives RTFD
+            // serialization without the `CGImageDestinationFinalize` failure.
             let icon = ws.icon(forFile: url.path)
-            icon.size = NSSize(width: 16, height: 16)
-            let attachment = NSTextAttachment()
-            attachment.image = icon
-            attachment.bounds = NSRect(x: 0, y: -3, width: 16, height: 16)
-            attr.append(NSAttributedString(attachment: attachment))
+            let px: CGFloat = 32
+            if let small = ImageRenderer.render(size: NSSize(width: px, height: px),
+                                                opaque: false,
+                                                draw: { _ in
+                       icon.draw(in: NSRect(x: 0, y: 0, width: px, height: px),
+                                 from: .zero, operation: .sourceOver, fraction: 1.0)
+                   }),
+               let png = ImageRenderer.pngData(from: small) {
+                let wrapper = FileWrapper(regularFileWithContents: png)
+                wrapper.preferredFilename = "icon-\(UUID().uuidString.prefix(8)).png"
+                let attachment = NSTextAttachment(fileWrapper: wrapper)
+                attachment.bounds = NSRect(x: 0, y: -3, width: 16, height: 16)
+                attr.append(NSAttributedString(attachment: attachment))
+            }
             attr.append(NSAttributedString(string: " \(url.lastPathComponent)",
                                            attributes: [.font: NSFont.systemFont(ofSize: 13)]))
             if idx < urls.count - 1 {

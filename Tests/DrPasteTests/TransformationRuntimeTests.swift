@@ -197,10 +197,36 @@ final class TransformationRuntimeTests: XCTestCase {
         XCTAssertTrue(out.contains("link"))
     }
 
+    func testMdToPlainStripsHeadingsOnEveryLine() throws {
+        // Regression: without the (?m) flag only the first line's `#` was
+        // stripped — `## Subtitle` on line 2+ leaked through.
+        let input = "# Title\n## Subtitle\n### Deep\nbody"
+        let out = try TransformationRuntime.apply(engine: .mdToPlain, input: input, params: [:])
+        XCTAssertEqual(out, "Title\nSubtitle\nDeep\nbody")
+    }
+
+    func testMdToPlainStripsBlockquotesAndCodeFences() throws {
+        let input = "> quoted line\n```swift\nlet x = 1\n```"
+        let out = try TransformationRuntime.apply(engine: .mdToPlain, input: input, params: [:])
+        XCTAssertFalse(out.contains(">"))
+        XCTAssertFalse(out.contains("```"))
+        XCTAssertTrue(out.contains("quoted line"))
+        XCTAssertTrue(out.contains("let x = 1"))
+    }
+
+    func testUwuWorksOnMarkdownText() throws {
+        let out = try TransformationRuntime.apply(engine: .uwuSpeak,
+                                                  input: "## Really lovely",
+                                                  params: ["faces": "false"])
+        // r/l → w transforms the prose even with a leading markdown marker.
+        XCTAssertTrue(out.contains("Weawwy wovewy"), out)
+    }
+
     func testMdExtractHeadings() throws {
         let input = "# H1\nbody\n## H2\nmore\nplain line\n### H3"
         let out = try TransformationRuntime.apply(engine: .mdExtractHeadings, input: input, params: [:])
-        XCTAssertEqual(out, "# H1\n## H2\n### H3")
+        // Markers are stripped — a clean outline of titles.
+        XCTAssertEqual(out, "H1\nH2\nH3")
     }
 
     func testMdExtractHeadingsThrowsOnEmpty() {

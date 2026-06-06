@@ -20,14 +20,14 @@ enum BuiltinActionMetadata {
         "builtin.identity": "Restores the clipboard payload exactly as it was copied — preserves all formats and representations.",
 
         // rich.* — rich-text transforms
-        "builtin.rich.strip_formatting": "Strips rich-text formatting (HTML / RTF / styles) and trims surrounding whitespace. The most common cleanup operation — pastes as plain text everywhere.",
+        "builtin.rich.strip_formatting": "Cleans any text down to plain characters — removes rich-text formatting (RTF / HTML), Markdown markup, and Unicode pseudo-font styling (𝐁𝐨𝐥𝐝 / 𝓢𝓬𝓻𝓲𝓹𝓽 / ⒶⒷⒸ), then trims whitespace. The universal cleanup — pastes as plain text everywhere.",
         "builtin.rich.to_md": "Converts rich text to Markdown — preserves bold, italic, headings, links.",
         "builtin.rich.to_html": "Converts rich text to HTML — uses native NSAttributedString HTML export.",
         "builtin.rich.to_wiki": "Converts rich text to MediaWiki markup (Wikipedia syntax).",
         "builtin.rich.to_unicode_styled": "Renders bold runs as Unicode Bold (𝐁𝐨𝐥𝐝), italic as Italic (𝐼𝑡𝑎𝑙𝑖𝑐), bold-italic as 𝑩𝒐𝒍𝒅 𝑰𝒕𝒂𝒍𝒊𝒄, and monospace runs as 𝙼𝚘𝚗𝚘. Result is plain text that preserves emphasis when pasted into Twitter / X, Telegram bios, LinkedIn captions, Discord profiles — anywhere rich-text formatting isn't supported.",
 
         // text.* — plain-text transforms
-        "builtin.text.trim": "Trims leading and trailing whitespace from each line. Removes blank lines at start/end.",
+        "builtin.text.trim": "Universal cleanup: trims leading/trailing whitespace, collapses tabs / multi-space runs to single spaces, reduces big gaps of blank lines, and reflows PDF-style hard-wrapped lines back into paragraphs (lists, code and intentional breaks are preserved).",
         "builtin.text.uppercase": "Converts all letters to UPPERCASE.",
         "builtin.text.lowercase": "Converts all letters to lowercase.",
         "builtin.text.title_case": "Capitalizes the first letter of each word.",
@@ -85,6 +85,7 @@ enum BuiltinActionMetadata {
         // md.* — Markdown transforms
         "builtin.md.to_plain": "Strips Markdown markup, keeps only readable prose.",
         "builtin.md.to_rich": "Renders Markdown source as rich text (bold, italic, inline code, links). Pastes into Mail / Pages / Notes / Word with formatting intact.",
+        "builtin.md.to_wiki": "Converts Markdown source to MediaWiki markup (Wikipedia syntax) — headings, lists, bold, italic, inline code and links.",
         "builtin.md.extract_headings": "Lists all Markdown headings — for building a TOC.",
         "builtin.md.extract_links": "Lists all Markdown links.",
 
@@ -102,18 +103,18 @@ enum BuiltinActionMetadata {
         // image.* — image transforms
         "builtin.image.ocr": "Extracts text from an image using Vision OCR.",
         "builtin.image.decode_qr": "Decodes a QR code or barcode embedded in the image.",
+        "builtin.image.info": "Shows the image's details as text — name, format, dimensions, file size, colour info, and any embedded camera / capture date / GPS metadata.",
         "builtin.image.strip_metadata": "Removes EXIF / GPS metadata for privacy.",
-        "builtin.image.resize_max_1920": "Resizes the image to max 1920 pixels in the longer dimension.",
         "builtin.image.compress_jpeg": "Compresses the image as JPEG at 80% quality for sharing.",
         "builtin.image.to_grayscale": "Converts the image to grayscale.",
         "builtin.image.invert_colors": "Inverts the image colors.",
         "builtin.image.rotate_right": "Rotates the image 90° clockwise (right).",
         "builtin.image.rotate_left": "Rotates the image 90° counter-clockwise (left).",
-        "builtin.image.to_ascii_art": "Converts the image to ASCII art — downsamples to a monospace grid (default 40 columns since 0.42.0) and maps each cell's brightness to a glyph from \" .:-=+*#%@\". Output is rich text with a monospaced font so columns survive paste into Mail / Notes / Pages.",
-        "builtin.image.resize": "Resizes images to a target longer-side dimension (default 1920 pixels). Works on image clips, file lists of images, and rich-text clips with embedded image attachments. Never enlarges — images already at or below the target are passed through unchanged.",
+        "builtin.image.to_ascii_art": "Converts the image to ASCII art — downsamples to a monospace grid and maps each cell's brightness to a glyph from a dark-to-light ramp. Output is rich text with a monospaced font so columns survive paste into Mail / Notes / Pages.",
+        "builtin.image.resize": "Resizes images to a target longer-side dimension you can set below (default 1920 pixels). Works on image clips, file lists of images, and rich-text clips with embedded image attachments. Never enlarges — images already at or below the target are passed through unchanged.",
 
         // files.* — files transforms
-        "builtin.files.copy_paths": "Returns absolute file paths as text, one per line.",
+        "builtin.files.copy_paths": "Converts copied files into plain text — their absolute paths, one per line. Use it when you copied files in Finder but need the paths as text: pasting into a Terminal command, a script, a config file, or a chat message (where a normal paste would drop the files, not their paths).",
         "builtin.files.copy_filenames": "Returns just the filenames (without paths).",
         "builtin.files.to_md_links": "Wraps files as Markdown links [name](file:///path).",
         "builtin.files.reveal_in_finder": "Reveals the files in Finder (side-effect — closes HUD on commit).",

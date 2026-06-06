@@ -40,7 +40,9 @@ struct MarkdownToRichTextAction: ClipboardAction {
     let isLocal = true
 
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        item.semantic == .markdown || item.semantic == .text || item.semantic == .code
+        // Markdown-only: rendering Markdown source to rich text is meaningless
+        // for plain text / code clips, where it would just clutter the HUD.
+        item.semantic == .markdown
     }
 
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
@@ -57,6 +59,29 @@ struct MarkdownToRichTextAction: ClipboardAction {
     }
 }
 
+// MARK: - Markdown → Wiki markup
+
+/// Markdown counterpart of `Rich → Wiki markup`: converts Markdown source into
+/// MediaWiki syntax (headings, lists, bold / italic / code / strikethrough /
+/// links). Markdown-only.
+struct MarkdownToWikiAction: ClipboardAction {
+    let id = "builtin.md.to_wiki"
+    let title = "Markdown → Wiki markup"
+    let isLocal = true
+
+    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
+        item.semantic == .markdown
+    }
+
+    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
+        let source = item.previewText ?? ""
+        guard !source.isEmpty else {
+            return .failed(original: item, reason: "Empty input", recovery: nil)
+        }
+        return .preview(makeTextItem(RichTextHelpers.markdownToWiki(source), from: item))
+    }
+}
+
 enum MarkdownActionsPack {
-    static var all: [ClipboardAction] { [MarkdownToRichTextAction()] }
+    static var all: [ClipboardAction] { [MarkdownToRichTextAction(), MarkdownToWikiAction()] }
 }

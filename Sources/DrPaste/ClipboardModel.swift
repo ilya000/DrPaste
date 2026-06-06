@@ -93,9 +93,29 @@ struct ClipboardItem: Identifiable, Codable, Equatable {
     ///   • Whitespace-only copies (accidental ⌘C on a blank line).
     ///   • Stale items already migrated where blob storage was
     ///     pruned but the index entry stuck around.
+    /// Plain-text pasteboard types. A clip whose representations are ALL in
+    /// this family carries no payload beyond its text — so it's meaningful
+    /// only if that text has non-whitespace content. Anything outside this
+    /// set (image, files, PDF, RTF, HTML, URL, …) is inherently meaningful
+    /// even with no preview text.
+    static let plainTextPasteboardTypes: Set<String> = [
+        "public.utf8-plain-text", "public.utf16-plain-text",
+        "public.utf16-external-plain-text", "public.plain-text",
+        "public.text", "NSStringPboardType"
+    ]
+
     var isEffectivelyEmpty: Bool {
         if let rel = previewImageRel, !rel.isEmpty { return false }
-        if !representations.isEmpty { return false }
+        // A non-plain-text representation (image, files, RTF, HTML, URL, …) is
+        // meaningful on its own. But a clip whose ONLY representations are
+        // plain-text blobs is NOT — even though `representations` is non-empty,
+        // the blob can hold pure whitespace. Trusting `!representations.isEmpty`
+        // here let whitespace-only text clips back into history as noise rows
+        // (regression). Defer those to the preview-text content check below.
+        let hasNonTextRepresentation = representations.keys.contains {
+            !ClipboardItem.plainTextPasteboardTypes.contains($0)
+        }
+        if hasNonTextRepresentation { return false }
         if let text = previewText,
            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return false

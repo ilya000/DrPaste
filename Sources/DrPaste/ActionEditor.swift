@@ -279,6 +279,9 @@ struct ActionEditor: View {
 
     // Mode-specific state
     @State private var builtinID: String = ""
+    /// Editable longer-side limit for resize actions (px). Persisted via
+    /// `ResizeSettings` on change.
+    @State private var resizeMaxSide: Int = 1920
     @State private var transformationEngine: TransformationEngine = .regexReplace
     @State private var transformationParams: [String: String] = [:]
     @State private var aiPrompt: String = ""
@@ -476,7 +479,7 @@ struct ActionEditor: View {
         switch kind {
         case .builtin: return "Display name"
         case .transformation: return "My transformation"
-        case .ai: return "AI: my action"
+        case .ai: return "My AI action"
         }
     }
 
@@ -682,6 +685,9 @@ struct ActionEditor: View {
                         .foregroundStyle(.primary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                if Self.resizeActionIDs.contains(actionID) {
+                    resizeTargetField(actionID: actionID)
+                }
             } else {
                 Picker("", selection: $builtinID) {
                     Text("Choose handler…").tag("")
@@ -707,6 +713,42 @@ struct ActionEditor: View {
                     .font(.caption2).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    /// Resize actions whose longer-side target is user-adjustable.
+    static let resizeActionIDs: Set<String> = [
+        "builtin.image.resize"
+    ]
+
+    /// Numeric field for the resize longer-side limit. Writes through
+    /// `ResizeSettings` immediately so the next Run test / paste uses it.
+    @ViewBuilder
+    private func resizeTargetField(actionID: String) -> some View {
+        Divider().padding(.vertical, 2)
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Maximum longer side").font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                TextField("1920", value: $resizeMaxSide, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 90)
+                    .onChange(of: resizeMaxSide) { newValue in
+                        // Persist as you type — ResizeSettings clamps to
+                        // [min…max] internally. Do NOT snap the field itself
+                        // here: clamping every keystroke to the minimum made the
+                        // intermediate "5" (while typing "50") jump up, so you
+                        // could never reach 50.
+                        ResizeSettings.setMaxLongSide(newValue, for: actionID)
+                    }
+                    // On commit, reflect the stored (clamped) value.
+                    .onSubmit { resizeMaxSide = ResizeSettings.maxLongSide(for: actionID) }
+                Text("px").foregroundStyle(.secondary)
+                Stepper("", value: $resizeMaxSide, in: ResizeSettings.minSide...ResizeSettings.maxSide, step: 10)
+                    .labelsHidden()
+            }
+            Text("Images larger than this on their longer side are scaled down to fit. Smaller images pass through unchanged.")
+                .font(.caption2).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -1795,6 +1837,9 @@ struct ActionEditor: View {
             title = registry.config.customTitles[id] ?? defaultTitle
             hotkey = registry.hotkey(for: id)
             applicableTypes = inferApplicableTypes(builtinID: id)
+            if Self.resizeActionIDs.contains(id) {
+                resizeMaxSide = ResizeSettings.maxLongSide(for: id)
+            }
         case .editTransformation(let d):
             kind = .transformation
             title = d.title
@@ -1836,7 +1881,8 @@ struct ActionEditor: View {
                         AppStorage.imagesDir.appendingPathComponent(rel).path) {
                     testImageItem = imageItemFromRel(rel)
                 } else {
-                    testImageItem = ActionTestSamples.makeSampleImageItem()
+                    // Per-action default: OCR gets a text card, Decode QR a QR.
+                    testImageItem = ActionTestSamples.defaultImageSample(forActionID: id)
                 }
                 // We still call testSample for the placeholder string so
                 // it shows under the image (or in the descriptive text
@@ -1959,7 +2005,7 @@ struct ActionEditor: View {
     private func resetTestImageToProcedural() {
         guard let id = currentActionID else { return }
         registry.setTestImageRel(nil, forActionID: id)
-        testImageItem = ActionTestSamples.makeSampleImageItem()
+        testImageItem = ActionTestSamples.defaultImageSample(forActionID: id)
     }
 
     private func inferApplicableTypes(builtinID: String) -> Set<SemanticKind> {
@@ -2110,7 +2156,7 @@ struct ActionEditor: View {
         if testInputIsImage {
             if let img = testImageItem {
                 inputItem = img
-            } else if let img = ActionTestSamples.makeSampleImageItem() {
+            } else if let img = ActionTestSamples.defaultImageSample(forActionID: currentActionID ?? "") {
                 inputItem = img
                 testImageItem = img
             } else {

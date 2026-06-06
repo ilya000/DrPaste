@@ -43,6 +43,9 @@ struct ContentContext: OptionSet, Hashable {
     static let messySpacing     = ContentContext(rawValue: 1 << 20)  // tabs / NBSP / 2+ spaces
     static let wrappedLines     = ContentContext(rawValue: 1 << 21)  // hard-wrapped (PDF-style) lines
     static let fromOCR          = ContentContext(rawValue: 1 << 22)  // provenance: produced by OCR (stored tag)
+    static let lowercaseHeavy   = ContentContext(rawValue: 1 << 23)  // no capitals at all (typed all-lowercase)
+    static let fromMailApp      = ContentContext(rawValue: 1 << 24)  // copied from a mail app / webmail
+    static let containsHTMLMarkup = ContentContext(rawValue: 1 << 25) // real HTML tags present
 }
 
 extension ContentContext {
@@ -58,8 +61,10 @@ extension ContentContext {
             (.layoutWrong, "layoutWrong"), (.qrEligible, "qrEligible"),
             (.containsEmails, "containsEmails"), (.containsURLs, "containsURLs"),
             (.containsCyrillic, "containsCyrillic"), (.containsLatin, "containsLatin"),
-            (.uppercaseHeavy, "uppercaseHeavy"), (.messySpacing, "messySpacing"),
-            (.wrappedLines, "wrappedLines"), (.fromOCR, "fromOCR")
+            (.uppercaseHeavy, "uppercaseHeavy"), (.lowercaseHeavy, "lowercaseHeavy"),
+            (.messySpacing, "messySpacing"),
+            (.wrappedLines, "wrappedLines"), (.fromOCR, "fromOCR"),
+            (.fromMailApp, "fromMailApp"), (.containsHTMLMarkup, "containsHTMLMarkup")
         ]
         return table.compactMap { contains($0.0) ? $0.1 : nil }
     }
@@ -72,11 +77,31 @@ enum ContextDetector {
     /// (#A75 kill-feature chain). Stored on the clip — cannot be recomputed.
     static let ocrProvenanceTag = "fromOCR"
 
+    /// Heuristic: was this clip copied from an email context? Checks the
+    /// capturing app's name / bundle id and the window title. Intentionally
+    /// broad (per owner): any source whose name or window title merely contains
+    /// "mail" counts, plus the common native + web clients. Lets email actions
+    /// (Draft reply, Generate subject) surface on a copied email body even when
+    /// no literal address is in the selection.
+    static func looksLikeMailSource(_ item: ClipboardItem) -> Bool {
+        let haystacks = [item.sourceAppName, item.sourceWindowTitle, item.sourceBundleID]
+            .compactMap { $0?.lowercased() }
+        guard !haystacks.isEmpty else { return false }
+        // Substrings that strongly imply an email surface.
+        let needles = [
+            "mail", "outlook", "gmail", "inbox", "proton", "thunderbird",
+            "fastmail", "spark", "airmail", "postbox", "hey.com", "missiveapp",
+            "superhuman", "yahoo mail", "zoho mail", "tutanota"
+        ]
+        return haystacks.contains { hay in needles.contains { hay.contains($0) } }
+    }
+
     static func detect(_ item: ClipboardItem) -> ContentContext {
         var ctx = ContentContext()
 
         // Provenance (stored, not derived from content).
         if item.tags.contains(ocrProvenanceTag) { ctx.insert(.fromOCR) }
+        if looksLikeMailSource(item) { ctx.insert(.fromMailApp) }
 
         // Map SemanticKind to the primary flag.
         switch item.semantic {
@@ -137,6 +162,14 @@ enum ContextDetector {
                          options: [.regularExpression, .caseInsensitive]) != nil {
             ctx.insert(.containsURLs)
         }
+        // Real HTML markup — require a closing tag `</x>`, an attributed tag
+        // `<x attr=…`, or a self-closing tag `<x/>`. Deliberately does NOT fire
+        // on `5 < 10`, `List<String>`, `vector<int>` etc., so "Strip HTML tags"
+        // never mangles math or generics.
+        if trimmed.range(of: #"</[a-zA-Z][\w]*\s*>|<[a-zA-Z][\w]*\s+[\w:.\-]+\s*=|<[a-zA-Z][\w]*\s*/>"#,
+                         options: .regularExpression) != nil {
+            ctx.insert(.containsHTMLMarkup)
+        }
 
         // Messy spacing — a tab, a non-breaking space, or a run of 2+ spaces.
         if trimmed.range(of: "[\\t\\u00A0]|  ", options: .regularExpression) != nil {
@@ -152,6 +185,13 @@ enum ContextDetector {
         }
         if cased >= 8 && Double(upper) / Double(cased) >= 0.7 {
             ctx.insert(.uppercaseHeavy)
+        }
+        // Mostly-lowercase — ≥8 cased letters and NO uppercase at all (the
+        // signature of text typed entirely in lower case, e.g. chat / notes
+        // with no capitalisation). A single sentence-start capital is enough to
+        // clear it, so normal prose isn't flagged.
+        if cased >= 8 && upper == 0 {
+            ctx.insert(.lowercaseHeavy)
         }
 
         // Hard-wrapped lines — 3+ lines, a majority not ending in sentence

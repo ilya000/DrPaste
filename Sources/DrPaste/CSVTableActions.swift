@@ -117,8 +117,12 @@ struct CSVToWikiTableAction: ClipboardAction {
     let isLocal = true
 
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
+        // A table clip always qualifies (mirrors "CSV → Markdown table" so the
+        // CSV → X siblings appear together). Loose CSV in text / code / markdown
+        // still qualifies via the heuristic.
+        if context.contains(.table) { return true }
         switch item.semantic {
-        case .text, .table, .code, .markdown:
+        case .text, .code, .markdown:
             return CSVParser.looksLikeCSV(item.previewText ?? "")
         default:
             return false
@@ -175,8 +179,12 @@ struct CSVToRichTableAction: ClipboardAction {
     let isLocal = true
 
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
+        // A table clip always qualifies (mirrors "CSV → Markdown table" so the
+        // CSV → X siblings appear together). Loose CSV in text / code / markdown
+        // still qualifies via the heuristic.
+        if context.contains(.table) { return true }
         switch item.semantic {
-        case .text, .table, .code, .markdown:
+        case .text, .code, .markdown:
             return CSVParser.looksLikeCSV(item.previewText ?? "")
         default:
             return false
@@ -259,8 +267,12 @@ struct CSVToHTMLTableAction: ClipboardAction {
     let isLocal = true
 
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
+        // A table clip always qualifies (mirrors "CSV → Markdown table" so the
+        // CSV → X siblings appear together). Loose CSV in text / code / markdown
+        // still qualifies via the heuristic.
+        if context.contains(.table) { return true }
         switch item.semantic {
-        case .text, .table, .code, .markdown:
+        case .text, .code, .markdown:
             return CSVParser.looksLikeCSV(item.previewText ?? "")
         default:
             return false

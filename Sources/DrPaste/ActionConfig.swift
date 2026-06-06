@@ -44,6 +44,12 @@ struct CustomAIDescriptor: Codable, Identifiable, Equatable {
     // #A75 trait gating — "Show this action when…". Empty = always.
     var requiredTraits: [String] = []
     var forbiddenTraits: [String] = []
+    /// When true and the input is rich text / Markdown, the action round-trips
+    /// through Markdown (rich → md → AI, instructed to keep markup → md → rich)
+    /// so formatting survives. Suits 1:1 transforms (translate, fix grammar);
+    /// false for restructuring actions (summarize, make shorter) where markup
+    /// preservation is meaningless.
+    var preserveRichFormatting: Bool = false
 
     init(id: String,
          title: String,
@@ -53,7 +59,8 @@ struct CustomAIDescriptor: Codable, Identifiable, Equatable {
          enabled: Bool = true,
          kind: Kind = .text,
          requiredTraits: [String] = [],
-         forbiddenTraits: [String] = []) {
+         forbiddenTraits: [String] = [],
+         preserveRichFormatting: Bool = false) {
         self.id = id
         self.title = title
         self.promptTemplate = promptTemplate
@@ -63,6 +70,7 @@ struct CustomAIDescriptor: Codable, Identifiable, Equatable {
         self.kind = kind
         self.requiredTraits = requiredTraits
         self.forbiddenTraits = forbiddenTraits
+        self.preserveRichFormatting = preserveRichFormatting
     }
 
     /// Custom decoder so `kind` defaults to `.text` when absent — old
@@ -79,11 +87,12 @@ struct CustomAIDescriptor: Codable, Identifiable, Equatable {
         self.kind = try c.decodeIfPresent(Kind.self, forKey: .kind) ?? .text
         self.requiredTraits = try c.decodeIfPresent([String].self, forKey: .requiredTraits) ?? []
         self.forbiddenTraits = try c.decodeIfPresent([String].self, forKey: .forbiddenTraits) ?? []
+        self.preserveRichFormatting = try c.decodeIfPresent(Bool.self, forKey: .preserveRichFormatting) ?? false
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, title, promptTemplate, providerID, applicableTypes, enabled, kind
-        case requiredTraits, forbiddenTraits
+        case requiredTraits, forbiddenTraits, preserveRichFormatting
     }
 }
 
@@ -298,6 +307,9 @@ enum SettingsSamples {
             text = """
             # Title
             ## Subtitle
+
+            The venue is 5 meters wide, it was 25°C inside, and it's a 2 km walk.
+
             - First item
             - Second item with [link](https://example.com)
             ```swift
@@ -316,7 +328,10 @@ enum SettingsSamples {
         case .pdf:
             text = "PDF (no sample)"
         case .files:
-            text = "/Users/example/Documents/report.pdf, /Users/example/Documents/photo.jpg"
+            // Real, always-present paths so file actions actually work in the
+            // playground (Reveal in Finder opens these; Copy paths shows real
+            // paths). The user can drag their own files in to replace.
+            text = "\(NSHomeDirectory()), /Applications"
         case .unknown:
             text = ""
         }

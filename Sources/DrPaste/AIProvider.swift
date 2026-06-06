@@ -1307,12 +1307,23 @@ struct AIAction: ClipboardAction {
         self.forbiddenTraits = forbiddenTraits
     }
 
+    /// Appended to the prompt when round-tripping rich / Markdown input so the
+    /// model edits only the text and never the markup.
+    static let preserveMarkdownInstruction =
+        "\n\nThe input is in Markdown format. Preserve all Markdown markup exactly (bold **, italic *, links [text](url), code `inline`, code blocks ```, headings #, lists -/1.). Only modify the text content, never the markup."
+
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         // Strict "Applies to" correspondence (rich text still surfaces text
         // actions). See CustomTransformationAction.isApplicable.
         guard applicableTypes.contains(item.semantic)
             || (item.semantic == .richText && applicableTypes.contains(.text)) else { return false }
         return ActionTrait.passes(required: requiredTraits, forbidden: forbiddenTraits, in: context)
+    }
+
+    /// Type-only membership (no trait gate) — see ClipboardAction default.
+    func appliesToContentType(item: ClipboardItem, context: ContentContext) -> Bool {
+        applicableTypes.contains(item.semantic)
+            || (item.semantic == .richText && applicableTypes.contains(.text))
     }
 
     @MainActor
@@ -1331,22 +1342,28 @@ struct AIAction: ClipboardAction {
                           recovery: .openProvidersConfig)
         }
         do {
-            // Markdown round-trip for rich text inputs.
-            let useRich = preserveRichFormatting && item.semantic == .richText
+            // Formatting-preserving round-trip: rich text → Markdown (or
+            // Markdown source straight through) with an instruction to keep
+            // markup, then back to rich text for rich input.
+            let isRich = item.semantic == .richText
+            let isMarkdown = item.semantic == .markdown
             let inputText: String
             let systemAddition: String
-            if useRich, let md = RichTextHelpers.attributedStringToMarkdown(loadAttr(item: item)) {
+            if preserveRichFormatting, isRich,
+               let md = RichTextHelpers.attributedStringToMarkdown(loadAttr(item: item)) {
                 inputText = md
-                systemAddition = "\n\nThe input is in Markdown format. Preserve all Markdown markup exactly (bold **, italic *, links [text](url), code `inline`, code blocks ```, headings #, lists -/1.). Only modify the text content, never the markup."
+                systemAddition = Self.preserveMarkdownInstruction
+            } else if preserveRichFormatting, isMarkdown {
+                inputText = item.previewText ?? ""
+                systemAddition = Self.preserveMarkdownInstruction
             } else {
                 inputText = item.previewText ?? ""
                 systemAddition = ""
             }
             let result = try await provider.run(prompt: promptTemplate + systemAddition, input: inputText)
-            if useRich {
-                if let ns = RichTextHelpers.markdownToAttributedString(result) {
-                    return .preview(makeRichTextItem(ns, from: item))
-                }
+            if preserveRichFormatting, isRich,
+               let ns = RichTextHelpers.markdownToAttributedString(result) {
+                return .preview(makeRichTextItem(ns, from: item))
             }
             return .preview(makeTextItem(result, from: item))
         } catch AIProviderError.missingAPIKey {
@@ -1406,12 +1423,17 @@ struct AIAction: ClipboardAction {
         // at token rate; the final outcome rehydrates rich text via
         // markdownToAttributedString once at the end, so NSTextView
         // reflow only happens once.
-        let useRich = preserveRichFormatting && item.semantic == .richText
+        let isRich = item.semantic == .richText
+        let isMarkdown = item.semantic == .markdown
         let inputText: String
         let systemAddition: String
-        if useRich, let md = RichTextHelpers.attributedStringToMarkdown(loadAttr(item: item)) {
+        if preserveRichFormatting, isRich,
+           let md = RichTextHelpers.attributedStringToMarkdown(loadAttr(item: item)) {
             inputText = md
-            systemAddition = "\n\nThe input is in Markdown format. Preserve all Markdown markup exactly (bold **, italic *, links [text](url), code `inline`, code blocks ```, headings #, lists -/1.). Only modify the text content, never the markup."
+            systemAddition = Self.preserveMarkdownInstruction
+        } else if preserveRichFormatting, isMarkdown {
+            inputText = item.previewText ?? ""
+            systemAddition = Self.preserveMarkdownInstruction
         } else {
             inputText = item.previewText ?? ""
             systemAddition = ""
@@ -1426,7 +1448,7 @@ struct AIAction: ClipboardAction {
                 await onPartial(partialItem)
             }
             // Final outcome — rich-text rehydration if the action asked for it.
-            if useRich,
+            if preserveRichFormatting, isRich,
                let ns = RichTextHelpers.markdownToAttributedString(accumulated) {
                 return .preview(makeRichTextItem(ns, from: item))
             }
@@ -1539,7 +1561,8 @@ enum DefaultAISeed {
     ///     The OCR action enables the screenshot → OCR → AI clean
     ///     → paste workflow which is one of DrPaste's flagship
     ///     stories.
-    static let currentSeedVersion: Int = 8
+    // v9 — adds the "Phonetic transcription (IPA)" text action.
+    static let currentSeedVersion: Int = 9
 
     /// Sentinel for `providerID`: empty string means "use whatever provider is currently default".
     /// Action follows the user's default selection — change the default in Settings → AI and
@@ -1553,40 +1576,40 @@ enum DefaultAISeed {
                 title: "Summarize",
                 promptTemplate: "Summarize the user's input in 1–3 sentences. Reply with the summary only, no preamble.",
                 providerID: defaultProviderSentinel,
-                applicableTypes: ["text", "richText", "markdown", "code"]
+                // Prose summary — code has its own "Explain code".
+                applicableTypes: ["text", "richText", "markdown"]
             ),
+            // One Translate / Fix grammar each: a 1:1 text transform, so it
+            // preserves Rich / Markdown formatting automatically (the separate
+            // "(rich)" duplicates were identical and never actually preserved
+            // anything — the flag was never wired through).
             CustomAIDescriptor(
                 id: "ai.text.translate",
                 title: "Translate",
                 promptTemplate: "Translate the input to Spanish. If the user provides text in Spanish, translate to English instead. Reply with the translation only.",
                 providerID: defaultProviderSentinel,
-                applicableTypes: ["text", "richText", "markdown"]
-            ),
-            CustomAIDescriptor(
-                id: "ai.rich.translate",
-                title: "Translate (rich)",
-                promptTemplate: "Translate the input to Spanish. If the user provides text in Spanish, translate to English instead. Reply with the translation only.",
-                providerID: defaultProviderSentinel,
-                applicableTypes: ["richText"]
+                applicableTypes: ["text", "richText", "markdown"],
+                preserveRichFormatting: true
             ),
             CustomAIDescriptor(
                 id: "ai.text.fix_grammar",
                 title: "Fix grammar",
                 promptTemplate: "Fix grammar, spelling, and punctuation. Preserve the original language and voice. Reply with the corrected text only.",
                 providerID: defaultProviderSentinel,
-                applicableTypes: ["text", "richText", "markdown"]
-            ),
-            CustomAIDescriptor(
-                id: "ai.rich.fix_grammar",
-                title: "Fix grammar (rich)",
-                promptTemplate: "Fix grammar, spelling, and punctuation. Preserve the original language and voice. Reply with the corrected text only.",
-                providerID: defaultProviderSentinel,
-                applicableTypes: ["richText"]
+                applicableTypes: ["text", "richText", "markdown"],
+                preserveRichFormatting: true
             ),
             CustomAIDescriptor(
                 id: "ai.text.formal_tone",
                 title: "Formal tone",
                 promptTemplate: "Rewrite the input in a more formal, professional tone. Preserve language and meaning. Reply with the rewritten text only.",
+                providerID: defaultProviderSentinel,
+                applicableTypes: ["text", "richText", "markdown"]
+            ),
+            CustomAIDescriptor(
+                id: "ai.text.ipa_transcription",
+                title: "Phonetic transcription (IPA)",
+                promptTemplate: "Transcribe the input into the International Phonetic Alphabet (IPA) — how it is pronounced. Use broad/phonemic transcription wrapped in slashes, e.g. /həˈloʊ/. Transcribe each word; keep the original word order and line breaks. Detect the language automatically. Reply with the IPA transcription only — no preamble, no explanations.",
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText", "markdown"]
             ),
@@ -1601,7 +1624,7 @@ enum DefaultAISeed {
             // pick Ukrainian / Bulgarian / Serbian.
             CustomAIDescriptor(
                 id: "ai.text.latin_to_cyrillic",
-                title: "AI: Latin → Cyrillic",
+                title: "Latin → Cyrillic",
                 promptTemplate: """
                 Transliterate the input from Latin script into Russian \
                 Cyrillic. Use accepted Russian spellings for proper \
@@ -1624,7 +1647,7 @@ enum DefaultAISeed {
             // snippets pasted from messy contexts (Slack, chat, OCR).
             CustomAIDescriptor(
                 id: "ai.code.pretty",
-                title: "AI: Pretty Code",
+                title: "Pretty Code",
                 promptTemplate: """
                 Detect the programming language of the input and \
                 reformat it idiomatically: clean indentation (2 spaces \
@@ -1636,7 +1659,7 @@ enum DefaultAISeed {
                 code only — no preamble, no language fence, no notes.
                 """,
                 providerID: defaultProviderSentinel,
-                applicableTypes: ["text", "code"]
+                applicableTypes: ["code"]
             ),
 
             // Image-AI seeds — v3 of the seed table. Each ships as a
@@ -1659,7 +1682,7 @@ enum DefaultAISeed {
             // high` for gallery-grade output.
             CustomAIDescriptor(
                 id: "ai.image.sketch",
-                title: "AI: Pencil sketch",
+                title: "Pencil sketch",
                 promptTemplate: """
                 Convert this image into a hand-drawn pencil sketch. \
                 Black and white only, no color. Clean cross-hatching \
@@ -1677,7 +1700,7 @@ enum DefaultAISeed {
             ),
             CustomAIDescriptor(
                 id: "ai.image.watercolor",
-                title: "AI: Watercolor",
+                title: "Watercolor",
                 promptTemplate: """
                 Transform this image into a soft watercolor painting. \
                 Visible brush strokes, gentle color bleeding at \
@@ -1695,7 +1718,7 @@ enum DefaultAISeed {
             ),
             CustomAIDescriptor(
                 id: "ai.image.cartoon",
-                title: "AI: Cartoon",
+                title: "Cartoon",
                 promptTemplate: """
                 Convert this image into a clean cartoon illustration. \
                 Bold black outlines around every shape, flat solid \
@@ -1725,7 +1748,7 @@ enum DefaultAISeed {
             // rather than "AI made this for me".
             CustomAIDescriptor(
                 id: "ai.text.image_whiteboard",
-                title: "AI: Whiteboard sketch",
+                title: "Whiteboard sketch",
                 promptTemplate: """
                 Create a clean black-and-white whiteboard-style \
                 illustration of the concept described below. Hand-drawn \
@@ -1748,21 +1771,21 @@ enum DefaultAISeed {
 
             CustomAIDescriptor(
                 id: "ai.text.make_shorter",
-                title: "AI: Make shorter",
+                title: "Make shorter",
                 promptTemplate: "Shorten the input while preserving the key meaning. Do not add new facts. Reply with the shortened text only.",
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText", "markdown"]
             ),
             CustomAIDescriptor(
                 id: "ai.text.improve_clarity",
-                title: "AI: Improve clarity",
+                title: "Improve clarity",
                 promptTemplate: "Improve clarity, readability, and flow while preserving the original meaning and tone. Do not add new facts. Reply with the improved text only.",
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText", "markdown"]
             ),
             CustomAIDescriptor(
                 id: "ai.text.make_friendly",
-                title: "AI: Make friendly",
+                title: "Make friendly",
                 promptTemplate: "Rewrite the input in a warmer, friendlier tone while preserving the meaning. Do not add new facts. Reply with the rewritten text only.",
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText", "markdown"]
@@ -1772,26 +1795,28 @@ enum DefaultAISeed {
 
             CustomAIDescriptor(
                 id: "ai.code.explain",
-                title: "AI: Explain code",
+                title: "Explain code",
                 promptTemplate: "Explain what this code does in practical terms. Be concise. Mention important assumptions, side effects, or risks if relevant. Reply with the explanation only.",
                 providerID: defaultProviderSentinel,
-                applicableTypes: ["code", "text"]
+                applicableTypes: ["code"]
             ),
             CustomAIDescriptor(
                 id: "ai.code.find_bugs",
-                title: "AI: Find bugs",
+                title: "Find bugs",
                 promptTemplate: "Review this code for bugs, unsafe behavior, edge cases, and maintainability problems. Return a concise list of findings with suggested fixes.",
                 providerID: defaultProviderSentinel,
-                applicableTypes: ["code", "text"]
+                applicableTypes: ["code"]
             ),
             CustomAIDescriptor(
                 id: "ai.code.translate",
-                title: "AI: Translate code",
+                title: "Translate code",
                 promptTemplate: """
-                Translate this code to the target programming language. \
-                Preserve behavior. Keep the result idiomatic for the \
-                target language. Add comments only where necessary. \
-                Target language: <FILL IN: e.g. TypeScript, Python, Swift, Rust>.
+                Translate this code to the target programming language below. \
+                Preserve behavior. Keep the result idiomatic for the target \
+                language. Add comments only where necessary. Reply with the \
+                translated code only.
+
+                Target language: Python (edit this line to change the target).
                 """,
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["code"]
@@ -1801,19 +1826,19 @@ enum DefaultAISeed {
 
             CustomAIDescriptor(
                 id: "ai.text.draft_email_reply",
-                title: "AI: Draft email reply",
+                title: "Draft email reply",
                 promptTemplate: "Draft a polite email reply to the message below. Keep it concise, practical, and professional. Do not invent commitments or facts. Reply with the draft only.",
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText"],
-                requiredTraits: ["containsEmails"]
+                requiredTraits: ["containsEmails", "fromMailApp"]
             ),
             CustomAIDescriptor(
                 id: "ai.text.generate_email_subject",
-                title: "AI: Generate email subject",
+                title: "Generate email subject",
                 promptTemplate: "Generate a concise email subject line for this message. Reply with the subject only.",
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText"],
-                requiredTraits: ["containsEmails"]
+                requiredTraits: ["containsEmails", "fromMailApp"]
             ),
 
             // MARK: #A74 (0.56.0) — flagship OCR cleanup workflow
@@ -1824,7 +1849,7 @@ enum DefaultAISeed {
             // chain naturally after running OCR.
             CustomAIDescriptor(
                 id: "ai.text.clean_ocr",
-                title: "AI: Clean OCR text",
+                title: "Clean OCR text",
                 promptTemplate: "Clean up OCR text. Fix broken line breaks, spacing, punctuation, and obvious recognition errors while preserving the original meaning. Do not add new facts. Reply with the cleaned text only.",
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText"],
@@ -1855,8 +1880,29 @@ func makeRichTextItem(_ attr: NSAttributedString, from item: ClipboardItem) -> C
     var copy = item
     copy.semantic = .richText
     copy.previewText = attr.string
-    // Generate RTF representation and write to blob
-    if let rtfData = try? attr.data(from: NSRange(location: 0, length: attr.length),
+    let range = NSRange(location: 0, length: attr.length)
+
+    // If the string carries inline attachments (file icons, embedded /
+    // resized images, …) we MUST serialize to RTFD — plain RTF silently
+    // drops every attachment, and the RTF encoder additionally chokes on
+    // image attachments backed by multi-representation NSImages
+    // (`CGImageDestinationFinalize failed for output type 'public.png'`).
+    // Flat-RTFD keeps the PNG FileWrapper payloads intact and is a
+    // representation key the HUD preview + paste pipeline already handle.
+    var hasAttachment = false
+    attr.enumerateAttribute(.attachment, in: range, options: []) { value, _, stop in
+        if value != nil { hasAttachment = true; stop.pointee = true }
+    }
+
+    if hasAttachment,
+       let rtfdData = try? attr.data(from: range,
+                                     documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd]) {
+        let tmpName = "ai-rich-\(UUID().uuidString).rtfd"
+        let url = AppStorage.blobsDir.appendingPathComponent(tmpName)
+        try? rtfdData.write(to: url)
+        copy.representations = ["com.apple.flat-rtfd": tmpName]
+        copy.typesOrdered = ["com.apple.flat-rtfd"]
+    } else if let rtfData = try? attr.data(from: range,
                                     documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) {
         // Use a fake "store" path — actual blob write happens through ClipboardStore.
         // For HUD preview purposes we can keep the RTF as base64 inside previewText fallback,

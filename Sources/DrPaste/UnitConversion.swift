@@ -143,8 +143,12 @@ enum UnitConversion {
     /// so "feet" is matched before "ft" (the latter is a substring).
     private static let pattern: NSRegularExpression = {
         let units = [
-            // compound foot+inch
-            #"(\d+(?:[.,]\d+)?)\s*(?:ft|feet|')\s*(\d+(?:[.,]\d+)?)\s*(?:in|inch(?:es)?|")"#,
+            // compound foot+inch. Inch alternatives are ordered longest-first
+            // ("inches" before "inch" before "in") so the regex consumes the
+            // whole word — matching "in" first left a dangling "ches"
+            // ("6 feet 2 in (…)ches"). `in\b` also prevents "in" matching
+            // inside another word.
+            #"(\d+(?:[.,]\d+)?)\s*(?:ft|feet|')\s*(\d+(?:[.,]\d+)?)\s*(?:inch(?:es)?|in\b|")"#,
             #"(\d+(?:[.,]\d+)?)'(\d+(?:[.,]\d+)?)""#,
             // single value
             #"(-?\d+(?:[.,]\d+)?)\s*°?\s*(km/h|mph|°?C|°?F|kg|lb|lbs|oz|fl\s*oz|gal|qt|pt|m²|ft²|km|cm|mm|m\b|ft|feet|inches|inch|in\b|yd|yards|yard|mi|miles|mile|g|L|mL|ml)\b"#
@@ -192,7 +196,7 @@ enum UnitConversion {
         // Patterns covered:
         //   "6 ft 7 in" / "6 feet 7 inches" / "6'7""
         let patterns = [
-            #"^(\d+(?:[.,]\d+)?)\s*(?:ft|feet|')\s*(\d+(?:[.,]\d+)?)\s*(?:in|inch(?:es)?|"?)$"#,
+            #"^(\d+(?:[.,]\d+)?)\s*(?:ft|feet|')\s*(\d+(?:[.,]\d+)?)\s*(?:inch(?:es)?|in|"?)$"#,
             #"^(\d+(?:[.,]\d+)?)'(\d+(?:[.,]\d+)?)""?$"#
         ]
         for pat in patterns {
@@ -308,18 +312,20 @@ enum UnitConversion {
         switch baseUnit {
         case .meters:
             if toMetric {
-                // Choose mm / cm / m / km by magnitude.
+                // Choose mm / cm / m / km by magnitude. Decimal places follow
+                // metric reading convention: mm whole, cm 1, m 2, km 1.
                 let absV = abs(siValue)
-                if absV < 0.01 { return String(format: "%.1f mm", siValue * 1000) }
+                if absV < 0.01 { return String(format: "%.0f mm", siValue * 1000) }
                 if absV < 1    { return String(format: "%.1f cm", siValue * 100) }
-                if absV < 1000 { return String(format: "%.1f m",  siValue) }
+                if absV < 1000 { return String(format: "%.2f m",  siValue) }
                 return String(format: "%.1f km", siValue / 1000)
             } else {
-                // m → imperial. Choose in / ft / mi by magnitude.
+                // m → imperial. Pick the unit the way people actually read it:
+                // inches up to 3 ft, then feet up to ~0.1 mile, then miles.
                 let inches = siValue / 0.0254
                 let absV = abs(siValue)
-                if absV < 0.3 { return String(format: "%.1f in", inches) }
-                if absV < 1000 { return String(format: "%.1f ft", inches / 12) }
+                if absV < 0.9144   { return String(format: "%.1f in", inches) }     // < 3 ft
+                if absV < 160.9344 { return String(format: "%.1f ft", inches / 12) } // < 0.1 mi
                 return String(format: "%.1f mi", siValue / 1609.344)
             }
         case .kilograms:
@@ -338,6 +344,11 @@ enum UnitConversion {
                 if absV < 1 { return String(format: "%.0f mL", siValue * 1000) }
                 return String(format: "%.2f L", siValue)
             } else {
+                // L → imperial. Small volumes read in fluid ounces, then
+                // quarts, then gallons — never tiny fractions of a gallon.
+                let absV = abs(siValue)
+                if absV < 0.946353 { return String(format: "%.1f fl oz", siValue / 0.0295735) }  // < 1 qt
+                if absV < 3.785412 { return String(format: "%.2f qt", siValue / 0.946353) }       // < 1 gal
                 return String(format: "%.2f gal", siValue / 3.78541)
             }
         }
@@ -352,8 +363,11 @@ struct UnitConversionAction: ClipboardAction {
     let isLocal = true
 
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        guard item.semantic == .text || item.semantic == .url
-              || item.semantic == .code || item.semantic == .markdown else { return false }
+        // Prose only — measurements live in sentences (text / rich text /
+        // Markdown). A "5 km" inside a URL, JSON value, code literal or table
+        // cell is data, not a measurement to rewrite, so those are excluded.
+        guard item.semantic == .text || item.semantic == .richText
+              || item.semantic == .markdown else { return false }
         guard let text = item.previewText, !text.isEmpty else { return false }
         // Quick screen: must contain at least one digit + alpha sequence.
         return text.contains { $0.isWholeNumber }

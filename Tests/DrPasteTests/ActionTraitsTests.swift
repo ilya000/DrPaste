@@ -96,6 +96,20 @@ final class ActionTraitsTests: XCTestCase {
         XCTAssertFalse(action.isApplicable(item: cyrillic, context: ContextDetector.detect(cyrillic)))
     }
 
+    /// The Settings list uses `appliesToContentType`, which ignores trait
+    /// conditions — so a trait-gated action stays in the list even when the
+    /// current sample doesn't match the condition (otherwise it would vanish on
+    /// save and become unfindable). `isApplicable` still honours the gate.
+    func testAppliesToContentTypeIgnoresTraitGate() {
+        let action = gatedAction(required: ["containsEmails"])
+        let noEmail = item("plain note with no address")
+        let ctx = ContextDetector.detect(noEmail)
+        XCTAssertFalse(action.isApplicable(item: noEmail, context: ctx),
+                       "HUD gate should hide it (no email in sample)")
+        XCTAssertTrue(action.appliesToContentType(item: noEmail, context: ctx),
+                      "Settings list must still include it (type matches)")
+    }
+
     func testUngatedActionStillApplies() {
         let action = gatedAction(required: [])
         let any = item("whatever")

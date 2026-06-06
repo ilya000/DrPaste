@@ -74,6 +74,17 @@ extension ClipboardAction {
     {
         await apply(item: item, context: context)
     }
+
+    /// Type-level applicability, IGNORING runtime "Show this action when…"
+    /// trait conditions. The Settings management list uses this so a trait-gated
+    /// action stays visible and editable regardless of whether the current
+    /// sample happens to match its condition — otherwise adding a condition
+    /// makes the action vanish from Settings and become unfindable. Defaults to
+    /// full `isApplicable` (correct for standalone built-ins, which carry no
+    /// trait gate); descriptor-backed actions override it to drop only the gate.
+    func appliesToContentType(item: ClipboardItem, context: ContentContext) -> Bool {
+        isApplicable(item: item, context: context)
+    }
 }
 
 // MARK: - Identity
@@ -238,8 +249,378 @@ final class ActionRegistry: ObservableObject {
         if seedAI(into: &copy)             { changed = true }
         if seedTransformations(into: &copy) { changed = true }
         if applyBuiltinTraitGatesIfNeeded(into: &copy) { changed = true }
+        if applyApplicabilityCurationIfNeeded(into: &copy) { changed = true }
+        if applyAICodeApplicabilityIfNeeded(into: &copy) { changed = true }
+        if applyAITitleCleanupIfNeeded(into: &copy) { changed = true }
+        if applyTraitKeyCleanupIfNeeded(into: &copy) { changed = true }
+        if applyDeclutterV2IfNeeded(into: &copy) { changed = true }
+        if applyDeclutterV3IfNeeded(into: &copy) { changed = true }
+        if applyTranslateConsolidationIfNeeded(into: &copy) { changed = true }
+        if applyDeclutterV4IfNeeded(into: &copy) { changed = true }
+        if applyDeclutterV5IfNeeded(into: &copy) { changed = true }
+        if applyDeclutterV6IfNeeded(into: &copy) { changed = true }
+        if applyAICurationIfNeeded(into: &copy) { changed = true }
+        if applyStripTagsGateIfNeeded(into: &copy) { changed = true }
 
         if changed { config = copy }
+    }
+
+    /// One-shot: gate "Strip HTML tags" on the `containsHTMLMarkup` trait so it
+    /// only surfaces when the clip actually contains HTML — never mangling
+    /// `5 < 10`, `List<String>`, or other angle-bracket prose/code.
+    private func applyStripTagsGateIfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.stripTagsGate.v1"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        var changed = false
+        for idx in copy.customTransformations.indices
+        where copy.customTransformations[idx].id == "builtin.html.strip_tags"
+            && copy.customTransformations[idx].requiredTraits != ["containsHTMLMarkup"] {
+            copy.customTransformations[idx].requiredTraits = ["containsHTMLMarkup"]
+            changed = true
+        }
+        UserDefaults.standard.set(true, forKey: key)
+        return changed
+    }
+
+    /// One-shot: curate AI defaults — switch off the novelty / niche AI seeds
+    /// (IPA, image styles, Latin→Cyrillic, target-needing code translate, the
+    /// AI Pretty Code that the local one covers) and also drop the Tidy-text
+    /// `.code` scope (Pretty Code handles code). Runs once.
+    private func applyAICurationIfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.aiCuration.v1"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        var changed = false
+        for idx in copy.customAI.indices
+        where CuratedDefaults.aiOffByDefault.contains(copy.customAI[idx].id)
+            && copy.customAI[idx].enabled {
+            copy.customAI[idx].enabled = false
+            changed = true
+        }
+        for idx in copy.customTransformations.indices
+        where copy.customTransformations[idx].id == "builtin.text.trim"
+            && copy.customTransformations[idx].applicableTypes.contains("code") {
+            copy.customTransformations[idx].applicableTypes.removeAll { $0 == "code" }
+            changed = true
+        }
+        UserDefaults.standard.set(true, forKey: key)
+        return changed
+    }
+
+    /// One-shot declutter round 6 (full audit): retire the duplicate
+    /// `resize_max_1920` (the universal Resize covers it — migrate its hotkey),
+    /// and fix content-type scope where an action would mangle / no-op:
+    /// UPPER/lower off Code, Strip HTML tags off rich text, Summarize off Code.
+    private func applyDeclutterV6IfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.declutter.v6"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        var changed = false
+
+        if let hk = copy.actionHotkeys["builtin.image.resize_max_1920"] {
+            if copy.actionHotkeys["builtin.image.resize"] == nil {
+                copy.actionHotkeys["builtin.image.resize"] = hk
+            }
+            copy.actionHotkeys.removeValue(forKey: "builtin.image.resize_max_1920")
+            changed = true
+        }
+
+        let newTypes: [String: [String]] = [
+            "builtin.text.uppercase":  ["text", "markdown"],
+            "builtin.text.lowercase":  ["text", "markdown"],
+            "builtin.html.strip_tags": ["text", "code"]
+        ]
+        for idx in copy.customTransformations.indices {
+            if let t = newTypes[copy.customTransformations[idx].id],
+               Set(copy.customTransformations[idx].applicableTypes) != Set(t) {
+                copy.customTransformations[idx].applicableTypes = t
+                changed = true
+            }
+        }
+        for idx in copy.customAI.indices
+        where copy.customAI[idx].id == "ai.text.summarize"
+            && copy.customAI[idx].applicableTypes.contains("code") {
+            copy.customAI[idx].applicableTypes.removeAll { $0 == "code" }
+            changed = true
+        }
+
+        UserDefaults.standard.set(true, forKey: key)
+        return changed
+    }
+
+    /// One-shot declutter round 5: Extract headings also works on rich text;
+    /// the duplicate `md.extract_links` and the merged `font_markdown` (now
+    /// covered by Unicode Fancy) are switched off, leaving the universal
+    /// "Extract links" on. Runs once; user edits are preserved otherwise.
+    private func applyDeclutterV5IfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.declutter.v5"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        var changed = false
+        for idx in copy.customTransformations.indices {
+            let id = copy.customTransformations[idx].id
+            if id == "builtin.md.extract_headings",
+               Set(copy.customTransformations[idx].applicableTypes) != ["markdown", "richText"] {
+                copy.customTransformations[idx].applicableTypes = ["markdown", "richText"]
+                changed = true
+            }
+            if (id == "builtin.md.extract_links" || id == "builtin.text.font_markdown"),
+               copy.customTransformations[idx].enabled {
+                copy.customTransformations[idx].enabled = false
+                changed = true
+            }
+            if id == "builtin.text.extract_links", !copy.customTransformations[idx].enabled {
+                copy.customTransformations[idx].enabled = true
+                changed = true
+            }
+        }
+        UserDefaults.standard.set(true, forKey: key)
+        return changed
+    }
+
+    /// One-shot declutter round 4: Pretty Code (local) covers Code + JSON
+    /// (never prose / rich text), and the dedicated Pretty JSON — which produced
+    /// byte-identical output — is switched off as redundant. Runs once; user
+    /// "Applies to" / enabled edits are preserved.
+    private func applyDeclutterV4IfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.declutter.v4"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        var changed = false
+        for idx in copy.customTransformations.indices {
+            let id = copy.customTransformations[idx].id
+            if id == "builtin.code.pretty_local",
+               Set(copy.customTransformations[idx].applicableTypes) != ["code", "json"] {
+                copy.customTransformations[idx].applicableTypes = ["code", "json"]
+                changed = true
+            }
+            if id == "builtin.json.pretty", copy.customTransformations[idx].enabled {
+                copy.customTransformations[idx].enabled = false
+                changed = true
+            }
+        }
+        UserDefaults.standard.set(true, forKey: key)
+        return changed
+    }
+
+    /// One-shot: collapse the redundant Translate/Fix-grammar "(rich)" duplicates
+    /// into a single action each that preserves Rich / Markdown formatting
+    /// automatically. The duplicates had identical prompts and never actually
+    /// preserved anything (the flag was never wired). Any hotkey on a duplicate
+    /// is migrated onto the surviving action.
+    private func applyTranslateConsolidationIfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.translateConsolidation.v1"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        var changed = false
+
+        let preserveIDs: Set<String> = ["ai.text.translate", "ai.text.fix_grammar"]
+        for idx in copy.customAI.indices where preserveIDs.contains(copy.customAI[idx].id) {
+            if !copy.customAI[idx].preserveRichFormatting {
+                copy.customAI[idx].preserveRichFormatting = true
+                changed = true
+            }
+            if !copy.customAI[idx].applicableTypes.contains("markdown") {
+                copy.customAI[idx].applicableTypes.append("markdown")
+                changed = true
+            }
+        }
+
+        let dupToParent = [
+            "ai.rich.translate": "ai.text.translate",
+            "ai.rich.fix_grammar": "ai.text.fix_grammar"
+        ]
+        for (dup, parent) in dupToParent where copy.customAI.contains(where: { $0.id == dup }) {
+            if let hk = copy.actionHotkeys[dup], copy.actionHotkeys[parent] == nil {
+                copy.actionHotkeys[parent] = hk
+            }
+            copy.actionHotkeys.removeValue(forKey: dup)
+            copy.customAI.removeAll { $0.id == dup }
+            changed = true
+        }
+
+        UserDefaults.standard.set(true, forKey: key)
+        return changed
+    }
+
+    /// One-shot declutter round 3: scope the HTML/JSON dev actions to where they
+    /// make sense — Escape/Unescape HTML to Code only, Validate JSON to JSON +
+    /// Code (not plain text). Runs once; user "Applies to" edits are preserved.
+    private func applyDeclutterV3IfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.declutter.v3"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        var changed = false
+        let newTypes: [String: [String]] = [
+            "builtin.html.escape":   ["code"],
+            "builtin.html.unescape": ["code"],
+            "builtin.json.validate": ["json", "code"]
+        ]
+        for idx in copy.customTransformations.indices {
+            if let types = newTypes[copy.customTransformations[idx].id],
+               copy.customTransformations[idx].applicableTypes != types {
+                copy.customTransformations[idx].applicableTypes = types
+                changed = true
+            }
+        }
+        UserDefaults.standard.set(true, forKey: key)
+        return changed
+    }
+
+    /// One-shot declutter round 2: fold the whitespace family into the single
+    /// "Tidy text" action, turn off the niche/redundant actions, and let the
+    /// email actions also surface on a mail-app source (not just on a literal
+    /// address in the text). Runs once; later user edits are never undone.
+    private func applyDeclutterV2IfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.declutter.v2"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        var changed = false
+
+        // Rename Trim → Tidy text (only the un-customised default).
+        for idx in copy.customTransformations.indices
+        where copy.customTransformations[idx].id == "builtin.text.trim"
+            && copy.customTransformations[idx].title == "Trim whitespace" {
+            copy.customTransformations[idx].title = "Tidy text"
+            changed = true
+        }
+
+        // Turn off the merged / niche transformations.
+        let disable: Set<String> = [
+            "builtin.text.sort_lines", "builtin.text.remove_line_breaks",
+            "builtin.text.normalize_spaces", "builtin.text.collapse_blank_lines",
+            "builtin.code.tabs_to_spaces", "builtin.code.spaces_to_tabs"
+        ]
+        for idx in copy.customTransformations.indices
+        where disable.contains(copy.customTransformations[idx].id)
+            && copy.customTransformations[idx].enabled {
+            copy.customTransformations[idx].enabled = false
+            changed = true
+        }
+
+        // Email actions also fire on a mail-app source.
+        let emailIDs: Set<String> = ["ai.text.draft_email_reply", "ai.text.generate_email_subject"]
+        for idx in copy.customAI.indices where emailIDs.contains(copy.customAI[idx].id) {
+            var req = copy.customAI[idx].requiredTraits
+            if req.contains("containsEmails") && !req.contains("fromMailApp") {
+                req.append("fromMailApp")
+                copy.customAI[idx].requiredTraits = req
+                changed = true
+            }
+        }
+
+        UserDefaults.standard.set(true, forKey: key)
+        return changed
+    }
+
+    /// One-shot: drop trait keys no longer in the vocabulary (e.g. the retired
+    /// "emailLike") from every descriptor's required/forbidden lists. A stale
+    /// key was harmless at runtime (the filter ignores unknowns) but it made an
+    /// action read as "has a condition" (yellow checkbox) while showing nothing
+    /// checked in the editor — confusing. Cleaning it restores agreement.
+    private func applyTraitKeyCleanupIfNeeded(into copy: inout ActionConfig) -> Bool {
+        let knownKey = "drpaste.migration.traitKeyCleanup.v1"
+        guard !UserDefaults.standard.bool(forKey: knownKey) else { return false }
+        let known = Set(ActionTrait.all.map { $0.key })
+        var changed = false
+        func clean(_ keys: [String]) -> [String] { keys.filter { known.contains($0) } }
+        for idx in copy.customAI.indices {
+            let r = clean(copy.customAI[idx].requiredTraits)
+            let f = clean(copy.customAI[idx].forbiddenTraits)
+            if r != copy.customAI[idx].requiredTraits { copy.customAI[idx].requiredTraits = r; changed = true }
+            if f != copy.customAI[idx].forbiddenTraits { copy.customAI[idx].forbiddenTraits = f; changed = true }
+        }
+        for idx in copy.customTransformations.indices {
+            let r = clean(copy.customTransformations[idx].requiredTraits)
+            let f = clean(copy.customTransformations[idx].forbiddenTraits)
+            if r != copy.customTransformations[idx].requiredTraits { copy.customTransformations[idx].requiredTraits = r; changed = true }
+            if f != copy.customTransformations[idx].forbiddenTraits { copy.customTransformations[idx].forbiddenTraits = f; changed = true }
+        }
+        UserDefaults.standard.set(true, forKey: knownKey)
+        return changed
+    }
+
+    /// One-shot: drop the inconsistent "AI: " title prefix from the seeded AI
+    /// actions (some had it, some didn't — the blue AI badge already marks
+    /// them, so the prefix is redundant). Only renames entries still carrying
+    /// the exact default "AI: <title>" — user-renamed titles are left alone.
+    private func applyAITitleCleanupIfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.aiTitleCleanup.v1"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        var changed = false
+        let seedTitles = Dictionary(uniqueKeysWithValues:
+            DefaultAISeed.defaults().map { ($0.id, $0.title) })
+        for idx in copy.customAI.indices {
+            guard let newTitle = seedTitles[copy.customAI[idx].id] else { continue }
+            if copy.customAI[idx].title == "AI: " + newTitle {
+                copy.customAI[idx].title = newTitle
+                changed = true
+            }
+        }
+        UserDefaults.standard.set(true, forKey: key)
+        return changed
+    }
+
+    /// One-shot: restrict the code-specific AI actions (explain / find bugs /
+    /// pretty-format) to Code clips only. They used to also surface on plain
+    /// text, where they're noise — the semantic classifier already detects code
+    /// by formal signals, so Code-only keeps the HUD focused. Runs once; later
+    /// user edits to the "Applies to" set are never overwritten.
+    private func applyAICodeApplicabilityIfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.aiCodeApplicability.v1"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        var changed = false
+        let codeOnly: Set<String> = [
+            "ai.code.explain", "ai.code.find_bugs", "ai.code.pretty", "ai.code.translate"
+        ]
+        let codeTypes = ["code"]
+        for idx in copy.customAI.indices where codeOnly.contains(copy.customAI[idx].id) {
+            if copy.customAI[idx].applicableTypes != codeTypes {
+                copy.customAI[idx].applicableTypes = codeTypes
+                changed = true
+            }
+        }
+        UserDefaults.standard.set(true, forKey: key)
+        return changed
+    }
+
+    /// One-shot declutter pass (UserDefaults-guarded) that aligns an existing
+    /// config with the curated defaults: Markdown extractors become
+    /// Markdown-only, and the redundant / long-tail actions (a dedicated
+    /// Unicode-"plain" reverse, Markdown→plain now that the universal cleaner
+    /// covers it, and the rarely-used fancy-font variants) are switched off so
+    /// the HUD surfaces only the genuinely useful set. Runs once — later user
+    /// edits (including deliberately re-enabling any of these) are never undone.
+    private func applyApplicabilityCurationIfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.applicabilityCuration.v1"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        var changed = false
+
+        let markdownOnly: Set<String> = [
+            "builtin.md.extract_headings", "builtin.md.extract_links"
+        ]
+        let mdTypes = [SemanticKind.markdown.rawValue]
+        for idx in copy.customTransformations.indices
+        where markdownOnly.contains(copy.customTransformations[idx].id) {
+            if copy.customTransformations[idx].applicableTypes != mdTypes {
+                copy.customTransformations[idx].applicableTypes = mdTypes
+                changed = true
+            }
+        }
+
+        let disableByDefault: Set<String> = [
+            "builtin.text.font_plain", "builtin.md.to_plain",
+            "builtin.text.font_bold_script", "builtin.text.font_fraktur",
+            "builtin.text.font_bold_fraktur", "builtin.text.font_double_struck",
+            "builtin.text.font_sans", "builtin.text.font_sans_bold",
+            "builtin.text.font_sans_italic", "builtin.text.font_sans_bold_italic",
+            "builtin.text.font_fullwidth", "builtin.text.font_circled",
+            "builtin.text.font_filled_circled", "builtin.text.font_squared",
+            "builtin.text.font_filled_squared", "builtin.text.font_upside_down"
+        ]
+        for idx in copy.customTransformations.indices
+        where disableByDefault.contains(copy.customTransformations[idx].id) {
+            if copy.customTransformations[idx].enabled {
+                copy.customTransformations[idx].enabled = false
+                changed = true
+            }
+        }
+
+        UserDefaults.standard.set(true, forKey: key)
+        return changed
     }
 
     /// #A75 — one-shot stamp of the built-in "Show this action when…"
@@ -297,10 +678,14 @@ final class ActionRegistry: ObservableObject {
             }
         }
 
-        // Append defaults that are not already present.
+        // Append defaults that are not already present. Honour the curated
+        // enabled-by-default policy (novelty/niche AI ships OFF) instead of the
+        // descriptor's blanket `enabled = true`.
         for desc in DefaultAISeed.defaults() {
             if !copy.customAI.contains(where: { $0.id == desc.id }) {
-                copy.customAI.append(desc)
+                var d = desc
+                d.enabled = CuratedDefaults.isEnabledByDefault(d.id)
+                copy.customAI.append(d)
             }
         }
 
@@ -453,6 +838,20 @@ final class ActionRegistry: ObservableObject {
         }
         if let flag = config.enabledFlags[actionID] { return flag }
         return CuratedDefaults.isEnabledByDefault(actionID)
+    }
+
+    /// True when the action carries a "Show this action when…" trait condition
+    /// (required or forbidden). Such actions appear in the HUD only when the
+    /// current clip matches the condition — i.e. NOT guaranteed — which the
+    /// Settings list signals with a different enabled-checkbox colour.
+    func hasActiveTraits(_ actionID: String) -> Bool {
+        if let desc = config.customAI.first(where: { $0.id == actionID }) {
+            return !desc.requiredTraits.isEmpty || !desc.forbiddenTraits.isEmpty
+        }
+        if let desc = config.customTransformations.first(where: { $0.id == actionID }) {
+            return !desc.requiredTraits.isEmpty || !desc.forbiddenTraits.isEmpty
+        }
+        return false
     }
 
     /// Unified enable/disable across all action sources.
@@ -678,9 +1077,16 @@ final class ActionRegistry: ObservableObject {
     /// disabled descriptors happens in `applicable(for:context:)` via
     /// `isEnabled(_:)`, and in `ActionHotkeyManager.reload` for direct triggers.
     func rebuildCustomAI() {
-        // Drop all user.* entries (both AI and transformations). rebuildCustomTransformations
-        // runs immediately after via didSet and re-adds the transformation actions.
-        actions.removeAll { $0.id.hasPrefix("user.") }
+        // Drop every existing AI-backed action before re-adding from config.
+        // MUST match by ACTION TYPE, not an ID prefix: the #A74 (0.56.0) ID
+        // migration renamed AI seeds from `user.*` to `ai.text.*` / `ai.code.*`
+        // / `ai.image.*` / `ai.rich.*`, so the old `hasPrefix("user.")` filter
+        // matched nothing and every config mutation re-appended the full AI set
+        // — duplicating the entire AI block on each didSet (the 127-action
+        // explosion). Removing by type also sweeps out any duplicates a prior
+        // buggy build already accumulated and any stale entry whose descriptor
+        // was deleted from config.
+        actions.removeAll { $0 is AIAction || $0 is AIImageAction || $0 is AITextToImageAction }
         for desc in config.customAI {
             let resolvedProviderID: String? = desc.providerID.isEmpty ? nil : desc.providerID
             switch desc.kind {
@@ -692,6 +1098,7 @@ final class ActionRegistry: ObservableObject {
                     promptTemplate: desc.promptTemplate,
                     providerID: resolvedProviderID,
                     applicableTypes: kinds.isEmpty ? [.text, .richText, .markdown] : kinds,
+                    preserveRichFormatting: desc.preserveRichFormatting,
                     requiredTraits: desc.requiredTraits,
                     forbiddenTraits: desc.forbiddenTraits
                 )

@@ -48,6 +48,32 @@ struct RichTextPreviewView: NSViewRepresentable {
             scaleAttributedString(attributedString, by: fontScale)
         )
         textView.textStorage?.setAttributedString(prepared)
+
+        // Monospaced blocks (ASCII art, code) must NOT word-wrap — a wrapped
+        // line of ASCII art is unreadable. Let them extend full-width and
+        // scroll horizontally instead so the columns stay intact regardless of
+        // how narrow the preview pane is. Proportional rich text keeps the
+        // default wrapping behaviour.
+        let mono = isMonospaceDominant(prepared)
+        textView.isHorizontallyResizable = mono
+        scrollView.hasHorizontalScroller = mono
+        if let container = textView.textContainer {
+            container.widthTracksTextView = !mono
+            if mono {
+                container.size = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                                        height: CGFloat.greatestFiniteMagnitude)
+            }
+        }
+    }
+
+    /// True when the string's first character is set in a monospaced font —
+    /// our ASCII-art and code-block previews are uniformly monospaced, so this
+    /// one-sample check reliably distinguishes them from proportional prose.
+    private func isMonospaceDominant(_ attr: NSAttributedString) -> Bool {
+        guard attr.length > 0,
+              let font = attr.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
+        else { return false }
+        return font.fontDescriptor.symbolicTraits.contains(.monoSpace)
     }
 
     /// Apply fontScale by multiplying every `.font` attribute's pointSize.

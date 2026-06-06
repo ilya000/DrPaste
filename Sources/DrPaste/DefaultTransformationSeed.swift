@@ -73,8 +73,10 @@ enum DefaultTransformationSeed {
     static func defaults() -> [CustomTransformationDescriptor] {
         [
             // MARK: text — case
-            descriptor(id: "builtin.text.uppercase",      title: "UPPERCASE",       engine: .caseChange,   params: ["case": "upper"],     types: [.text, .markdown, .code]),
-            descriptor(id: "builtin.text.lowercase",      title: "lowercase",       engine: .caseChange,   params: ["case": "lower"],     types: [.text, .markdown, .code]),
+            // UPPER/lower are prose operations — NOT code: case-folding a code
+            // snippet (`let x` → `LET X`) breaks identifiers and keywords.
+            descriptor(id: "builtin.text.uppercase",      title: "UPPERCASE",       engine: .caseChange,   params: ["case": "upper"],     types: [.text, .markdown]),
+            descriptor(id: "builtin.text.lowercase",      title: "lowercase",       engine: .caseChange,   params: ["case": "lower"],     types: [.text, .markdown]),
             descriptor(id: "builtin.text.title_case",     title: "Title Case",      engine: .caseChange,   params: ["case": "title"],     types: [.text, .markdown]),
             descriptor(id: "builtin.text.sentence_case",  title: "Sentence case",   engine: .caseChange,   params: ["case": "sentence"],  types: [.text, .markdown]),
             descriptor(id: "builtin.text.camel_case",     title: "camelCase",       engine: .camelCase,    params: [:],                   types: [.text, .code]),
@@ -82,7 +84,9 @@ enum DefaultTransformationSeed {
             descriptor(id: "builtin.text.kebab_case",     title: "kebab-case",      engine: .kebabCase,    params: [:],                   types: [.text, .code]),
 
             // MARK: text — whitespace and lines
-            descriptor(id: "builtin.text.trim",           title: "Trim whitespace", engine: .trim,         params: [:],                   types: [.text, .markdown, .code]),
+            // NOT code: Tidy text normalises spacing, which destroys code
+            // indentation/alignment. Code uses "Pretty Code (local)" instead.
+            descriptor(id: "builtin.text.trim",           title: "Tidy text",       engine: .trim,         params: [:],                   types: [.text, .markdown]),
             descriptor(id: "builtin.text.sort_lines",     title: "Sort lines",      engine: .sortLines,    params: ["direction": "asc", "caseInsensitive": "false"], types: [.text, .markdown, .code]),
             descriptor(id: "builtin.text.unique_lines",   title: "Unique lines",    engine: .uniqueLines,  params: [:],                   types: [.text, .markdown, .code]),
             // #A74 (0.56.0) — new: join soft-wrapped lines.
@@ -114,8 +118,12 @@ enum DefaultTransformationSeed {
 
             // MARK: md
             descriptor(id: "builtin.md.to_plain",          title: "Markdown → plain",   engine: .mdToPlain,         params: [:], types: [.markdown]),
-            descriptor(id: "builtin.md.extract_headings",  title: "Extract headings",   engine: .mdExtractHeadings, params: [:], types: [.markdown, .text, .richText]),
-            descriptor(id: "builtin.md.extract_links",     title: "Extract links",      engine: .mdExtractLinks,    params: [:], types: [.markdown, .text, .richText]),
+            // Extract headings works on Markdown AND rich text (rich is
+            // converted to Markdown first, so its heading-styled lines surface).
+            descriptor(id: "builtin.md.extract_headings",  title: "Extract headings",   engine: .mdExtractHeadings, params: [:], types: [.markdown, .richText]),
+            // `md.extract_links` duplicates the universal "Extract links"
+            // (builtin.text.extract_links) — OFF by default; kept markdown-scoped.
+            descriptor(id: "builtin.md.extract_links",     title: "Extract links",      engine: .mdExtractLinks,    params: [:], types: [.markdown]),
 
             // MARK: url
             descriptor(id: "builtin.url.strip_tracking",   title: "Clean URL",          engine: .urlStripTracking,  params: [:], types: [.url]),
@@ -201,7 +209,11 @@ enum DefaultTransformationSeed {
                 title: "Pretty Code (local)",
                 engine: .prettyCodeLocal,
                 params: [:],
-                types: [.code, .json, .text]
+                // Code + JSON: for JSON it produces output identical to
+                // "Pretty JSON" (both JSONSerialization .prettyPrinted+.sortedKeys),
+                // so this universal formatter covers both and the dedicated
+                // Pretty JSON is retired. Never on prose / rich text.
+                types: [.code, .json]
             ),
 
             // MARK: text — fun / Internet slang
@@ -233,22 +245,27 @@ enum DefaultTransformationSeed {
                        title: "Strip HTML tags",
                        engine: .htmlStripTags,
                        params: [:],
-                       types: [.text, .richText, .code]),
+                       // Not rich text — its preview is already rendered (no
+                       // literal tags). Works on HTML pasted as text / code.
+                       // Gated on real HTML so it never mangles `5 < 10`,
+                       // `List<String>`, etc.
+                       types: [.text, .code],
+                       requiredTraits: ["containsHTMLMarkup"]),
             descriptor(id: "builtin.html.escape",
                        title: "Escape HTML",
                        engine: .htmlEscape,
                        params: [:],
-                       types: [.text, .code]),
+                       types: [.code]),
             descriptor(id: "builtin.html.unescape",
                        title: "Unescape HTML",
                        engine: .htmlUnescape,
                        params: [:],
-                       types: [.text, .code]),
+                       types: [.code]),
             descriptor(id: "builtin.json.validate",
                        title: "Validate JSON",
                        engine: .jsonValidate,
                        params: [:],
-                       types: [.json, .text]),
+                       types: [.json, .code]),
             descriptor(id: "builtin.text.normalize_spaces",
                        title: "Normalize spaces",
                        engine: .normalizeSpaces,

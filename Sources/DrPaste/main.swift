@@ -2586,11 +2586,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         case .openProvidersConfig:
             // Close the HUD and open Settings → AI tab.
             closeBigHUD()
-            settingsController?.show()
+            settingsController?.show(tab: SettingsNavigation.aiTab)
         case .openAccessibilitySettings:
             openAccessibilitySettings()
         case .custom(_, let url):
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    /// Internal deep-link router. Handles `drpaste://` URLs clicked inside our
+    /// own surfaces (User Guide, HUD notices) and routes them to the right
+    /// in-app destination instead of letting NSWorkspace try to open them as
+    /// external URLs. Returns true when the link was recognised and handled.
+    ///
+    /// Supported forms:
+    ///   • drpaste://settings            → Settings (current/default tab)
+    ///   • drpaste://settings/ai         → Settings → AI
+    ///   • drpaste://settings/general    → Settings → General
+    ///   • drpaste://settings/<kind>     → Settings → content tab (e.g. /text)
+    ///   • drpaste://guide               → User Guide window
+    @discardableResult
+    @MainActor
+    func openDeepLink(_ url: URL) -> Bool {
+        guard url.scheme == "drpaste" else { return false }
+        switch url.host {
+        case "settings":
+            // First non-slash path component is the tab tag, if present.
+            let tab = url.pathComponents.first { $0 != "/" }
+            closeBigHUD()
+            settingsController?.show(tab: tab)
+            return true
+        case "guide":
+            UserGuideWindowController.shared.show()
+            return true
+        default:
+            return false
         }
     }
 

@@ -881,7 +881,7 @@ struct BigHUDView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
                 .font(.system(size: sz(11)))
-            Text(reason)
+            reasonText(reason, recovery: recovery)
                 .font(.system(size: sz(11)))
                 .foregroundStyle(.primary)
             Spacer()
@@ -893,6 +893,58 @@ struct BigHUDView: View {
         }
         .padding(.horizontal, 8).padding(.vertical, 5)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.12)))
+        // Inline `drpaste://` links inside the reason (e.g. "Settings → AI")
+        // route through the deep-link handler rather than NSWorkspace.
+        .environment(\.openURL, OpenURLAction { url in
+            let handled = (NSApp.delegate as? AppDelegate)?.openDeepLink(url) ?? false
+            return handled ? .handled : .systemAction
+        })
+    }
+
+    /// Render the failure reason, turning the recovery phrase into a tappable
+    /// inline deep link when one is available — so "open Settings → AI" itself
+    /// is clickable, not just the trailing button. Falls back to plain text
+    /// when there's no deep-linkable recovery (the MiniHUD keeps the plain
+    /// string, so we deliberately don't bake markup into the stored reason).
+    @ViewBuilder
+    private func reasonText(_ reason: String, recovery: RecoveryAction?) -> some View {
+        if let rec = recovery,
+           let phrase = deepLinkPhrase(for: rec),
+           let url = deepLinkURL(for: rec),
+           let attr = linkifiedReason(reason, phrase: phrase, url: url) {
+            Text(attr)
+        } else {
+            Text(reason)
+        }
+    }
+
+    /// Substring within a reason string that should become the link, per
+    /// recovery kind. Returns nil for recoveries with no in-app destination.
+    private func deepLinkPhrase(for rec: RecoveryAction) -> String? {
+        switch rec {
+        case .openProvidersConfig:       return "Settings → AI"
+        case .openAccessibilitySettings: return nil   // routes to System Settings
+        case .custom:                    return nil
+        }
+    }
+
+    private func deepLinkURL(for rec: RecoveryAction) -> URL? {
+        switch rec {
+        case .openProvidersConfig:       return URL(string: "drpaste://settings/ai")
+        case .openAccessibilitySettings: return nil
+        case .custom:                    return nil
+        }
+    }
+
+    /// Build an AttributedString from `reason` with `.link` applied to the
+    /// first occurrence of `phrase`. Returns nil if the phrase isn't present
+    /// (wording drifted) so the caller can fall back to plain text.
+    private func linkifiedReason(_ reason: String, phrase: String, url: URL) -> AttributedString? {
+        var attr = AttributedString(reason)
+        guard let range = attr.range(of: phrase) else { return nil }
+        attr[range].link = url
+        attr[range].underlineStyle = .single
+        return attr
     }
 
     private func recoveryLabel(_ rec: RecoveryAction) -> String {

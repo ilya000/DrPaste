@@ -156,7 +156,7 @@ A compound operation: cuts the current selection, opens the HUD, waits for you t
 
 Scenario: in an email you have "sincerely, John", you need to change the signature to "best regards, Jane". Select `sincerely, John`, press ⌥⌘X, pick the previously-copied `best regards, Jane` in the HUD, release — the text is replaced.
 
-Settings → General has a toggle **"Cut & Replace: start cursor on second item"** — when enabled, ⌥⌘X skips the just-cut fragment in history (it's at the top), and focus lands on the next item. Useful for sequential swaps.
+[Settings → General](drpaste://settings/general) has a toggle **"Cut & Replace: start cursor on second item"** — when enabled, ⌥⌘X skips the just-cut fragment in history (it's at the top), and focus lands on the next item. Useful for sequential swaps.
 
 ### ⌥⌘S — Append Copy
 
@@ -238,8 +238,8 @@ Deterministic operations over text via configurable engines:
 - **prepend / append / wrap** — add prefix / suffix / wrap.
 - **trim / collapse spaces** — whitespace normalization.
 - **unicodeStyle** — Unicode pseudo-fonts (𝐛𝐨𝐥𝐝, 𝑖𝑡𝑎𝑙𝑖𝑐, 𝓢𝓬𝓻𝓲𝓹𝓽, 𝔉𝔯𝔞𝔨𝔱𝔲𝔯, 𝙼𝚘𝚗𝚘𝚜𝚙𝚊𝚌𝚎, Sᴍᴀʟʟ Cᴀᴘs, Ⓒⓘⓡⓒⓛⓔⓓ, ∀ uʍop ǝpᴉsdn, etc. — about 20 styles) for Twitter/X, Telegram, LinkedIn, Discord — anywhere Markdown is not rendered.
-- **markdown styles → unicode** (`builtin.font_markdown`, added in 0.42.0) — takes plain Markdown with inline markup (`**bold**`, `*italic*`, `***bi***`, `` `code` ``, `~~strike~~`) and replaces each span with the matching Unicode pseudo-font; markup characters are stripped. Plain text between markup stays unchanged.
-- **markdown → rich text** (`builtin.md_to_rich`, added in 0.42.0) — converts plain Markdown source into NSAttributedString. When pasted into Mail / Pages / Notes / Word the formatting is preserved.
+- **markdown styles → unicode** (`builtin.font_markdown`) — takes plain Markdown with inline markup (`**bold**`, `*italic*`, `***bi***`, `` `code` ``, `~~strike~~`) and replaces each span with the matching Unicode pseudo-font; markup characters are stripped. Plain text between markup stays unchanged.
+- **markdown → rich text** (`builtin.md_to_rich`) — converts plain Markdown source into NSAttributedString. When pasted into Mail / Pages / Notes / Word the formatting is preserved.
 - **cyrillic → latin** / **latin → cyrillic** — transliteration across **14 Cyrillic languages** with automatic language detection, `Привет → Privet`. See [its own section](#cyrillic-transliteration--14-languages).
 - **lineFilter** — filter lines by regex/keyword.
 - **wikiMarkup** — conversion to Wiki markup.
@@ -287,7 +287,7 @@ Settings → Actions → **+New** opens the action-creation dialog.
 
 ## AI providers
 
-DrPaste is not tied to a single vendor. In Settings → AI you can connect multiple providers and switch the default.
+DrPaste is not tied to a single vendor. In [Settings → AI](drpaste://settings/ai) you can connect multiple providers and switch the default.
 
 Supported providers:
 
@@ -311,7 +311,7 @@ Supported providers:
 
 ### Default provider
 
-A radio button to the left of each provider in Settings → AI marks who is used by default for all AI actions that don't have an explicit provider. Change the default — all default-bound actions switch instantly.
+A radio button to the left of each provider in [Settings → AI](drpaste://settings/ai) marks who is used by default for all AI actions that don't have an explicit provider. Change the default — all default-bound actions switch instantly.
 
 If the default provider can't perform the required operation (e.g. default = Anthropic, action = Text→Image, and Anthropic doesn't generate images), **runtime automatically switches to the cheapest provider that can** (priority: Gemini → OpenRouter → OpenAI → Custom). Meanwhile:
 
@@ -327,7 +327,7 @@ In Edit Action you can explicitly select a provider in the Provider picker. All 
 
 ### Connection test
 
-In Settings → AI → Edit, next to each provider, there's "Test connection". Sends a short "Reply with the single word OK." prompt and verifies that the API key is valid and the endpoint responds. A green dot to the left of the row — the last test passed; red — failed (hover for the reason); grey — never tested.
+In [Settings → AI](drpaste://settings/ai) → Edit, next to each provider, there's "Test connection". Sends a short "Reply with the single word OK." prompt and verifies that the API key is valid and the endpoint responds. A green dot to the left of the row — the last test passed; red — failed (hover for the reason); grey — never tested.
 
 After a successful Save, a new/changed provider is auto-tested and auto-promoted to default if the system doesn't have one.
 
@@ -335,7 +335,7 @@ After a successful Save, a new/changed provider is auto-tested and auto-promoted
 
 Under the provider name, **"Today: $0.042 · 14 reqs"** is shown — today's spend, if the provider exposes billing data:
 
-- **OpenAI** — via `/v1/organization/costs`. Uses the regular API key (no admin scope required since 0.35.1). If your key doesn't have billing scope — the row is silently hidden (HTTP 401/403 → silent hide).
+- **OpenAI** — via `/v1/organization/costs`. Uses the regular API key (no admin scope required). If your key doesn't have billing scope — the row is silently hidden (HTTP 401/403 → silent hide).
 - **OpenRouter** — via `/api/v1/credits`. Computes a delta from the first-seen reading of the day.
 
 Click the row — refresh. Tooltip says "updated 3s ago".
@@ -405,26 +405,16 @@ All Cyrillic-script languages with more than ~1 million speakers. Each uses its 
 
 | Language | Example | Romanized | Detected by |
 |---|---|---|---|
-| Russian | Привет мир | Privet mir | (no distinctive letter) |
+| Russian | Привет мир | Privet mir | (no distinctive letter — fallback) |
 | Ukrainian | Привіт Київ | Pryvit Kyyiv | і ї є ґ |
-| Kazakh | Қазақстан | Qazaqstan | ұ қ ғ ә |
 | Serbian | Џек и Ђоко | Džek i Đoko | ћ ђ џ |
-| Bulgarian | ъгъл | agal | ъ without ы/э/ё |
-| Tajik | Тоҷикистон | Tojikiston | ҷ ӣ ӯ ҳ |
-| Mongolian | Өнөөдөр | Önöödör | ө ү |
-| Belarusian | воўк | vowk | ў |
-| Kyrgyz | өзүң | özüñ | ң ө ү |
-| Tatar | җәй | cäy | җ |
-| Chechen | Ӏан | 'an | Ӏ (palochka) |
-| Macedonian | Ѓорѓи | Gjorgji | ѓ ќ ѕ |
-| Bashkir | Башҡортостан | Başqortostan | ҙ ҫ ҡ |
-| Chuvash | чӑваш | chăvash | ӑ ӗ ӳ |
+| Kazakh | Қазақстан | Qazaqstan | қ ғ ұ ә |
+
+…and 10 more (Bulgarian, Tajik, Mongolian, Belarusian, Kyrgyz, Tatar, Chechen, Macedonian, Bashkir, Chuvash) — each with its own national romanization.
 
 ### How auto-detection works (Cyrillic → Latin)
 
-The detector compares the text against each language's **full alphabet**. A language is ruled out the moment the text contains a letter its alphabet can't spell — so a word is never assigned to a language that physically couldn't write it. Among the languages that *can* spell the text, the **more widely spoken** one wins.
-
-In practice: «Џек» contains `џ`, which does not exist in Russian, so Russian is excluded outright; the word is valid in both Serbian and Macedonian, and the more widespread Serbian is chosen. Likewise a Tatar sentence with `җ` rules out Kazakh, since Kazakh has no `җ`. Bulgarian — whose alphabet is a subset of Russian's — is the one special case: it's recognized by a hard sign `ъ` used as a vowel with no Russian-only `ы/э/ё`. If nothing distinguishes the text, the most widely spoken matching language is used.
+The detector rules out any language whose alphabet **can't spell the text**, so a word is never assigned to a language that physically couldn't write it. Among the languages that *can*: **your system language wins** if it's one of them, otherwise the **most widely spoken** does. Bulgarian is the one special case — recognized by a hard sign `ъ` used as a vowel with no Russian-only `ы/э/ё`.
 
 When two languages fit the text equally, your **system locale** breaks the tie *before* speaker count: on Serbian/Macedonian-ambiguous text a Serbia locale picks Serbian, and a Ukraine locale romanizes `и → y` where a Russia locale gives `и → i`.
 
@@ -727,11 +717,11 @@ The HUD must be the key window. Click in the HUD with the mouse to regain focus,
 
 ### MiniHUD got stuck after a long AI request
 
-Clicking ✕ in the corner of MiniHUD cancels the request and closes the window. Since 0.41.0 a 90-second watchdog is built in: if the provider goes silent for 90 seconds (e.g. keep-alive pings without data chunks), MiniHUD cancels the request itself. If it hangs sooner — that's usually a network timeout; try a different provider.
+Clicking ✕ in the corner of MiniHUD cancels the request and closes the window. A 90-second watchdog is built in: if the provider goes silent for 90 seconds (e.g. keep-alive pings without data chunks), MiniHUD cancels the request itself. If it hangs sooner — that's usually a network timeout; try a different provider.
 
 ### Type Slowly types too fast / too slow
 
-Since 0.42.0 the base delay is 0.133 seconds per character (was 0.2). If you want it different — open Settings → Actions → Type Slowly → Edit; the UI parameter isn't there yet (see backlog #A16), but the Playground preview now shows the actual production speed, so you can dial it in by eye before committing.
+The base delay is 0.133 seconds per character. If you want it different — open Settings → Actions → Type Slowly → Edit; the Playground preview shows the actual production speed, so you can dial it in by eye before committing.
 
 ### Append session unexpectedly started a new one instead of continuing
 

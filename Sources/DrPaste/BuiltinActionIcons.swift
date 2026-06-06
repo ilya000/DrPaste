@@ -111,9 +111,10 @@ enum BuiltinActionIcons {
         // image.* — image transforms
         case "builtin.image.ocr":                      return "text.viewfinder"
         case "builtin.image.decode_qr":                return "qrcode.viewfinder"
+        case "builtin.md.to_wiki":                      return "w.square.fill"
+        case "builtin.image.info":                      return "info.circle"
         case "builtin.image.strip_metadata":           return "eye.slash"
         case "builtin.image.resize":                   return "arrow.up.left.and.arrow.down.right"
-        case "builtin.image.resize_max_1920":          return "arrow.up.left.and.down.right.magnifyingglass"
         case "builtin.image.compress_jpeg":            return "rectangle.compress.vertical"
         case "builtin.image.to_grayscale":             return "circle.lefthalf.filled"
         case "builtin.image.rotate_right":             return "rotate.right"

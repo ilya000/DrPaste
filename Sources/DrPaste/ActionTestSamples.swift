@@ -31,6 +31,8 @@
 
 import Foundation
 import AppKit
+import ImageIO
+import CoreImage
 
 enum ActionTestSamples {
 
@@ -46,6 +48,9 @@ enum ActionTestSamples {
         // MARK: Translation
         case "ai.text.translate", "ai.rich.translate":
             return "Hello! How are you doing today? I hope the weather is nice where you are."
+
+        case "ai.text.ipa_transcription":
+            return "The quick brown fox jumps over the lazy dog."
 
         // MARK: Grammar / tone
         case "ai.text.fix_grammar", "ai.rich.fix_grammar":
@@ -433,7 +438,7 @@ enum ActionTestSamples {
         case "builtin.image.strip_metadata":
             return "(Image action — Run test will strip EXIF / metadata from a sample image)"
 
-        case "builtin.image.resize_max_1920", "builtin.image.resize":
+        case "builtin.image.resize":
             return "(Image action — Run test will resize a sample 512×512 image; already under 1920, action returns as-is)"
 
         case "builtin.image.compress_jpeg":
@@ -959,6 +964,135 @@ enum ActionTestSamples {
             sourceWindowTitle: nil,
             tags: []
         )
+    }
+
+    /// Accurate historical provenance of the bundled Mandrill/Baboon sample —
+    /// no invented camera/GPS/date (those are genuinely undocumented for this
+    /// image). Embedded into the metadata-bearing sample so Image-info /
+    /// Strip-metadata demonstrate on real, honest data rather than fabricated
+    /// EXIF.
+    static let mandrillProvenance =
+        "Mandrill/Baboon — USC-SIPI test image 4.2.03, probably scanned at " +
+        "USC-SIPI around 1977–1981 from magazine print; original photographer, " +
+        "camera, date and location are lost or not publicly documented."
+
+    /// Build a JPEG sample that carries real, accurate metadata (a description /
+    /// caption with the Mandrill's documented provenance) so the Image-info and
+    /// Strip-metadata tests demonstrate on honest data — the standard PNG sample
+    /// is metadata-free, which made those actions look like no-ops. Derives its
+    /// pixels from the normal sample image and embeds the tags via ImageIO.
+    @MainActor
+    static func makeMetadataRichSampleItem() -> ClipboardItem? {
+        guard let base = makeSampleImageItem(),
+              let rel = base.previewImageRel,
+              let ns = NSImage(contentsOf: AppStorage.imagesDir.appendingPathComponent(rel)),
+              let cg = ns.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return nil
+        }
+        let metadata: [CFString: Any] = [
+            kCGImagePropertyTIFFDictionary: [
+                kCGImagePropertyTIFFImageDescription: mandrillProvenance
+            ] as [CFString: Any],
+            kCGImagePropertyIPTCDictionary: [
+                kCGImagePropertyIPTCObjectName: "Mandrill (USC-SIPI 4.2.03)",
+                kCGImagePropertyIPTCCaptionAbstract: mandrillProvenance
+            ] as [CFString: Any]
+        ]
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out, "public.jpeg" as CFString, 1, nil) else {
+            return nil
+        }
+        CGImageDestinationAddImage(dest, cg, metadata as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        let jpeg = out as Data
+
+        let stable = "drpaste-test-meta.jpg"
+        let blobName = stable + ".bin"
+        do {
+            try jpeg.write(to: AppStorage.imagesDir.appendingPathComponent(stable), options: .atomic)
+            try jpeg.write(to: AppStorage.blobsDir.appendingPathComponent(blobName), options: .atomic)
+        } catch {
+            return nil
+        }
+        return ClipboardItem(
+            id: UUID(),
+            semantic: .image,
+            createdAt: Date(),
+            representations: ["public.jpeg": blobName],
+            typesOrdered: ["public.jpeg"],
+            previewText: "Mandrill (USC-SIPI 4.2.03) — scanned from magazine print, ~1977–1981; photographer/camera/date/location undocumented.",
+            previewImageRel: stable,
+            originalImageWidth: cg.width,
+            originalImageHeight: cg.height,
+            originalImageFileSize: jpeg.count,
+            imageFormat: "JPEG",
+            sourceBundleID: nil,
+            sourceAppName: "Editor Test",
+            sourceWindowTitle: nil,
+            tags: []
+        )
+    }
+
+    /// Per-action default image sample. OCR → a card of readable text, Decode
+    /// QR → a real QR code; everything else → the standard Mandrill / portrait.
+    /// Lets these actions actually demonstrate their output instead of running
+    /// on a photo that has no text / no QR.
+    @MainActor
+    static func defaultImageSample(forActionID id: String) -> ClipboardItem? {
+        switch id {
+        case "builtin.image.ocr":       return makeOCRSampleItem() ?? makeSampleImageItem()
+        case "builtin.image.decode_qr": return makeQRSampleItem() ?? makeSampleImageItem()
+        default:                        return makeSampleImageItem()
+        }
+    }
+
+    /// Readable text rendered onto a light card — the input for the OCR demo.
+    @MainActor
+    static func makeOCRSampleItem() -> ClipboardItem? {
+        let size = NSSize(width: 560, height: 320)
+        let text = """
+        Stand-up notes — 09:30
+
+        • ship the paste-bug fix
+        • code review for Anna
+        • TODO: write more tests
+
+        "There are only 10 kinds of people:
+        those who understand binary,
+        and those who don't."
+        """
+        guard let image = ImageRenderer.render(size: size, opaque: true, draw: { _ in
+            let para = NSMutableParagraphStyle()
+            para.lineSpacing = 7
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 24, weight: .medium),
+                .foregroundColor: NSColor.black,
+                .paragraphStyle: para
+            ]
+            (text as NSString).draw(in: NSRect(x: 30, y: 22, width: size.width - 60, height: size.height - 44),
+                                    withAttributes: attrs)
+        }), let png = ImageRenderer.pngData(from: image) else { return nil }
+        return persistSample(pngData: png, image: image, stableFilename: "drpaste-test-ocr.png")
+    }
+
+    /// A scannable QR code encoding a short IT joke — the input for the
+    /// Decode QR / barcode demo.
+    @MainActor
+    static func makeQRSampleItem() -> ClipboardItem? {
+        let joke = "Why do programmers prefer dark mode? Because light attracts bugs. 🐛"
+        guard let data = joke.data(using: .utf8),
+              let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(data, forKey: "inputMessage")
+        filter.setValue("M", forKey: "inputCorrectionLevel")
+        guard let output = filter.outputImage else { return nil }
+        // Nearest-neighbour upscale keeps the modules crisp (no blur).
+        let scaled = output.samplingNearest().transformed(by: CGAffineTransform(scaleX: 10, y: 10))
+        guard let cg = CIContext().createCGImage(scaled, from: scaled.extent) else { return nil }
+        let bitmap = NSBitmapImageRep(cgImage: cg)
+        guard let png = bitmap.representation(using: .png, properties: [:]) else { return nil }
+        let image = NSImage(size: NSSize(width: cg.width, height: cg.height))
+        image.addRepresentation(bitmap)
+        return persistSample(pngData: png, image: image, stableFilename: "drpaste-test-qr.png")
     }
 
     // MARK: - Rich text sample

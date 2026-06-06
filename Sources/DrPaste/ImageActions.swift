@@ -14,6 +14,7 @@ import AppKit
 import Vision
 import CoreImage
 import CoreImage.CIFilterBuiltins
+import ImageIO
 
 /// Shared Core Image rendering context for every image action.
 /// `CIContext()` is expensive to construct (allocates GPU/Metal resources,
@@ -422,30 +423,21 @@ struct ImageRotateLeftAction: ClipboardAction {
     }
 }
 
-struct ImageResize1920Action: ClipboardAction {
-    let id = "builtin.image.resize_max_1920"; let title = "Resize to max 1920px"; let isLocal = true
-    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        imageActionApplies(item: item, context: context)
+/// User-configurable resize target, stored per action ID so each resize action
+/// can have its own longer-side limit. Backed by UserDefaults (a single scalar
+/// per action) so the action structs — which have no config plumbing — can read
+/// it directly in `apply`. The Settings → Edit Action sheet writes it.
+enum ResizeSettings {
+    static let minSide = 16
+    static let maxSide = 20000
+    private static func key(_ id: String) -> String { "drpaste.image.resizeMaxLongSide.\(id)" }
+
+    static func maxLongSide(for id: String, default def: Int = 1920) -> Int {
+        let v = UserDefaults.standard.integer(forKey: key(id))
+        return v >= minSide ? v : def
     }
-    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        enum ResizeResult { case ok(ClipboardItem); case alreadySmall; case failed }
-        let result: ResizeResult = await runOffMain {
-            // #A47 — Migrated to ImageRenderer.downscale. The legacy
-            // lockFocus path produced backing-scale-dependent output
-            // dimensions; the new path is pixel-deterministic.
-            guard let img = loadImage(item) else { return .failed }
-            let size = img.size
-            let maxSide = max(size.width, size.height)
-            guard maxSide > 1920 else { return .alreadySmall }
-            let out = ImageRenderer.downscale(img, maxSide: 1920)
-            guard let saved = saveImage(out, originalItem: item) else { return .failed }
-            return .ok(saved)
-        }
-        switch result {
-        case .ok(let saved):     return .preview(saved)
-        case .alreadySmall:      return .failed(original: item, reason: "Already ≤ 1920px", recovery: nil)
-        case .failed:            return .failed(original: item, reason: "Resize failed", recovery: nil)
-        }
+    static func setMaxLongSide(_ v: Int, for id: String) {
+        UserDefaults.standard.set(min(maxSide, max(minSide, v)), forKey: key(id))
     }
 }
 
@@ -481,6 +473,203 @@ struct ImageCompressJPEGAction: ClipboardAction {
     }
 }
 
+/// Reads privacy-relevant metadata (EXIF / GPS / camera) from raw image bytes
+/// via ImageIO. Used by Strip-metadata to report exactly what it removed — both
+/// in the HUD/Settings preview text and so the test panel shows the metadata
+/// instead of two identical-looking images.
+enum ImageMetadata {
+    /// Raw bytes of the first stored image representation (preferring formats
+    /// that actually carry EXIF/GPS), or the preview image as a fallback.
+    static func rawData(_ item: ClipboardItem) -> Data? {
+        for type in ["public.jpeg", "public.heic", "public.tiff", "public.png"] {
+            if let rel = item.representations[type],
+               let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)) {
+                return data
+            }
+        }
+        if let rel = item.previewImageRel,
+           let data = try? Data(contentsOf: AppStorage.imagesDir.appendingPathComponent(rel)) {
+            return data
+        }
+        return nil
+    }
+
+    /// Short, human-readable highlights of the sensitive metadata present
+    /// (GPS location, camera make/model, capture date). Empty if none.
+    static func privacyHighlights(of data: Data) -> [String] {
+        guard let src = CGImageSourceCreateWithData(data as CFData, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any]
+        else { return [] }
+        var out: [String] = []
+        if let gps = props[kCGImagePropertyGPSDictionary] as? [CFString: Any] {
+            if let lat = gps[kCGImagePropertyGPSLatitude] as? Double,
+               let lon = gps[kCGImagePropertyGPSLongitude] as? Double {
+                let latRef = (gps[kCGImagePropertyGPSLatitudeRef] as? String) ?? ""
+                let lonRef = (gps[kCGImagePropertyGPSLongitudeRef] as? String) ?? ""
+                out.append(String(format: "GPS %.4f°%@ %.4f°%@", lat, latRef, lon, lonRef))
+            } else {
+                out.append("GPS location")
+            }
+        }
+        let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any]
+        let camera = [tiff?[kCGImagePropertyTIFFMake] as? String,
+                      tiff?[kCGImagePropertyTIFFModel] as? String]
+            .compactMap { $0 }.joined(separator: " ")
+        if !camera.isEmpty { out.append("Camera \(camera)") }
+        if let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any],
+           let dt = exif[kCGImagePropertyExifDateTimeOriginal] as? String {
+            out.append("Date taken \(dt)")
+        }
+        return out
+    }
+
+    /// True if the bytes carry PRIVACY-relevant metadata worth stripping —
+    /// GPS, IPTC, EXIF capture fields, or a camera make/model. Deliberately
+    /// ignores the benign TIFF resolution/orientation dictionary that ImageIO
+    /// attaches to almost every encoded image (incl. plain PNGs), so we don't
+    /// claim to have removed something when there was nothing sensitive.
+    static func hasAny(_ data: Data) -> Bool {
+        guard let src = CGImageSourceCreateWithData(data as CFData, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any]
+        else { return false }
+        if props[kCGImagePropertyGPSDictionary] != nil { return true }
+        if props[kCGImagePropertyIPTCDictionary] != nil { return true }
+        if let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any] {
+            let capture: [CFString] = [
+                kCGImagePropertyExifDateTimeOriginal,
+                kCGImagePropertyExifDateTimeDigitized,
+                kCGImagePropertyExifLensModel,
+                kCGImagePropertyExifUserComment
+            ]
+            if capture.contains(where: { exif[$0] != nil }) { return true }
+        }
+        if let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any] {
+            if tiff[kCGImagePropertyTIFFMake] != nil || tiff[kCGImagePropertyTIFFModel] != nil {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Full human-readable report — name, format, dimensions, file size, colour
+    /// info and (when present) camera / capture date / GPS / exposure. Used by
+    /// the "Image info" action.
+    static func report(for item: ClipboardItem) -> String? {
+        guard let data = rawData(item),
+              let src = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let props = (CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any]) ?? [:]
+        let iptc = props[kCGImagePropertyIPTCDictionary] as? [CFString: Any]
+        let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any]
+        var lines: [String] = []
+
+        let name = (iptc?[kCGImagePropertyIPTCObjectName] as? String) ?? displayName(for: item)
+        lines.append("Name: \(name)")
+        let format: String = {
+            if let ut = CGImageSourceGetType(src) { return friendlyFormat(String(ut)) }
+            return item.imageFormat ?? "—"
+        }()
+        lines.append("Format: \(format)")
+
+        let w = (props[kCGImagePropertyPixelWidth] as? Int) ?? item.originalImageWidth ?? 0
+        let h = (props[kCGImagePropertyPixelHeight] as? Int) ?? item.originalImageHeight ?? 0
+        if w > 0, h > 0 { lines.append("Dimensions: \(w) × \(h) px") }
+        lines.append("File size: \(formatBytes(item.originalImageFileSize ?? data.count))")
+
+        if let depth = props[kCGImagePropertyDepth] as? Int { lines.append("Bit depth: \(depth)") }
+        if let model = props[kCGImagePropertyColorModel] as? String { lines.append("Colour model: \(model)") }
+        if let dpi = props[kCGImagePropertyDPIWidth] as? Double, dpi > 0 {
+            lines.append("Resolution: \(Int(dpi)) DPI")
+        }
+        if let alpha = props[kCGImagePropertyHasAlpha] as? Bool {
+            lines.append("Transparency: \(alpha ? "yes" : "no")")
+        }
+
+        let highlights = privacyHighlights(of: data)
+        var details: [String] = []
+        if let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any] {
+            if let iso = (exif[kCGImagePropertyExifISOSpeedRatings] as? [Int])?.first {
+                details.append("ISO \(iso)")
+            }
+            if let f = exif[kCGImagePropertyExifFNumber] as? Double {
+                details.append(String(format: "Aperture ƒ/%.1f", f))
+            }
+            if let exp = exif[kCGImagePropertyExifExposureTime] as? Double, exp > 0 {
+                details.append("Exposure 1/\(Int((1.0 / exp).rounded())) s")
+            }
+            if let focal = exif[kCGImagePropertyExifFocalLength] as? Double {
+                details.append(String(format: "Focal length %.0f mm", focal))
+            }
+        }
+
+        let description = (tiff?[kCGImagePropertyTIFFImageDescription] as? String)
+            ?? (iptc?[kCGImagePropertyIPTCCaptionAbstract] as? String)
+
+        if highlights.isEmpty && details.isEmpty && description == nil {
+            lines.append("Metadata: none (no EXIF / GPS)")
+        } else {
+            lines.append("")
+            lines.append("Metadata:")
+            for h in highlights { lines.append("  • \(h)") }
+            for d in details { lines.append("  • \(d)") }
+            if let description {
+                lines.append("")
+                lines.append("Description:")
+                lines.append(description)
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func displayName(for item: ClipboardItem) -> String {
+        if let rel = item.representations["public.file-url"],
+           let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
+           let str = String(data: data, encoding: .utf8),
+           let url = URL(string: str) {
+            return url.lastPathComponent
+        }
+        return "Clipboard image"
+    }
+
+    private static func friendlyFormat(_ uti: String) -> String {
+        switch uti {
+        case "public.png":  return "PNG"
+        case "public.jpeg": return "JPEG"
+        case "public.heic", "public.heif": return "HEIC"
+        case "public.tiff": return "TIFF"
+        case "com.compuserve.gif": return "GIF"
+        case "org.webmproject.webp", "public.webp": return "WebP"
+        default:
+            return uti.split(separator: ".").last.map { $0.uppercased() } ?? uti
+        }
+    }
+
+    private static func formatBytes(_ bytes: Int) -> String {
+        if bytes >= 1_048_576 {
+            return String(format: "%.1f MB", Double(bytes) / 1_048_576)
+        }
+        return "\(max(1, bytes / 1024)) KB"
+    }
+}
+
+/// Surfaces the image's metadata as readable text — the inverse of
+/// Strip-metadata. Shows name, format, dimensions, file size, colour info and
+/// any embedded camera / date / GPS so you can see what an image carries.
+struct ImageInfoAction: ClipboardAction {
+    let id = "builtin.image.info"
+    let title = "Image info"
+    let isLocal = true
+    func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
+        imageActionApplies(item: item, context: context)
+    }
+    func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
+        let text: String? = await runOffMain { ImageMetadata.report(for: item) }
+        guard let text, !text.isEmpty else {
+            return .failed(original: item, reason: "Couldn’t read image info.", recovery: nil)
+        }
+        return .preview(makeTextItem(text, from: item))
+    }
+}
+
 struct ImageStripMetadataAction: ClipboardAction {
     let id = "builtin.image.strip_metadata"; let title = "Strip EXIF / metadata"; let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
@@ -488,6 +677,16 @@ struct ImageStripMetadataAction: ClipboardAction {
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
         let copy: ClipboardItem? = await runOffMain {
+            // Read what's about to be removed BEFORE re-encoding — the NSImage
+            // path below discards metadata, so inspect the original bytes.
+            let highlights: [String]
+            let hadMetadata: Bool
+            if let raw = ImageMetadata.rawData(item) {
+                highlights = ImageMetadata.privacyHighlights(of: raw)
+                hadMetadata = ImageMetadata.hasAny(raw)
+            } else {
+                highlights = []; hadMetadata = false
+            }
             guard let img = loadImage(item),
                   let tiff = img.tiffRepresentation,
                   let bitmap = NSBitmapImageRep(data: tiff),
@@ -504,13 +703,28 @@ struct ImageStripMetadataAction: ClipboardAction {
             copy.previewImageRel = name
             copy.representations = ["public.png": rawName]
             copy.typesOrdered = ["public.png"]
-            copy.previewText = "Image \(png.count / 1024) KB (no metadata)"
+            copy.previewText = Self.summary(highlights: highlights,
+                                            hadMetadata: hadMetadata,
+                                            kb: png.count / 1024)
             return copy
         }
         guard let copy = copy else {
             return .failed(original: item, reason: "Strip metadata failed", recovery: nil)
         }
         return .preview(copy)
+    }
+
+    /// Human summary of what was stripped — shown in the HUD and the Settings
+    /// test panel so "remove metadata" produces a visible, explainable result
+    /// rather than an image that looks identical to the input.
+    static func summary(highlights: [String], hadMetadata: Bool, kb: Int) -> String {
+        if !highlights.isEmpty {
+            return "Removed: " + highlights.joined(separator: " · ") + "  →  now clean (\(kb) KB)"
+        }
+        if hadMetadata {
+            return "Removed embedded metadata  →  now clean (\(kb) KB)"
+        }
+        return "No EXIF/GPS metadata found — this image was already clean (\(kb) KB)"
     }
 }
 
@@ -535,9 +749,13 @@ struct ImageToASCIIArtAction: ClipboardAction {
     static let defaultOutWidth: Int = 40
     private static let charAspect: Double = 0.5
 
-    // Gradient from "transparent" (whitespace) → "fully filled". Order
-    // determines the brightness mapping (index 0 = lightest, last = darkest).
-    private static let ramp: [Character] = Array(" .:-=+*#%@")
+    // Tonal ramp, lightest → darkest. A finer 15-step ramp (vs the old 10)
+    // gives smoother shading; structural edges are drawn separately with
+    // directional glyphs (see `render`). Index 0 = space (lightest).
+    private static let ramp: [Character] = Array(" .,:;-+=*oxX%#@")
+    // Directional stroke glyphs by edge orientation bucket (y-down image
+    // coordinates): 0 = horizontal "-", 1 = "\", 2 = vertical "|", 3 = "/".
+    private static let edgeGlyphs: [Character] = ["-", "\\", "|", "/"]
 
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         imageActionApplies(item: item, context: context)
@@ -561,7 +779,7 @@ struct ImageToASCIIArtAction: ClipboardAction {
         // apply its default proportional font and turn straight-edged
         // line art into wavy spaghetti.
         let attr = NSAttributedString(string: result, attributes: [
-            .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+            .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .regular)
         ])
         return .preview(makeRichTextItem(attr, from: item))
     }
@@ -610,31 +828,80 @@ struct ImageToASCIIArtAction: ClipboardAction {
         ctx.interpolationQuality = .high
         ctx.draw(cg, in: CGRect(x: 0, y: 0, width: cols, height: rows))
 
-        // Build a 2D char grid first so auto-crop can scan it efficiently.
+        // Collect luminance per cell (top-down so the text reads in the same
+        // orientation as the image — CG's bitmap origin is bottom-left).
+        var lum = [Double](repeating: 0, count: rows * cols)
+        for row in 0..<rows {
+            let srcRow = rows - 1 - row
+            for col in 0..<cols {
+                lum[row * cols + col] = Double(pixels[srcRow * cols + col]) / 255.0
+            }
+        }
+
+        // EXPRESSIVENESS: stretch contrast across the actual tonal range of the
+        // image before mapping to glyphs. The old code applied a fixed
+        // brightness cutoff tuned for white-background logos — on real photos
+        // (mandrill, portraits) that crushed everything into a faint scatter of
+        // dots. A robust 5th/95th-percentile stretch spreads the mid-tones over
+        // the full ramp so the subject's form and texture actually read, while
+        // a mild gamma lifts the mid-tones for extra punch.
+        let sorted = lum.sorted()
+        let lo = sorted[Int(Double(sorted.count - 1) * 0.05)]
+        let hi = sorted[Int(Double(sorted.count - 1) * 0.95)]
+        let span = max(0.0001, hi - lo)
+
+        // Stretched luminance per cell (0 = darkest … 1 = lightest), mid-lift.
+        var sv = [Double](repeating: 0, count: rows * cols)
+        for i in 0..<(rows * cols) {
+            var s = (lum[i] - lo) / span
+            s = min(1, max(0, s))
+            sv[i] = pow(s, 0.85)
+        }
+
+        // STRUCTURE: Sobel edge detection. The biggest expressiveness win —
+        // pure tonal ramps look like dithered noise; tracing strong contours
+        // with directional glyphs (| - / \ chosen by edge orientation) makes the
+        // result read as a *drawing*. Magnitude picks which cells are edges;
+        // orientation picks the stroke. (Research: structure-based / Sobel ASCII
+        // art — Asciimatic, img2ascii, et al.)
+        @inline(__always) func sval(_ r: Int, _ c: Int) -> Double {
+            sv[min(rows - 1, max(0, r)) * cols + min(cols - 1, max(0, c))]
+        }
+        var mags = [Double](repeating: 0, count: rows * cols)
+        var glyphs = [Character](repeating: " ", count: rows * cols)
+        for r in 0..<rows {
+            for c in 0..<cols {
+                let gx = (sval(r-1, c+1) + 2*sval(r, c+1) + sval(r+1, c+1))
+                       - (sval(r-1, c-1) + 2*sval(r, c-1) + sval(r+1, c-1))
+                let gy = (sval(r+1, c-1) + 2*sval(r+1, c) + sval(r+1, c+1))
+                       - (sval(r-1, c-1) + 2*sval(r-1, c) + sval(r-1, c+1))
+                mags[r * cols + c] = (gx * gx + gy * gy).squareRoot()
+                // Edge orientation = gradient direction + 90°, folded to [0, π).
+                var a = atan2(gy, gx) + .pi / 2
+                a = a.truncatingRemainder(dividingBy: .pi)
+                if a < 0 { a += .pi }
+                let seg = Int((a / .pi * 4.0).rounded()) % 4
+                glyphs[r * cols + c] = edgeGlyphs[seg]
+            }
+        }
+        // Edge threshold: the strongest ~18% of gradients, with an absolute
+        // floor so flat / noisy regions never sprout stray strokes.
+        let sortedMags = mags.sorted()
+        let edgeThreshold = max(0.55, sortedMags[Int(Double(sortedMags.count - 1) * 0.82)])
+
         var grid = [[Character]](repeating: [Character](repeating: " ", count: cols),
                                   count: rows)
         let lastIdx = ramp.count - 1
-        // Brightness above this threshold is treated as background → space.
-        // Tuned against typical light backgrounds (white, mint, beige, gray
-        // page chrome). Increases foreground-vs-background contrast and
-        // makes auto-crop tight against the subject.
-        let backgroundCutoff: Double = 0.78
         for row in 0..<rows {
-            // Bitmap origin is bottom-left in Core Graphics; iterate top-down
-            // so the resulting text reads in the same orientation as the image.
-            let srcRow = rows - 1 - row
             for col in 0..<cols {
-                let v = Double(pixels[srcRow * cols + col]) / 255.0
-                if v >= backgroundCutoff {
-                    // Background — leave as space (initial value).
-                    continue
+                let i = row * cols + col
+                if mags[i] >= edgeThreshold {
+                    grid[row][col] = glyphs[i]          // structural stroke
+                } else {
+                    // Tonal fill: dark → dense glyph, bright → space.
+                    let idx = Int(((1 - sv[i]) * Double(lastIdx)).rounded())
+                    grid[row][col] = ramp[max(0, min(lastIdx, idx))]
                 }
-                // Foreground range remapped to (1..lastIdx). Index 0 (space)
-                // is reserved for background only, so visible content always
-                // has at least minimum density and never blends with bg.
-                let norm = (backgroundCutoff - v) / backgroundCutoff
-                let idx = max(1, min(lastIdx, Int((norm * Double(lastIdx)).rounded())))
-                grid[row][col] = ramp[idx]
             }
         }
 
@@ -671,8 +938,8 @@ enum ImageActionsPack {
     static var all: [ClipboardAction] {
         [
             ImageOCRAction(), ImageDecodeQRAction(),
+            ImageInfoAction(),
             ImageStripMetadataAction(),
-            ImageResize1920Action(),           // legacy image-only resize
             ImageResizeAction(maxLongSide: 1920),  // #A14 universal resize (image/files/richText)
             ImageCompressJPEGAction(),
             ImageGrayscaleAction(),

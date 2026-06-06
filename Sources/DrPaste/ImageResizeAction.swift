@@ -46,6 +46,12 @@ struct ImageResizeAction: ClipboardAction {
         self.maxLongSide = maxLongSide
     }
 
+    /// User-overridable target (Settings → Edit Action), falling back to the
+    /// value this action was registered with.
+    private var effectiveMaxLongSide: Int {
+        ResizeSettings.maxLongSide(for: id, default: maxLongSide)
+    }
+
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         // Three semantic shapes accepted:
         //   1. image clip
@@ -195,12 +201,13 @@ struct ImageResizeAction: ClipboardAction {
         let srcW = cg.width
         let srcH = cg.height
         let longerSide = max(srcW, srcH)
+        let target = effectiveMaxLongSide
         // Never enlarge.
-        guard longerSide > self.maxLongSide else {
+        guard longerSide > target else {
             // Return the source bytes as-is in the original format.
             return encodeImage(cg, format: originalFormat)
         }
-        let scale = Double(self.maxLongSide) / Double(longerSide)
+        let scale = Double(target) / Double(longerSide)
         let dstW = max(1, Int(Double(srcW) * scale))
         let dstH = max(1, Int(Double(srcH) * scale))
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()

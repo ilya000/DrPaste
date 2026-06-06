@@ -45,9 +45,10 @@ final class SeedIntegrityTests: XCTestCase {
         // Markdown-aware fancy font still present and engine-consistent.
         XCTAssertEqual(byID["builtin.text.font_markdown"]?.engine, .unicodeStyle)
         XCTAssertEqual(byID["builtin.text.font_markdown"]?.parameters["style"], UnicodeFontStyle.markdownAware.rawValue)
-        // Markdown extract handlers process rich text too.
-        XCTAssertEqual(Set(byID["builtin.md.extract_headings"]?.applicableTypes ?? []), ["markdown", "text", "richText"])
-        XCTAssertEqual(Set(byID["builtin.md.extract_links"]?.applicableTypes ?? []), ["markdown", "text", "richText"])
+        // Extract headings covers Markdown + rich text; extract links stays
+        // markdown-scoped (it's off by default — the universal text.extract_links wins).
+        XCTAssertEqual(Set(byID["builtin.md.extract_headings"]?.applicableTypes ?? []), ["markdown", "richText"])
+        XCTAssertEqual(Set(byID["builtin.md.extract_links"]?.applicableTypes ?? []), ["markdown"])
     }
 
     /// IDs of hardcoded standalone actions registered in main.swift —
@@ -75,12 +76,13 @@ final class SeedIntegrityTests: XCTestCase {
         "builtin.table.to_rich",
         "builtin.table.to_html",
         "builtin.md.to_rich",
+        "builtin.md.to_wiki",
         "builtin.json.flatten",
         "builtin.json.remove_nulls",
         "builtin.image.ocr",
         "builtin.image.decode_qr",
+        "builtin.image.info",
         "builtin.image.strip_metadata",
-        "builtin.image.resize_max_1920",
         "builtin.image.resize",
         "builtin.image.compress_jpeg",
         "builtin.image.to_grayscale",
