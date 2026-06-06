@@ -184,7 +184,10 @@ enum DefaultTransformationSeed {
                 id: "builtin.text.latin_to_cyrillic",
                 title: "Ć → Ћ  Latin translit",
                 engine: .latinToCyrillic,
-                params: ["target": "russian"],
+                // "auto": pick the target from characteristic letters, then
+                // locale, then Russian. Users create explicit per-language
+                // actions when they want a fixed target.
+                params: ["target": "auto"],
                 types: [.text],
                 // Latin → Cyrillic only makes sense on pure-Latin text — see
                 // #A77 (locale-aware default is a separate, later refinement).

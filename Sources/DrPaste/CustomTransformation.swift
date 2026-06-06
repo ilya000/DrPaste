@@ -209,7 +209,7 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
         case .cyrillicToLatin:
             return "Transliterate Cyrillic to Latin across 14 languages (Russian, Ukrainian, Kazakh, Serbian, Bulgarian, Tajik, Mongolian, Belarusian, Kyrgyz, Tatar, Chechen, Macedonian, Bashkir, Chuvash), each with its national/common romanization. Auto-detects the language by alphabet fit — a language whose alphabet can't spell a letter in the text is ruled out (ї/є/ґ → Ukrainian, ұ/қ/ә → Kazakh, ҷ/ӣ/ӯ → Tajik, җ → Tatar, ҙ/ҡ → Bashkir, ӑ/ӗ/ӳ → Chuvash, ӏ → Chechen, ћ/ђ/џ → Serbian, ѓ/ќ/ѕ → Macedonian, ў → Belarusian, ъ without ы/э/ё → Bulgarian, …), breaking ties toward the more widely spoken language. Preserves word case (Привет→Privet, ПРИВЕТ→PRIVET). Useful for URL slugs, name romanization, and chaining into Unicode pseudo-font styling."
         case .latinToCyrillic:
-            return "Reverse-transliterate Latin to Cyrillic for a chosen target language (14 supported: Russian default, Ukrainian, Kazakh, Serbian, Bulgarian, Tajik, Mongolian, Belarusian, Kyrgyz, Tatar, Chechen, Macedonian, Bashkir, Chuvash). Recognizes digraphs (zh→ж, ch→ч, sh→ш, shch→щ, gj→ѓ, …) and the national Latin's diacritic letters (ä→ә, ö→ө, ü→ү, ñ→ң, …), falling back to a single-letter map. Preserves case (Privet→Привет, PRIVET→ПРИВЕТ). Deterministic and offline."
+            return "Reverse-transliterate Latin to Cyrillic. Target language defaults to Auto — picked from the input's characteristic letters (ž/č/š/ć/đ → Serbian, gj/kj → Macedonian, q/ğ/ñ → Kazakh, ı/ç → Tatar, ź/ś → Bashkir, ă/ĕ → Chuvash, ī → Tajik), then your locale, then Russian — or choose a fixed language from 14 (Russian, Ukrainian, Kazakh, Serbian, Bulgarian, Tajik, Mongolian, Belarusian, Kyrgyz, Tatar, Chechen, Macedonian, Bashkir, Chuvash). Recognizes digraphs (zh→ж, ch→ч, sh→ш, shch→щ, gj→ѓ, …) and the national Latin's diacritic letters (ä→ә, ö→ө, ü→ү, ñ→ң, …), falling back to a single-letter map. Preserves case (Privet→Привет, PRIVET→ПРИВЕТ). Deterministic and offline."
         case .prettyCodeLocal:
             return "Deterministic code reformatter. Auto-detects format by leading characters: { / [ → JSON via JSONSerialization (.prettyPrinted + .sortedKeys); <?xml → XMLDocument .nodePrettyPrint; <!DOCTYPE / <html → HTML reflow (newlines after tags, tag-depth indent, collapse multi-space); selector + { → CSS (newline after ;, indent rule body 2 spaces); otherwise generic whitespace normalization (trim trailing whitespace, collapse 3+ blank lines, tabs → 4 spaces, normalize LF). Fully offline, sub-50 ms for typical sizes. AI Pretty Code is a separate action for arbitrary languages with idiomatic style."
         case .leetspeak:
@@ -252,7 +252,7 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
         case .uniqueLines:  return [:]
         case .jsonFormat:   return ["operation": "pretty"]
         case .unicodeStyle: return ["style": UnicodeFontStyle.bold.rawValue]
-        case .latinToCyrillic: return ["target": "russian"]
+        case .latinToCyrillic: return ["target": "auto"]
         case .leetspeak:    return ["aggressive": "false"]
         case .uwuSpeak:     return ["faces": "true"]
         case .zalgo:        return ["intensity": "medium"]
@@ -1194,7 +1194,11 @@ enum TransformationRuntime {
     /// "P"→"П". Non-letter chars pass through.
     private static func latinToCyrillicTransliterate(_ input: String,
                                                       params: [String: String]) -> String {
-        let target = params["target"] ?? "russian"
+        // "auto" (the system action's default) resolves the target from the
+        // input's characteristic Latin letters, then the user's locale, then
+        // Russian. Explicit per-language actions pass their own target.
+        let raw = params["target"] ?? "auto"
+        let target = (raw == "auto") ? autoDetectLatinTarget(input) : raw
         let map = latinToCyrillicMap(for: target)
         let chars = Array(input)
         var out = ""
@@ -1239,6 +1243,54 @@ enum TransformationRuntime {
     /// (matched greedily by the caller), single letters second. Russian
     /// base, then the target language's `lat2cyrDrop` removals and
     /// `lat2cyr` overrides from the `cyrillicLangs` table are applied.
+    /// Characteristic national-Latin letters per target language. Used by
+    /// `autoDetectLatinTarget` — markers unique to one language (Serbian ć/đ,
+    /// Macedonian gj/kj, Bashkir ź/ś, Chuvash ă/ĕ, Tajik ī) weigh 10×; shared
+    /// ones (ä/ö/ü/ñ/q/ş, common to several Turkic Latins) weigh 1×, with the
+    /// locale / prevalence breaking ties. Substring match on lowercased input.
+    private static let latinTargetSignatures: [(id: String, markers: [String])] = [
+        ("serbian",    ["ć", "đ", "ž", "č", "š"]),
+        ("macedonian", ["gj", "kj", "ǵ", "ḱ", "dz"]),
+        ("kazakh",     ["q", "ğ", "ñ", "ä", "ö", "ü", "ū", "ş"]),
+        ("tatar",      ["ç", "ı", "ä", "ö", "ü", "ş", "ñ"]),
+        ("bashkir",    ["ź", "ś", "ğ", "ä", "ö", "ü", "q", "ç", "ş", "ı"]),
+        ("chuvash",    ["ă", "ĕ", "ÿ"]),
+        ("tajik",      ["ī", "ū", "gh"])
+    ]
+
+    private static let latinTargetMarkerCount: [String: Int] = {
+        var c: [String: Int] = [:]
+        for (_, ms) in latinTargetSignatures { for m in Set(ms) { c[m, default: 0] += 1 } }
+        return c
+    }()
+
+    /// Resolve the Latin→Cyrillic target for "auto": (1) characteristic
+    /// letters, (2) the user's locale, (3) Russian. Plain ASCII input carries
+    /// no language evidence, so it falls straight through to locale/Russian.
+    static func autoDetectLatinTarget(_ input: String) -> String {
+        let lower = input.lowercased()
+        var best: String?
+        var bestScore = 0
+        for (id, markers) in latinTargetSignatures {
+            var score = 0
+            for m in Set(markers) where lower.contains(m) {
+                score += (latinTargetMarkerCount[m] == 1) ? 10 : 1
+            }
+            guard score > 0 else { continue }
+            if score > bestScore {
+                bestScore = score; best = id
+            } else if score == bestScore, let b = best, b != id {
+                if id == localeCyrillicLanguageID {
+                    best = id
+                } else if b != localeCyrillicLanguageID,
+                          cyrillicLang(id: id).prevalence > cyrillicLang(id: b).prevalence {
+                    best = id
+                }
+            }
+        }
+        return best ?? localeCyrillicLanguageID ?? "russian"
+    }
+
     private static func latinToCyrillicMap(for target: String) -> [String: String] {
         // Russian base — digraphs precede single-letter for greedy match.
         var m: [String: String] = [

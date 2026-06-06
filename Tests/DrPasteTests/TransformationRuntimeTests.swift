@@ -376,4 +376,42 @@ final class TransformationRuntimeTests: XCTestCase {
         XCTAssertEqual(try TransformationRuntime.apply(engine: .cyrillicToLatin,
                                                        input: "рим", params: [:]), "rym")
     }
+
+    // MARK: Latin→Cyrillic "auto" target (characteristic letters → locale → Russian)
+
+    func testLatinToCyrillicAutoBySerbianLetters() throws {
+        // đ / ć are Serbian-specific national-Latin letters.
+        XCTAssertEqual(try TransformationRuntime.apply(engine: .latinToCyrillic,
+                                                       input: "Đoković", params: ["target": "auto"]),
+                       "Ђоковић")
+    }
+
+    func testLatinToCyrillicAutoByMacedonianDigraph() throws {
+        XCTAssertEqual(try TransformationRuntime.apply(engine: .latinToCyrillic,
+                                                       input: "Gjorgji", params: ["target": "auto"]),
+                       "Ѓорѓи")
+    }
+
+    func testLatinToCyrillicAutoByKazakhLetter() throws {
+        // q is shared with Bashkir → prevalence picks Kazakh (locale pinned nil).
+        XCTAssertEqual(try TransformationRuntime.apply(engine: .latinToCyrillic,
+                                                       input: "Qazaq", params: ["target": "auto"]),
+                       "Қазақ")
+    }
+
+    func testLatinToCyrillicAutoFallsBackToRussian() throws {
+        // Plain ASCII carries no language evidence; locale nil → Russian.
+        XCTAssertEqual(try TransformationRuntime.apply(engine: .latinToCyrillic,
+                                                       input: "Privet", params: ["target": "auto"]),
+                       "Привет")
+    }
+
+    func testLatinToCyrillicAutoFallsBackToLocale() throws {
+        defer { TransformationRuntime.localeCyrillicLanguageID = nil }
+        TransformationRuntime.localeCyrillicLanguageID = "ukrainian"
+        // No markers → locale decides: Ukrainian maps i→і.
+        XCTAssertEqual(try TransformationRuntime.apply(engine: .latinToCyrillic,
+                                                       input: "Privet", params: ["target": "auto"]),
+                       "Прівет")
+    }
 }

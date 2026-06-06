@@ -892,7 +892,9 @@ struct ActionEditor: View {
             HStack {
                 Text("Language:").font(.caption).foregroundStyle(.secondary)
                     .frame(width: 100, alignment: .leading)
-                Picker("", selection: paramBinding(key: "target", default: "russian")) {
+                Picker("", selection: paramBinding(key: "target", default: "auto")) {
+                    Text("Auto — by letters & locale").tag("auto")
+                    Divider()
                     Text("Russian").tag("russian")
                     Text("Ukrainian").tag("ukrainian")
                     Text("Kazakh").tag("kazakh")
