@@ -1328,7 +1328,12 @@ enum TransformationRuntime {
         // emits no Russian ы/э/ъ nor Ukrainian ї/і, so the result uses only
         // letters shared broadly across Slavic Cyrillic.
         if target == "slavic" {
-            m["yo"] = "йо"
+            m["yo"] = "йо"      // no Russian/Belarusian ё
+            m["shch"] = "шч"    // щ is absent in Belarusian/Serbian/Macedonian;
+                                // ш+ч exist in all six Slavic Cyrillic alphabets.
+            // (й/я/ю are kept: there is no letter for the y-glide common to
+            // both East and South Slavic — ј would merely swap the bias —
+            // and South-Slavic input is routed by its diacritics, not here.)
             return m
         }
         let lang = cyrillicLang(id: target)

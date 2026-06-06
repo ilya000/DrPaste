@@ -432,11 +432,17 @@ final class TransformationRuntimeTests: XCTestCase {
                                                        input: "Vasil'ev", params: ["target": "russian"]), "Васильев") // '→ь
     }
 
-    func testSlavicSchemeOmitsRussianYoAndYi() throws {
-        // Neutral scheme: yo→йо (never ё); y→й (not ы); no Ukrainian і/ї.
+    func testSlavicSchemeEmitsOnlyCommonSlavicLetters() throws {
+        // Neutral scheme: yo→йо (never ё), shch→шч (never щ), y→й (not ы).
         let out = try TransformationRuntime.apply(engine: .latinToCyrillic,
-                                                  input: "yolka syn", params: ["target": "slavic"])
-        XCTAssertEqual(out, "йолка сйн")
-        XCTAssertFalse(out.contains("ё") || out.contains("ы") || out.contains("і") || out.contains("ї"))
+                                                  input: "yolka shchyo syn", params: ["target": "slavic"])
+        XCTAssertEqual(out, "йолка шчйо сйн")
+        // No letter specific to any single language/branch may appear:
+        // Russian ы/э/ъ/ё, Ukrainian і/ї/ґ/є, Belarusian ў, Serbian/Macedonian
+        // ј/љ/њ/ћ/ђ/џ/ѓ/ќ/ѕ, or щ (absent in Belarusian + South Slavic).
+        let forbidden = "ыэъёіїґєўјљњћђџѓќѕщ"
+        for ch in forbidden {
+            XCTAssertFalse(out.contains(ch), "slavic output must not contain \(ch)")
+        }
     }
 }
