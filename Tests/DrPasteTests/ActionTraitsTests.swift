@@ -102,6 +102,29 @@ final class ActionTraitsTests: XCTestCase {
         XCTAssertTrue(action.isApplicable(item: any, context: ContextDetector.detect(any)))
     }
 
+    /// "Applies to" is strict: an action with applicableSet [.text] must NOT
+    /// leak into JSON/URL/etc. clips (or their Settings tabs) via the old
+    /// `.plain` fallback — but a rich-text clip still surfaces text actions.
+    func testAppliesToStrictExceptRichText() {
+        func mk(_ k: SemanticKind) -> ClipboardItem {
+            ClipboardItem(id: UUID(), semantic: k, createdAt: Date(),
+                          representations: [:], typesOrdered: [], previewText: "x",
+                          previewImageRel: nil, sourceBundleID: nil, sourceAppName: nil,
+                          sourceWindowTitle: nil, tags: [])
+        }
+        let action = gatedAction(required: [])  // applicableSet = [.text]
+        for kind in [SemanticKind.text, .richText] {
+            let i = mk(kind)
+            XCTAssertTrue(action.isApplicable(item: i, context: ContextDetector.detect(i)),
+                          "[text] action should apply to \(kind)")
+        }
+        for kind in [SemanticKind.json, .url, .table, .code] {
+            let i = mk(kind)
+            XCTAssertFalse(action.isApplicable(item: i, context: ContextDetector.detect(i)),
+                           "[text] action must NOT leak into \(kind)")
+        }
+    }
+
     // MARK: provenance (fromOCR) + AI-path gating
 
     private func ocrItem(_ text: String) -> ClipboardItem {

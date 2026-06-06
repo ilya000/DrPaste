@@ -431,7 +431,13 @@ struct CustomTransformationAction: ClipboardAction {
     let applicableSet: Set<SemanticKind>
 
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        guard applicableSet.contains(item.semantic) || context.contains(.plain) else { return false }
+        // Strict "Applies to" correspondence: the action applies ONLY to the
+        // content kinds checked in its descriptor — so it never leaks into a
+        // Settings tab (or HUD clip) it isn't enabled for. The one allowance:
+        // a rich-text clip also surfaces text actions (rich text IS text), so
+        // toggling Plain text keeps the action working on formatted clips.
+        guard applicableSet.contains(item.semantic)
+            || (item.semantic == .richText && applicableSet.contains(.text)) else { return false }
         // #A75 — honour the descriptor's "Show this action when…" conditions.
         return ActionTrait.passes(required: descriptor.requiredTraits,
                                   forbidden: descriptor.forbiddenTraits,
@@ -755,7 +761,10 @@ enum TransformationRuntime {
         CyrillicLang("ukrainian", "Ukrainian", 33,
             letters: "абвгґдеєжзиіїйклмнопрстуфхцчшщьюя",
             cyr2lat: ["г": "h", "и": "y"],
-            lat2cyr: ["y": "и", "yi": "ї", "ye": "є", "g": "г", "i": "і"]),
+            // ' → ь (soft sign), matching the Russian target. Ukrainian also
+            // uses a literal apostrophe (об'єкт), but in transliteration input
+            // ' overwhelmingly means the soft sign; that's the useful default.
+            lat2cyr: ["y": "и", "yi": "ї", "ye": "є", "g": "г", "i": "і", "'": "ь"]),
         CyrillicLang("kazakh", "Kazakh", 13,
             letters: ruCore + "әғіңөұүһқ",
             cyr2lat: ["ә": "ä", "ғ": "ğ", "қ": "q", "ң": "ñ", "ө": "ö",
@@ -775,7 +784,7 @@ enum TransformationRuntime {
         CyrillicLang("bulgarian", "Bulgarian", 8,
             letters: "абвгдежзийклмнопрстуфхцчшщъьюя",
             cyr2lat: ["щ": "sht", "ъ": "a", "ь": "y"],
-            lat2cyr: ["sht": "щ", "a": "а", "yo": "йо", "yu": "ю", "ya": "я"]),
+            lat2cyr: ["sht": "щ", "a": "а", "yo": "йо", "yu": "ю", "ya": "я", "'": "ь"]),
         CyrillicLang("tajik", "Tajik", 8,
             letters: "абвгғдеёжзиӣйкқлмнопрстуӯфхҳцчҷшъэюя",
             cyr2lat: ["ғ": "gh", "ӣ": "ī", "қ": "q", "ӯ": "ū", "ҳ": "h",
@@ -790,7 +799,7 @@ enum TransformationRuntime {
         CyrillicLang("belarusian", "Belarusian", 5,
             letters: "абвгдеёжзійклмнопрстуўфхцчшыьэюя",
             cyr2lat: ["г": "h"],
-            lat2cyr: ["w": "ў", "h": "г", "i": "і"]),
+            lat2cyr: ["w": "ў", "h": "г", "i": "і", "'": "ь"]),
         CyrillicLang("kyrgyz", "Kyrgyz", 5,
             letters: ruCore + "ңөү",
             cyr2lat: ["ң": "ñ", "ө": "ö", "ү": "ü", "ж": "j"],

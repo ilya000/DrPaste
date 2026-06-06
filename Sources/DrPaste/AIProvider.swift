@@ -1308,7 +1308,10 @@ struct AIAction: ClipboardAction {
     }
 
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        guard applicableTypes.contains(item.semantic) || context.contains(.plain) else { return false }
+        // Strict "Applies to" correspondence (rich text still surfaces text
+        // actions). See CustomTransformationAction.isApplicable.
+        guard applicableTypes.contains(item.semantic)
+            || (item.semantic == .richText && applicableTypes.contains(.text)) else { return false }
         return ActionTrait.passes(required: requiredTraits, forbidden: forbiddenTraits, in: context)
     }
 

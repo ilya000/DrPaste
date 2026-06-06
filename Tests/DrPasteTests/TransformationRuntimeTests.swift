@@ -483,6 +483,17 @@ final class TransformationRuntimeTests: XCTestCase {
                        "Васильев")
     }
 
+    func testUkrainianApostropheIsSoftSign() throws {
+        // The apostrophe maps to ь for Ukrainian too (not only Russian),
+        // straight and smart forms alike.
+        XCTAssertEqual(try TransformationRuntime.apply(engine: .latinToCyrillic,
+                                                       input: "Skol'ko", params: ["target": "ukrainian"]),
+                       "Сколько")
+        XCTAssertEqual(try TransformationRuntime.apply(engine: .latinToCyrillic,
+                                                       input: "Skol\u{2019}ko", params: ["target": "ukrainian"]),
+                       "Сколько")
+    }
+
     // MARK: S3 — auto-target tie resolution is deterministic
 
     func testAutoTargetTieIsDeterministic() throws {
