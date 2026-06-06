@@ -132,4 +132,28 @@ final class ContextDetectorTests: XCTestCase {
         let prose = "First sentence.\nSecond sentence.\nThird sentence."
         XCTAssertFalse(ContextDetector.detect(item(.text, text: prose)).contains(.wrappedLines))
     }
+
+    // S8 (Codex/review): the script scan must count only real letters — not
+    // ASCII symbols `[ \ ] ^ _ \`` that share the old 0x41…0x7A range.
+    func testContainsLatinIgnoresAsciiSymbols() {
+        XCTAssertFalse(ContextDetector.detect(item(.text, text: "___")).contains(.containsLatin))
+        XCTAssertFalse(ContextDetector.detect(item(.text, text: "[]^_`")).contains(.containsLatin))
+        XCTAssertTrue(ContextDetector.detect(item(.text, text: "a_b")).contains(.containsLatin)) // real letters present
+        // Cyrillic + only-symbols must NOT be flagged mixedScript.
+        XCTAssertFalse(ContextDetector.detect(item(.text, text: "привет ___")).contains(.mixedScript))
+    }
+
+    func testEmptyAndWhitespaceText() {
+        XCTAssertFalse(ContextDetector.detect(item(.text, text: "")).contains(.qrEligible))
+        XCTAssertFalse(ContextDetector.detect(item(.text, text: "   \n  ")).contains(.multiline))
+        // No crash, no spurious flags.
+        let ctx = ContextDetector.detect(item(.text, text: ""))
+        XCTAssertTrue(ctx.contains(.plain))
+        XCTAssertFalse(ctx.contains(.containsLatin))
+    }
+
+    func testContainsEmailsCaseInsensitiveAndTLD() {
+        XCTAssertTrue(ContextDetector.detect(item(.text, text: "WRITE TO ME@EXAMPLE.COM")).contains(.containsEmails))
+        XCTAssertFalse(ContextDetector.detect(item(.text, text: "handle @user or a@b")).contains(.containsEmails))
+    }
 }

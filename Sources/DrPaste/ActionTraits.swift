@@ -46,8 +46,11 @@ struct ActionTrait: Identifiable, Equatable {
         ActionTrait(key: "messySpacing",     label: "has messy spacing (tabs / runs)",   flag: .messySpacing),
         ActionTrait(key: "wrappedLines",     label: "has hard-wrapped lines (PDF-style)", flag: .wrappedLines),
         ActionTrait(key: "layoutWrong",      label: "looks typed in the wrong keyboard layout", flag: .layoutWrong),
-        ActionTrait(key: "emailLike",        label: "looks like an email message",       flag: .email),
         ActionTrait(key: "fromOCR",          label: "came from screenshot / OCR",        flag: .fromOCR)
+        // NOTE: there is intentionally no "emailLike" trait — it mapped to the
+        // whole-clip `.email` SemanticKind, which fires only on a bare address,
+        // never on a pasted email *body*. Email actions gate on `containsEmails`
+        // (text that contains an address) instead. See #A75 / Codex review S1.
     ]
 
     static func trait(forKey key: String) -> ActionTrait? {

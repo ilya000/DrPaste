@@ -884,23 +884,24 @@ enum TransformationRuntime {
         let minForeign = scored.map(\.1).min() ?? 0
         let tied = scored.filter { $0.1 == minForeign }.map(\.0)
 
-        let best: CyrillicLang
-        if let localeID = localeCyrillicLanguageID,
-           let localeMatch = tied.first(where: { $0.id == localeID }) {
-            // Locale breaks the tie — Serbia locale on Serbian/Macedonian-
-            // ambiguous text picks Serbian, regardless of speaker count.
-            best = localeMatch
-        } else {
-            // Otherwise the more widely spoken tied language.
-            best = tied.max(by: { $0.prevalence < $1.prevalence }) ?? cyrillicLangs[0]
-        }
-
-        if best.id == "russian"
-            && textCyr.contains("ъ")
-            && textCyr.isDisjoint(with: ["ы", "э", "ё"]) {
+        // Bulgarian signature — a hard sign ъ used as a vowel with no
+        // Russian-only ы/э/ё — is LOCALE-INDEPENDENT: when it holds and
+        // Bulgarian can spell the text (it's among the best-fit set), pick
+        // Bulgarian regardless of which language would win on locale or
+        // prevalence (e.g. a Kazakh locale must not romanize «дъб» as Kazakh).
+        if textCyr.contains("ъ")
+            && textCyr.isDisjoint(with: ["ы", "э", "ё"])
+            && tied.contains(where: { $0.id == "bulgarian" }) {
             return cyrillicLang(id: "bulgarian")
         }
-        return best
+
+        // Otherwise the locale breaks ties (Serbia locale picks Serbian on
+        // Serbian/Macedonian-ambiguous text), else the more widely spoken one.
+        if let localeID = localeCyrillicLanguageID,
+           let localeMatch = tied.first(where: { $0.id == localeID }) {
+            return localeMatch
+        }
+        return tied.max(by: { $0.prevalence < $1.prevalence }) ?? cyrillicLangs[0]
     }
 
     /// Lowercase Cyrillic → Latin base map (Russian + Ukrainian /
@@ -1249,7 +1250,15 @@ enum TransformationRuntime {
         let raw = params["target"] ?? "auto"
         let target = (raw == "auto") ? autoDetectLatinTarget(input) : raw
         let map = latinToCyrillicMap(for: target)
-        let chars = Array(input)
+        // Normalize typographic apostrophes (macOS autocorrect emits U+2019)
+        // to the straight ' so the soft/hard-sign mappings (e.g. Russian
+        // '→ь, ''→ъ) fire on "Vasil’ev" as well as "Vasil'ev".
+        let normalized = input
+            .replacingOccurrences(of: "\u{2019}", with: "'")
+            .replacingOccurrences(of: "\u{2018}", with: "'")
+            .replacingOccurrences(of: "\u{02BC}", with: "'")
+            .replacingOccurrences(of: "\u{2032}", with: "'")
+        let chars = Array(normalized)
         var out = ""
         out.reserveCapacity(chars.count)
         var i = 0

@@ -1802,7 +1802,7 @@ enum DefaultAISeed {
                 promptTemplate: "Draft a polite email reply to the message below. Keep it concise, practical, and professional. Do not invent commitments or facts. Reply with the draft only.",
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText"],
-                requiredTraits: ["emailLike"]
+                requiredTraits: ["containsEmails"]
             ),
             CustomAIDescriptor(
                 id: "ai.text.generate_email_subject",
@@ -1810,7 +1810,7 @@ enum DefaultAISeed {
                 promptTemplate: "Generate a concise email subject line for this message. Reply with the subject only.",
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText"],
-                requiredTraits: ["emailLike"]
+                requiredTraits: ["containsEmails"]
             ),
 
             // MARK: #A74 (0.56.0) — flagship OCR cleanup workflow

@@ -11,12 +11,21 @@ import XCTest
 
 final class TransformationRuntimeTests: XCTestCase {
 
-    /// Pin the Cyrillic-detection locale tie-breaker off by default so
-    /// auto-detect assertions are deterministic regardless of the runner's
-    /// system locale (the locale tie-break gets its own explicit test).
+    /// Save the real locale value and pin the Cyrillic-detection locale
+    /// tie-breaker OFF by default, so auto-detect assertions are deterministic
+    /// regardless of the runner's system locale. tearDown restores it so a
+    /// test that pins it (e.g. "serbian") can't leak into other test classes.
+    private var savedLocaleCyrillicID: String??
     override func setUp() {
         super.setUp()
+        savedLocaleCyrillicID = TransformationRuntime.localeCyrillicLanguageID
         TransformationRuntime.localeCyrillicLanguageID = nil
+    }
+    override func tearDown() {
+        if let saved = savedLocaleCyrillicID {
+            TransformationRuntime.localeCyrillicLanguageID = saved
+        }
+        super.tearDown()
     }
 
     // MARK: - Case engines
@@ -439,5 +448,51 @@ final class TransformationRuntimeTests: XCTestCase {
         for ch in forbidden {
             XCTAssertFalse(out.contains(ch), "Interslavic output must not contain \(ch)")
         }
+    }
+
+    // MARK: case preservation through multi-char translit
+
+    func testCyrillicToLatinMultiCharCase() throws {
+        // Щ → shch; case must apply to the whole run.
+        XCTAssertEqual(try TransformationRuntime.apply(engine: .cyrillicToLatin,
+                                                       input: "Щука", params: [:]), "Shchuka")
+        XCTAssertEqual(try TransformationRuntime.apply(engine: .cyrillicToLatin,
+                                                       input: "ЩУКА", params: [:]), "SHCHUKA")
+    }
+
+    // MARK: S7 — Bulgarian rescue is locale-independent
+
+    func testBulgarianSignatureBeatsLocale() throws {
+        defer { TransformationRuntime.localeCyrillicLanguageID = nil }
+        // «дъб» fits Russian, Bulgarian, Kazakh, Tajik, … equally; a Kazakh
+        // locale must NOT romanize it as Kazakh (which drops ъ → "db").
+        TransformationRuntime.localeCyrillicLanguageID = "kazakh"
+        XCTAssertEqual(try TransformationRuntime.apply(engine: .cyrillicToLatin,
+                                                       input: "дъб", params: [:]), "dab")
+        TransformationRuntime.localeCyrillicLanguageID = "ukrainian"
+        XCTAssertEqual(try TransformationRuntime.apply(engine: .cyrillicToLatin,
+                                                       input: "дъб", params: [:]), "dab")
+    }
+
+    // MARK: S4 — typographic apostrophe normalised
+
+    func testRussianSmartApostrophe() throws {
+        // macOS autocorrect emits U+2019; must still map to ь.
+        XCTAssertEqual(try TransformationRuntime.apply(engine: .latinToCyrillic,
+                                                       input: "Vasil\u{2019}ev", params: ["target": "russian"]),
+                       "Васильев")
+    }
+
+    // MARK: S3 — auto-target tie resolution is deterministic
+
+    func testAutoTargetTieIsDeterministic() throws {
+        // "äöü" shares ä/ö/ü across Kazakh/Tatar/Bashkir (all weight-1); the
+        // result must be stable across runs (no array-order dependence).
+        let a = try TransformationRuntime.apply(engine: .latinToCyrillic,
+                                                input: "äöü", params: ["target": "auto"])
+        let b = try TransformationRuntime.apply(engine: .latinToCyrillic,
+                                                input: "äöü", params: ["target": "auto"])
+        XCTAssertEqual(a, b)
+        XCTAssertFalse(a.isEmpty)
     }
 }

@@ -44,6 +44,21 @@ final class ActionTraitsTests: XCTestCase {
                                          forbidden: [], in: ContentContext()))
     }
 
+    func testUnknownForbiddenKeyFailsOpen() {
+        // An unknown forbidden key must never block (it's dropped).
+        XCTAssertTrue(ActionTrait.passes(required: [], forbidden: ["someRetiredTrait"],
+                                         in: [.plain, .containsLatin]))
+    }
+
+    func testKnownAndUnknownRequiredMixEnforcesKnown() {
+        let ctx: ContentContext = [.plain]  // no URLs
+        // Unknown key dropped, known "containsURLs" still required → fail.
+        XCTAssertFalse(ActionTrait.passes(required: ["bogus", "containsURLs"],
+                                          forbidden: [], in: ctx))
+        XCTAssertTrue(ActionTrait.passes(required: ["bogus", "containsURLs"],
+                                         forbidden: [], in: [.plain, .containsURLs]))
+    }
+
     // MARK: end-to-end through a descriptor + ContextDetector
 
     private func item(_ text: String) -> ClipboardItem {
@@ -111,15 +126,24 @@ final class ActionTraitsTests: XCTestCase {
         XCTAssertFalse(clean.isApplicable(item: typed, context: ContextDetector.detect(typed)))
     }
 
-    func testEmailLikeMapsToEmailKind() {
-        let action = gatedAction(required: ["emailLike"])
-        let email = ClipboardItem(id: UUID(), semantic: .email, createdAt: Date(),
-                                  representations: [:], typesOrdered: [],
-                                  previewText: "From: a@b.com\nSubject: hi",
-                                  previewImageRel: nil, sourceBundleID: nil,
-                                  sourceAppName: nil, sourceWindowTitle: nil, tags: [])
-        let plain = item("just text")
-        XCTAssertTrue(action.isApplicable(item: email, context: ContextDetector.detect(email)))
+    /// S1 fix: email actions gate on `containsEmails` (text that contains an
+    /// address), so they surface on a pasted email BODY — a plain-`.text`
+    /// clip — not only on a bare `.email`-semantic address. The retired
+    /// `emailLike` trait fired only on the whole-clip `.email` kind and so
+    /// never appeared on real email content.
+    func testEmailActionsGateOnContainsEmails() {
+        let action = gatedAction(required: ["containsEmails"])
+        let body = item("Hi, ping me back at john.doe@example.com — thanks!")  // .text body
+        let plain = item("just a plain note with no address")
+        XCTAssertTrue(action.isApplicable(item: body, context: ContextDetector.detect(body)))
         XCTAssertFalse(action.isApplicable(item: plain, context: ContextDetector.detect(plain)))
+    }
+
+    func testRetiredEmailLikeKeyFailsOpen() {
+        // "emailLike" no longer exists in the vocabulary; a descriptor still
+        // referencing it must fail OPEN (unknown key ignored), never hide.
+        let action = gatedAction(required: ["emailLike"])
+        let any = item("whatever")
+        XCTAssertTrue(action.isApplicable(item: any, context: ContextDetector.detect(any)))
     }
 }

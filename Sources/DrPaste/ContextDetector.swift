@@ -104,11 +104,17 @@ enum ContextDetector {
             ctx.insert(.qrEligible)
         }
 
-        // Mixed script
+        // Mixed script. Only actual letters count — the old `0x41…0x7A`
+        // range also swept up `[ \ ] ^ _ \`` and flagged code like `a_b` /
+        // `[]` as "Latin", so it's gated on `isLetter` and the precise
+        // A–Z / a–z ranges.
         var hasCyr = false, hasLat = false
-        for ch in trimmed.unicodeScalars {
-            if (0x0400...0x04FF).contains(ch.value) { hasCyr = true }
-            if (0x0041...0x007A).contains(ch.value) { hasLat = true }
+        for ch in trimmed where ch.isLetter {
+            for sc in ch.unicodeScalars {
+                if (0x0400...0x04FF).contains(sc.value) { hasCyr = true }
+                if (0x0041...0x005A).contains(sc.value)
+                    || (0x0061...0x007A).contains(sc.value) { hasLat = true }
+            }
             if hasCyr && hasLat { break }
         }
         if hasCyr && hasLat { ctx.insert(.mixedScript) }
