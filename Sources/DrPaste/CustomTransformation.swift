@@ -209,7 +209,7 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
         case .cyrillicToLatin:
             return "Transliterate Cyrillic to Latin across 14 languages (Russian, Ukrainian, Kazakh, Serbian, Bulgarian, Tajik, Mongolian, Belarusian, Kyrgyz, Tatar, Chechen, Macedonian, Bashkir, Chuvash), each with its national/common romanization. Auto-detects the language by alphabet fit — a language whose alphabet can't spell a letter in the text is ruled out (ї/є/ґ → Ukrainian, ұ/қ/ә → Kazakh, ҷ/ӣ/ӯ → Tajik, җ → Tatar, ҙ/ҡ → Bashkir, ӑ/ӗ/ӳ → Chuvash, ӏ → Chechen, ћ/ђ/џ → Serbian, ѓ/ќ/ѕ → Macedonian, ў → Belarusian, ъ without ы/э/ё → Bulgarian, …), breaking ties toward the more widely spoken language. Preserves word case (Привет→Privet, ПРИВЕТ→PRIVET). Useful for URL slugs, name romanization, and chaining into Unicode pseudo-font styling."
         case .latinToCyrillic:
-            return "Reverse-transliterate Latin to Cyrillic. Target language defaults to Auto — picked from the input's characteristic letters (ž/č/š/ć/đ → Serbian, gj/kj → Macedonian, q/ğ/ñ → Kazakh, ı/ç → Tatar, ź/ś → Bashkir, ă/ĕ → Chuvash, ī → Tajik), then your locale, then Russian — or choose a fixed language from 14 (Russian, Ukrainian, Kazakh, Serbian, Bulgarian, Tajik, Mongolian, Belarusian, Kyrgyz, Tatar, Chechen, Macedonian, Bashkir, Chuvash). Recognizes digraphs (zh→ж, ch→ч, sh→ш, shch→щ, gj→ѓ, …) and the national Latin's diacritic letters (ä→ә, ö→ө, ü→ү, ñ→ң, …), falling back to a single-letter map. Preserves case (Privet→Привет, PRIVET→ПРИВЕТ). Deterministic and offline."
+            return "Reverse-transliterate Latin to Cyrillic. Target language defaults to Auto — picked from the input's characteristic letters (ž/č/š/ć/đ → Serbian, gj/kj → Macedonian, q/ğ/ñ → Kazakh, ı/ç → Tatar, ź/ś → Bashkir, ă/ĕ → Chuvash, ī → Tajik), then your locale, then a neutral synthetic Slavic Cyrillic — or choose a fixed language from 14 (Russian, Ukrainian, Kazakh, Serbian, Bulgarian, Tajik, Mongolian, Belarusian, Kyrgyz, Tatar, Chechen, Macedonian, Bashkir, Chuvash) or the neutral Generic Slavic scheme. Recognizes digraphs (zh→ж, ch→ч, sh→ш, shch→щ, gj→ѓ, …) and the national Latin's diacritic letters (ä→ә, ö→ө, ü→ү, ñ→ң, …), falling back to a single-letter map. Preserves case (Privet→Привет, PRIVET→ПРИВЕТ). Deterministic and offline."
         case .prettyCodeLocal:
             return "Deterministic code reformatter. Auto-detects format by leading characters: { / [ → JSON via JSONSerialization (.prettyPrinted + .sortedKeys); <?xml → XMLDocument .nodePrettyPrint; <!DOCTYPE / <html → HTML reflow (newlines after tags, tag-depth indent, collapse multi-space); selector + { → CSS (newline after ;, indent rule body 2 spaces); otherwise generic whitespace normalization (trim trailing whitespace, collapse 3+ blank lines, tabs → 4 spaces, normalize LF). Fully offline, sub-50 ms for typical sizes. AI Pretty Code is a separate action for arbitrary languages with idiomatic style."
         case .leetspeak:
@@ -1195,8 +1195,9 @@ enum TransformationRuntime {
     private static func latinToCyrillicTransliterate(_ input: String,
                                                       params: [String: String]) -> String {
         // "auto" (the system action's default) resolves the target from the
-        // input's characteristic Latin letters, then the user's locale, then
-        // Russian. Explicit per-language actions pass their own target.
+        // input's characteristic Latin letters, then the user's locale, then a
+        // neutral synthetic Slavic Cyrillic. Explicit per-language actions
+        // pass their own target.
         let raw = params["target"] ?? "auto"
         let target = (raw == "auto") ? autoDetectLatinTarget(input) : raw
         let map = latinToCyrillicMap(for: target)
@@ -1265,8 +1266,10 @@ enum TransformationRuntime {
     }()
 
     /// Resolve the Latin→Cyrillic target for "auto": (1) characteristic
-    /// letters, (2) the user's locale, (3) Russian. Plain ASCII input carries
-    /// no language evidence, so it falls straight through to locale/Russian.
+    /// letters, (2) the user's locale, (3) a neutral synthetic Slavic Cyrillic
+    /// (the `slavic` scheme — common Slavic core, deliberately NOT Russian, so
+    /// the default isn't a politically-loaded choice). Plain ASCII input
+    /// carries no language evidence, so it falls through to locale/slavic.
     static func autoDetectLatinTarget(_ input: String) -> String {
         let lower = input.lowercased()
         var best: String?
@@ -1288,11 +1291,15 @@ enum TransformationRuntime {
                 }
             }
         }
-        return best ?? localeCyrillicLanguageID ?? "russian"
+        return best ?? localeCyrillicLanguageID ?? "slavic"
     }
 
     private static func latinToCyrillicMap(for target: String) -> [String: String] {
-        // Russian base — digraphs precede single-letter for greedy match.
+        // Common Slavic Cyrillic core — the shared letters/digraphs used by
+        // the Slavic Cyrillic languages, with NO Russian-specific output
+        // (no ы/э/ъ). This is the `slavic` target and the neutral fallback;
+        // per-language overrides are layered on for explicit targets.
+        // Digraphs precede single letters for greedy match.
         var m: [String: String] = [
             // Trigraph
             "shch": "щ",
@@ -1309,6 +1316,8 @@ enum TransformationRuntime {
             "j": "й",
             "w": "в", "x": "кс", "q": "к"
         ]
+        // The neutral common-Slavic scheme itself — no language overrides.
+        if target == "slavic" { return m }
         let lang = cyrillicLang(id: target)
         for key in lang.lat2cyrDrop { m.removeValue(forKey: key) }
         for (k, v) in lang.lat2cyr { m[k] = v }

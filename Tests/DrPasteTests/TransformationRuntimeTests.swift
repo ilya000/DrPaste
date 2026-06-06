@@ -399,11 +399,18 @@ final class TransformationRuntimeTests: XCTestCase {
                        "Қазақ")
     }
 
-    func testLatinToCyrillicAutoFallsBackToRussian() throws {
-        // Plain ASCII carries no language evidence; locale nil → Russian.
+    func testLatinToCyrillicAutoFallsBackToNeutralSlavic() throws {
+        // Plain ASCII carries no language evidence; locale nil → the neutral
+        // synthetic Slavic core (NOT branded Russian). Output is the common
+        // Cyrillic, identical bytes to the Russian base.
         XCTAssertEqual(try TransformationRuntime.apply(engine: .latinToCyrillic,
                                                        input: "Privet", params: ["target": "auto"]),
                        "Привет")
+        // The explicit `slavic` target gives the same neutral mapping and
+        // never emits Russian-specific ы/э/ъ.
+        let slav = try TransformationRuntime.apply(engine: .latinToCyrillic,
+                                                   input: "synthetic yo", params: ["target": "slavic"])
+        XCTAssertFalse(slav.contains("ы") || slav.contains("э") || slav.contains("ъ"))
     }
 
     func testLatinToCyrillicAutoFallsBackToLocale() throws {
