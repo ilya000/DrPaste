@@ -3351,6 +3351,19 @@ output is identical anyway — they romanize every shared letter the same — bu
 for pairs that differ on shared letters, e.g. Russian и→i vs Ukrainian и→y,
 the locale now decides.) `localeCyrillicLanguageID` is test-pinnable.
 
+Latin→Cyrillic auto target (`autoDetectLatinTarget`, default `"auto"`): a
+Latin string carries almost no language evidence, so it resolves per clip —
+(1) characteristic national-Latin letters (ž/č/š/ć/đ→Serbian, gj/kj→Macedonian,
+q/ğ/ñ→Kazakh, ı/ç→Tatar, ź/ś→Bashkir, ă/ĕ→Chuvash, ī→Tajik; unique markers
+weigh 10×, ties break by locale then prevalence), then (2) the user's locale,
+then (3) `"interslavic"` as a LAST RESORT only. A specific Slavic language is
+always preferred; Interslavic is rare in practice. `"interslavic"` is the
+established pan-Slavic orthography (Medžuslovjansky): /j/→ј, iotation
+decomposed (ja→ја, ju→ју, jo→јо, je→је, ji→ји), y→и (no ы/й), shch→шч — every
+output letter decomposable and readable across Slavic, never privileging
+Russian. Russian remains a full explicit target (y→ы, j→й, '→ь, ''→ъ; ё from
+yo) but is no longer the default. Editor picker: Auto · Interslavic · 14 langs.
+
 **Status (original):** planned. Depends on cheap-trait gating from #A75.
 **Touches:** `CuratedDefaults`, `DefaultTransformationSeed`, transliteration
 actions, `ContextDetector` (containsCyrillic / containsLatin).

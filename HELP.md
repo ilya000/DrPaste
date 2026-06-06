@@ -395,7 +395,7 @@ If you have both Gemini and OpenAI connected — auto-select for a new image act
 DrPaste ships two **fully offline, deterministic** transliteration actions. No AI, no network, no API key — they run instantly on any text clip and work the same on every machine.
 
 - **Cyrillic → Latin** — romanize Cyrillic text. The language is **detected automatically**, so you just run the action.
-- **Latin → Cyrillic** — the reverse. Here you **pick the target language** in the action editor (a Latin string is ambiguous without it).
+- **Latin → Cyrillic** — the reverse. The target language defaults to **Auto** (worked out per clip — see below); you can also pin a specific language in the editor.
 
 Both preserve word case: `Привет → Privet`, `ПРИВЕТ → PRIVET`.
 
@@ -426,9 +426,39 @@ The detector compares the text against each language's **full alphabet**. A lang
 
 In practice: «Џек» contains `џ`, which does not exist in Russian, so Russian is excluded outright; the word is valid in both Serbian and Macedonian, and the more widespread Serbian is chosen. Likewise a Tatar sentence with `җ` rules out Kazakh, since Kazakh has no `җ`. Bulgarian — whose alphabet is a subset of Russian's — is the one special case: it's recognized by a hard sign `ъ` used as a vowel with no Russian-only `ы/э/ё`. If nothing distinguishes the text, it's treated as Russian.
 
-### Latin → Cyrillic — choosing the language
+When two languages fit the text equally, your **system locale** breaks the tie *before* speaker count: on Serbian/Macedonian-ambiguous text a Serbia locale picks Serbian, and a Ukraine locale romanizes `и → y` where a Russia locale gives `и → i`.
 
-Open the action in **Settings → Actions**, and pick the target from the **Language** dropdown (14 options). The reverse mapping understands digraphs (`zh → ж`, `ch → ч`, `gj → ѓ`) and the national Latin's diacritic letters (`ä → ә`, `ö → ө`, `ü → ү`, `ñ → ң`). For best results, feed it text written in that language's standard Latin — plain ASCII (`a` for both `а` and `ә`) is inherently ambiguous.
+### Latin → Cyrillic — the target language (Auto)
+
+A Latin string carries almost no evidence of *which* Cyrillic language it should
+become, so the action defaults to **Auto**, which resolves the target per clip
+in three steps — always preferring a **specific** language, and only falling
+back to a neutral one as a last resort:
+
+1. **Characteristic letters.** National-Latin diacritics pin the language:
+   `ž/č/š/ć/đ → Serbian`, `gj/kj → Macedonian`, `q/ğ/ñ → Kazakh`, `ı/ç → Tatar`,
+   `ź/ś → Bashkir`, `ă/ĕ → Chuvash`, `ī → Tajik`.
+2. **Your system locale.** If the letters are inconclusive (plain ASCII like
+   `Privet`), your locale decides — a Russia locale → Russian, Ukraine →
+   Ukrainian, Serbia → Serbian, and so on.
+3. **Interslavic** *(last resort only).** When neither letters nor locale say
+   anything (plain ASCII on a non-Cyrillic locale), the output uses
+   **Interslavic** (Интерславик) — the established pan-Slavic auxiliary
+   orthography. It writes the *j* sound with the jota `ј` and spells iotation
+   openly (`ja → ја`, `ju → ју`, `jo → јо`), so the result is decomposable and
+   readable across the whole Slavic world and never privileges any one
+   language. In practice this fallback is rare — steps 1–2 catch almost
+   everything.
+
+**Pinning a language.** Open the action in **Settings → Actions** and pick from
+the **Language** dropdown: `Auto` (default), `Interslavic`, or any of the 14
+specific languages — **Russian is fully available** (with its `ы/э/ъ/ё`), it
+just isn't the default. A pinned action always uses that one target. Create
+separate per-language actions (Duplicate → pick a language) when you regularly
+transliterate into more than one.
+
+For best results, feed Auto text written in a language's standard Latin —
+diacritics are what let step 1 identify it precisely.
 
 ### Typical uses
 
