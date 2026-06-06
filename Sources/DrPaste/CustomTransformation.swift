@@ -209,7 +209,7 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
         case .cyrillicToLatin:
             return "Transliterate Cyrillic to Latin across 14 languages (Russian, Ukrainian, Kazakh, Serbian, Bulgarian, Tajik, Mongolian, Belarusian, Kyrgyz, Tatar, Chechen, Macedonian, Bashkir, Chuvash), each with its national/common romanization. Auto-detects the language by alphabet fit — a language whose alphabet can't spell a letter in the text is ruled out (ї/є/ґ → Ukrainian, ұ/қ/ә → Kazakh, ҷ/ӣ/ӯ → Tajik, җ → Tatar, ҙ/ҡ → Bashkir, ӑ/ӗ/ӳ → Chuvash, ӏ → Chechen, ћ/ђ/џ → Serbian, ѓ/ќ/ѕ → Macedonian, ў → Belarusian, ъ without ы/э/ё → Bulgarian, …), breaking ties toward the more widely spoken language. Preserves word case (Привет→Privet, ПРИВЕТ→PRIVET). Useful for URL slugs, name romanization, and chaining into Unicode pseudo-font styling."
         case .latinToCyrillic:
-            return "Reverse-transliterate Latin to Cyrillic. Target language defaults to Auto — picked from the input's characteristic letters (ž/č/š/ć/đ → Serbian, gj/kj → Macedonian, q/ğ/ñ → Kazakh, ı/ç → Tatar, ź/ś → Bashkir, ă/ĕ → Chuvash, ī → Tajik), then your locale, then a neutral synthetic Slavic Cyrillic — or choose a fixed language from 14 (Russian, Ukrainian, Kazakh, Serbian, Bulgarian, Tajik, Mongolian, Belarusian, Kyrgyz, Tatar, Chechen, Macedonian, Bashkir, Chuvash) or the neutral Generic Slavic scheme. Recognizes digraphs (zh→ж, ch→ч, sh→ш, shch→щ, gj→ѓ, …) and the national Latin's diacritic letters (ä→ә, ö→ө, ü→ү, ñ→ң, …), falling back to a single-letter map. Preserves case (Privet→Привет, PRIVET→ПРИВЕТ). Deterministic and offline."
+            return "Reverse-transliterate Latin to Cyrillic. Target language defaults to Auto — picked from the input's characteristic letters (ž/č/š/ć/đ → Serbian, gj/kj → Macedonian, q/ğ/ñ → Kazakh, ı/ç → Tatar, ź/ś → Bashkir, ă/ĕ → Chuvash, ī → Tajik), then your locale, then Interslavic (the neutral pan-Slavic orthography, ј-based) — or choose a fixed language from 14 (Russian, Ukrainian, Kazakh, Serbian, Bulgarian, Tajik, Mongolian, Belarusian, Kyrgyz, Tatar, Chechen, Macedonian, Bashkir, Chuvash) or Interslavic. Recognizes digraphs (zh→ж, ch→ч, sh→ш, shch→щ, gj→ѓ, …) and the national Latin's diacritic letters (ä→ә, ö→ө, ü→ү, ñ→ң, …), falling back to a single-letter map. Preserves case (Privet→Привет, PRIVET→ПРИВЕТ). Deterministic and offline."
         case .prettyCodeLocal:
             return "Deterministic code reformatter. Auto-detects format by leading characters: { / [ → JSON via JSONSerialization (.prettyPrinted + .sortedKeys); <?xml → XMLDocument .nodePrettyPrint; <!DOCTYPE / <html → HTML reflow (newlines after tags, tag-depth indent, collapse multi-space); selector + { → CSS (newline after ;, indent rule body 2 spaces); otherwise generic whitespace normalization (trim trailing whitespace, collapse 3+ blank lines, tabs → 4 spaces, normalize LF). Fully offline, sub-50 ms for typical sizes. AI Pretty Code is a separate action for arbitrary languages with idiomatic style."
         case .leetspeak:
@@ -705,8 +705,8 @@ enum TransformationRuntime {
         CyrillicLang("russian", "Russian", 150,
             letters: ruCore,
             // Russian-specific Latin→Cyrillic so the explicit Russian target
-            // produces its characteristic letters (the neutral `slavic`
-            // scheme deliberately omits these): y→ы, j→й, apostrophes→ь/ъ.
+            // produces its characteristic letters (the neutral `interslavic`
+            // fallback deliberately omits these): y→ы, j→й, apostrophes→ь/ъ.
             // ё comes from the base yo→ё. (э is intentionally NOT mapped —
             // no unambiguous Latin source; "eh" would false-trigger in
             // ordinary words like "tehnika".)
@@ -1202,9 +1202,9 @@ enum TransformationRuntime {
     private static func latinToCyrillicTransliterate(_ input: String,
                                                       params: [String: String]) -> String {
         // "auto" (the system action's default) resolves the target from the
-        // input's characteristic Latin letters, then the user's locale, then a
-        // neutral synthetic Slavic Cyrillic. Explicit per-language actions
-        // pass their own target.
+        // input's characteristic Latin letters, then the user's locale, then
+        // Interslavic (the neutral pan-Slavic orthography). Explicit
+        // per-language actions pass their own target.
         let raw = params["target"] ?? "auto"
         let target = (raw == "auto") ? autoDetectLatinTarget(input) : raw
         let map = latinToCyrillicMap(for: target)
@@ -1273,10 +1273,10 @@ enum TransformationRuntime {
     }()
 
     /// Resolve the Latin→Cyrillic target for "auto": (1) characteristic
-    /// letters, (2) the user's locale, (3) a neutral synthetic Slavic Cyrillic
-    /// (the `slavic` scheme — common Slavic core, deliberately NOT Russian, so
-    /// the default isn't a politically-loaded choice). Plain ASCII input
-    /// carries no language evidence, so it falls through to locale/slavic.
+    /// letters, (2) the user's locale, (3) Interslavic — the neutral pan-Slavic
+    /// orthography (deliberately NOT Russian, so the default isn't a
+    /// politically-loaded choice). Plain ASCII input carries no language
+    /// evidence, so it falls through to locale / Interslavic.
     static func autoDetectLatinTarget(_ input: String) -> String {
         let lower = input.lowercased()
         var best: String?
@@ -1298,14 +1298,13 @@ enum TransformationRuntime {
                 }
             }
         }
-        return best ?? localeCyrillicLanguageID ?? "slavic"
+        return best ?? localeCyrillicLanguageID ?? "interslavic"
     }
 
     private static func latinToCyrillicMap(for target: String) -> [String: String] {
-        // Common Slavic Cyrillic core — the shared letters/digraphs used by
-        // the Slavic Cyrillic languages, with NO Russian-specific output
-        // (no ы/э/ъ). This is the `slavic` target and the neutral fallback;
-        // per-language overrides are layered on for explicit targets.
+        // Russian-flavoured base (й, я/ю/ё, щ). Explicit per-language targets
+        // layer overrides on top; the neutral `interslavic` fallback replaces
+        // the East-Slavic-specific forms with the Interslavic standard below.
         // Digraphs precede single letters for greedy match.
         var m: [String: String] = [
             // Trigraph
@@ -1323,17 +1322,18 @@ enum TransformationRuntime {
             "j": "й",
             "w": "в", "x": "кс", "q": "к"
         ]
-        // The neutral common-Slavic scheme: strip the only non-neutral output
-        // the base carries (Russian ё) by writing yo→йо. The base already
-        // emits no Russian ы/э/ъ nor Ukrainian ї/і, so the result uses only
-        // letters shared broadly across Slavic Cyrillic.
-        if target == "slavic" {
-            m["yo"] = "йо"      // no Russian/Belarusian ё
-            m["shch"] = "шч"    // щ is absent in Belarusian/Serbian/Macedonian;
-                                // ш+ч exist in all six Slavic Cyrillic alphabets.
-            // (й/я/ю are kept: there is no letter for the y-glide common to
-            // both East and South Slavic — ј would merely swap the bias —
-            // and South-Slavic input is routed by its diacritics, not here.)
+        // Interslavic (Medžuslovjansky) Cyrillic — the established pan-Slavic
+        // auxiliary orthography, used here as the neutral fallback instead of
+        // inventing our own. It writes the /j/ glide with the jota ј and
+        // decomposes iotation (ја/ју/јо/је/ји) rather than using the opaque
+        // Russian я/ю/ё/й, and merges ы→и: every output letter is decomposable
+        // and readable across the Slavic world, error to none. Soft щ → шч.
+        if target == "interslavic" {
+            m["yo"] = "јо"; m["yu"] = "ју"; m["ya"] = "ја"
+            m["ye"] = "је"; m["yi"] = "ји"
+            m["y"]  = "и"      // no ы / й — Interslavic vowel merges to и
+            m["j"]  = "ј"      // the jota consonant
+            m["shch"] = "шч"   // no щ
             return m
         }
         let lang = cyrillicLang(id: target)

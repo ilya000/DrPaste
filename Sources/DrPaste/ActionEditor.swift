@@ -894,7 +894,7 @@ struct ActionEditor: View {
                     .frame(width: 100, alignment: .leading)
                 Picker("", selection: paramBinding(key: "target", default: "auto")) {
                     Text("Auto — by letters & locale").tag("auto")
-                    Text("Generic Slavic (neutral)").tag("slavic")
+                    Text("Interslavic (Интерславик) — neutral").tag("interslavic")
                     Divider()
                     Text("Russian").tag("russian")
                     Text("Ukrainian").tag("ukrainian")

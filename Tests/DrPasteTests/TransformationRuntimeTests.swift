@@ -399,18 +399,13 @@ final class TransformationRuntimeTests: XCTestCase {
                        "Қазақ")
     }
 
-    func testLatinToCyrillicAutoFallsBackToNeutralSlavic() throws {
-        // Plain ASCII carries no language evidence; locale nil → the neutral
-        // synthetic Slavic core (NOT branded Russian). Output is the common
-        // Cyrillic, identical bytes to the Russian base.
+    func testLatinToCyrillicAutoFallsBackToInterslavic() throws {
+        // Plain ASCII carries no language evidence; locale nil → Interslavic
+        // (NOT branded Russian). No glide letters here, so it reads as plain
+        // common Cyrillic.
         XCTAssertEqual(try TransformationRuntime.apply(engine: .latinToCyrillic,
                                                        input: "Privet", params: ["target": "auto"]),
                        "Привет")
-        // The explicit `slavic` target gives the same neutral mapping and
-        // never emits Russian-specific ы/э/ъ.
-        let slav = try TransformationRuntime.apply(engine: .latinToCyrillic,
-                                                   input: "synthetic yo", params: ["target": "slavic"])
-        XCTAssertFalse(slav.contains("ы") || slav.contains("э") || slav.contains("ъ"))
     }
 
     func testLatinToCyrillicAutoFallsBackToLocale() throws {
@@ -432,17 +427,17 @@ final class TransformationRuntimeTests: XCTestCase {
                                                        input: "Vasil'ev", params: ["target": "russian"]), "Васильев") // '→ь
     }
 
-    func testSlavicSchemeEmitsOnlyCommonSlavicLetters() throws {
-        // Neutral scheme: yo→йо (never ё), shch→шч (never щ), y→й (not ы).
+    func testInterslavicSchemeUsesJotaAndDecomposedIotation() throws {
+        // Interslavic: ja/ju/jo via ј (ја/ју/јо), y→и (no ы/й), shch→шч.
         let out = try TransformationRuntime.apply(engine: .latinToCyrillic,
-                                                  input: "yolka shchyo syn", params: ["target": "slavic"])
-        XCTAssertEqual(out, "йолка шчйо сйн")
-        // No letter specific to any single language/branch may appear:
-        // Russian ы/э/ъ/ё, Ukrainian і/ї/ґ/є, Belarusian ў, Serbian/Macedonian
-        // ј/љ/њ/ћ/ђ/џ/ѓ/ќ/ѕ, or щ (absent in Belarusian + South Slavic).
-        let forbidden = "ыэъёіїґєўјљњћђџѓќѕщ"
+                                                  input: "yolka shchyo syn moj", params: ["target": "interslavic"])
+        XCTAssertEqual(out, "јолка шчјо син мој")
+        // The jota IS used; the opaque single letters and other languages'
+        // special letters never appear.
+        XCTAssertTrue(out.contains("ј"))
+        let forbidden = "йяюёыэъщіїґєўљњћђџѓќѕ"
         for ch in forbidden {
-            XCTAssertFalse(out.contains(ch), "slavic output must not contain \(ch)")
+            XCTAssertFalse(out.contains(ch), "Interslavic output must not contain \(ch)")
         }
     }
 }
