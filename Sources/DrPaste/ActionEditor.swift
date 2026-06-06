@@ -634,7 +634,7 @@ struct ActionEditor: View {
             previewImageRel: nil, sourceBundleID: nil, sourceAppName: nil,
             sourceWindowTitle: nil, tags: [])
         let ctx = ContextDetector.detect(stub)
-        let passes = ActionTrait.passes(required: Array(requiredTraits), forbidden: [], in: ctx)
+        let passes = ActionTrait.passes(required: Array(requiredTraits), forbidden: forbiddenTraits, in: ctx)
         return HStack(spacing: 5) {
             Image(systemName: passes ? "checkmark.circle.fill" : "circle.dashed")
                 .foregroundStyle(passes ? Color.green : Color.secondary)

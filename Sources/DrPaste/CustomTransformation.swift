@@ -369,9 +369,50 @@ struct CustomTransformationDescriptor: Codable, Identifiable, Equatable {
     var applicableTypes: [String]            // SemanticKind.rawValue list
     var enabled: Bool = true
     // #A75 trait gating — "Show this action when…". Empty = always (for the
-    // applicable types). Codable-defaulted so older configs decode cleanly.
+    // applicable types).
     var requiredTraits: [String] = []        // ActionTrait keys; OR — any present
     var forbiddenTraits: [String] = []       // ActionTrait keys; none may be present
+
+    init(id: String,
+         title: String,
+         engineID: String,
+         parameters: [String: String],
+         applicableTypes: [String],
+         enabled: Bool = true,
+         requiredTraits: [String] = [],
+         forbiddenTraits: [String] = []) {
+        self.id = id
+        self.title = title
+        self.engineID = engineID
+        self.parameters = parameters
+        self.applicableTypes = applicableTypes
+        self.enabled = enabled
+        self.requiredTraits = requiredTraits
+        self.forbiddenTraits = forbiddenTraits
+    }
+
+    /// Custom decoder so `enabled` / `requiredTraits` / `forbiddenTraits`
+    /// default when absent — configs written by older builds DON'T contain
+    /// these keys, and Swift's synthesized `Decodable` would throw
+    /// `keyNotFound` on a missing key even for a property with a default,
+    /// which `ActionConfig.load()` swallows into a full config reset (lost
+    /// titles / hotkeys / order). `decodeIfPresent` keeps upgrades lossless.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(String.self, forKey: .id)
+        self.title = try c.decode(String.self, forKey: .title)
+        self.engineID = try c.decode(String.self, forKey: .engineID)
+        self.parameters = try c.decode([String: String].self, forKey: .parameters)
+        self.applicableTypes = try c.decode([String].self, forKey: .applicableTypes)
+        self.enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        self.requiredTraits = try c.decodeIfPresent([String].self, forKey: .requiredTraits) ?? []
+        self.forbiddenTraits = try c.decodeIfPresent([String].self, forKey: .forbiddenTraits) ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, engineID, parameters, applicableTypes
+        case enabled, requiredTraits, forbiddenTraits
+    }
 
     var engine: TransformationEngine? {
         TransformationEngine(rawValue: engineID)

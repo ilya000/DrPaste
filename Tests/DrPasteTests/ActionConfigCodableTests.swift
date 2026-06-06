@@ -82,4 +82,30 @@ final class ActionConfigCodableTests: XCTestCase {
 
         XCTAssertEqual(decoded, config)
     }
+
+    /// Regression (Codex review P1): a transformation descriptor written by a
+    /// build BEFORE the #A75 trait fields existed has no `requiredTraits` /
+    /// `forbiddenTraits` keys. Decoding must succeed (defaulting to []) rather
+    /// than throwing keyNotFound — otherwise `ActionConfig.load()` resets the
+    /// whole config on upgrade, losing the user's customizations.
+    func testOldTransformationDescriptorDecodesWithoutTraitKeys() throws {
+        let json = """
+        {"id":"builtin.text.uppercase","title":"UPPERCASE","engineID":"caseChange",
+         "parameters":{"case":"upper"},"applicableTypes":["text"],"enabled":true}
+        """.data(using: .utf8)!
+        let d = try JSONDecoder().decode(CustomTransformationDescriptor.self, from: json)
+        XCTAssertEqual(d.requiredTraits, [])
+        XCTAssertEqual(d.forbiddenTraits, [])
+        XCTAssertTrue(d.enabled)
+
+        // A whole ActionConfig carrying such a descriptor must decode too.
+        let cfgJSON = """
+        {"version":2,"customTransformations":[
+           {"id":"user.transform.x","title":"X","engineID":"trim",
+            "parameters":{},"applicableTypes":["text"],"enabled":true}]}
+        """.data(using: .utf8)!
+        let cfg = try JSONDecoder().decode(ActionConfig.self, from: cfgJSON)
+        XCTAssertEqual(cfg.customTransformations.count, 1)
+        XCTAssertEqual(cfg.customTransformations.first?.requiredTraits, [])
+    }
 }
