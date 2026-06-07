@@ -188,13 +188,13 @@ enum UnitConversion {
             #"m\s*/\s*s"#, #"met(?:er|re)s?[\s\-]+per[\s\-]+second"#,
             #"km\s*/\s*min"#, #"cm\s*/\s*s"#,
             // AREA (before length, because of the ² / m / ft prefixes)
-            #"square[\s\-]*kilomet(?:er|re)s?"#, #"sq\.?\s*km"#, "km²", "km2",
-            #"square[\s\-]*f(?:ee|oo)t"#, #"sq\.?\s*ft"#, "sqft", "ft²", "ft2",
-            #"square[\s\-]*met(?:er|re)s?"#, #"sq\.?\s*m"#, "m²", "m2",
+            #"square[\s\-]*kilomet(?:er|re)s?"#, #"sq\.?\s*km"#, "km²", "km2", #"km\^2"#,
+            #"square[\s\-]*f(?:ee|oo)t"#, #"sq\.?\s*ft"#, "sqft", "ft²", "ft2", #"ft\^2"#,
+            #"square[\s\-]*met(?:er|re)s?"#, #"sq\.?\s*m"#, "m²", "m2", #"m\^2"#,
             #"square[\s\-]*yards?"#, #"sq\.?\s*yd"#, #"square[\s\-]*miles?"#, #"sq\.?\s*mi"#,
             "hectares?", "ha", "acres?",
             // VOLUME (cubic before the length units they share a prefix with)
-            #"cubic[\s\-]*met(?:er|re)s?"#, "m³", "cm³", "cc",
+            #"cubic[\s\-]*met(?:er|re)s?"#, "m³", #"m\^3"#, "cm³", "cc",
             #"fluid[\s\-]*ounces?"#, #"fl\s*oz"#, "gallons?", "gal", "quarts?", "qt", "pints?", "pt",
             "tablespoons?", "tbsp", "teaspoons?", "tsp", "cups?",
             #"millilit(?:er|re)s?"#, "ml", #"lit(?:er|re)s?"#, "l",
@@ -203,7 +203,7 @@ enum UnitConversion {
             #"degrees?\s+fahrenheit"#, #"degrees?\s+celsius"#, #"degrees?\s+[cf]\b"#,
             "fahrenheit", "celsius", "°c", "°f", "(?-i:C)", "f",
             // WEIGHT
-            "kilogrammes?", "kilograms?", "kg", "milligrams?", "mg",
+            "kilogrammes?", "kilograms?", "kg",
             #"(?:metric\s+)?tonnes?"#, #"metric\s+tons?"#, #"(?:short\s+|long\s+)?tons?"#,
             "pounds?", "lbs?", "ounces?", "oz", "stones?", "grams?", "g",
             // LENGTH
@@ -211,7 +211,7 @@ enum UnitConversion {
             #"millimet(?:er|re)s?"#, "mm", #"met(?:er|re)s?"#, "m",
             // Bare "in" must not fire when a number follows ("9 in 10 odds",
             // "1 in 5") — that's the preposition, not inches.
-            "inch(?:es)?", #"in(?!\s*\d)"#, "feet", "foot", "ft", "yards?", "yd", "miles?", "mi",
+            "inch(?:es)?", #"in(?![\s,;:]*\d)"#, "feet", "foot", "ft", "yards?", "yd", "miles?", "mi",
             "['’′]", "[\"”″]"     // straight + typographic foot ′ / inch ″ marks
         ]
         let unitGroup = "(?:" + units.joined(separator: "|") + ")"
@@ -219,10 +219,10 @@ enum UnitConversion {
             // compound foot+inch (longest-first inch alt so the word is consumed)
             #"(\d+(?:[.,]\d+)?)\s*(?:ft|feet|['’′])\s*(\d+(?:[.,]\d+)?)\s*(?:inch(?:es)?|in\b|["”″])"#,
             #"(\d+(?:[.,]\d+)?)['’′](\d+(?:[.,]\d+)?)["”″]"#,
-            // feet + bare number (no inch marker): "5 ft 11" / "5'11". The
-            // trailing number is gated to 1–11 (inches) so "5 ft 20" stays a
-            // plain "5 ft" plus an unrelated 20.
-            #"(\d+(?:[.,]\d+)?)\s*(?:ft|feet|['’′])\s*(1[01]|[1-9])(?![\d/⁄∕.,])"#,
+            // feet + bare number (no inch marker): "5 ft 11" / "5'11" / "5 ft 0".
+            // Trailing number gated to 0–11 (inches), and must not run into a
+            // word/digit/decimal ("5 ft 11abc", "5 ft 11.5", "5 ft 110").
+            #"(\d+(?:[.,]\d+)?)\s*(?:ft|feet|['’′])\s*(1[01]|[0-9])(?!\.\d)(?![\w/⁄∕])"#,
             // compound stone+pound: "11 st 4 lb" / "11 stone 4" / "11st4lb"
             #"\d+(?:[.,]\d+)?\s*(?:stones?|st)\s*\d+(?:[.,]\d+)?\s*(?:lbs?|pounds?)?"#,
             // compound pound+ounce: "6 lb 4 oz" / "6lb4oz"
@@ -235,7 +235,10 @@ enum UnitConversion {
             // end in a non-word char (ft² / m²) still match fully.
             "(?:(?:minus|negative)\\s+)?[-−]?" + q + #"\s*°?\s*-?\s*"# + unitGroup + #"(?=[^A-Za-z]|$)"#
         ]
-        let combined = "(?:" + alternatives.joined(separator: "|") + ")"
+        // Leading boundary: a measurement must not start in the middle of a
+        // larger token — blocks "v3.5.2 m" (→5.2 m), "10E3 m" (→3 m), "$5 lb",
+        // "A4 m". Allows space, "(", a sign, or start-of-string before it.
+        let combined = #"(?<![\w.,$£€#])(?:"# + alternatives.joined(separator: "|") + ")"
         return try! NSRegularExpression(pattern: combined, options: [.caseInsensitive])
     }()
 
@@ -461,8 +464,11 @@ enum UnitConversion {
         // The degree sign is KEPT so "°c" stays distinct from "c" (a cup, which
         // we deliberately don't treat as Celsius).
         let t = s.replacingOccurrences(of: " ", with: "")
+                 .replacingOccurrences(of: "\u{00A0}", with: "")   // NBSP
+                 .replacingOccurrences(of: "\u{202F}", with: "")   // narrow NBSP
                  .replacingOccurrences(of: ".", with: "")
                  .replacingOccurrences(of: "-", with: "")
+                 .replacingOccurrences(of: "^", with: "")          // "m^2" → "m2"
         switch t {
         case "mm", "millimeter", "millimeters", "millimetre", "millimetres": return .mm
         case "cm", "centimeter", "centimeters", "centimetre", "centimetres": return .cm
@@ -494,7 +500,7 @@ enum UnitConversion {
         case "tbsp", "tablespoon", "tablespoons": return .tablespoons
         case "tsp", "teaspoon", "teaspoons":      return .teaspoons
         case "cc", "cm³", "cm3":      return .cc
-        case "m³", "cubicmeter", "cubicmeters", "cubicmetre", "cubicmetres": return .cubicMeters
+        case "m³", "m3", "cubicmeter", "cubicmeters", "cubicmetre", "cubicmetres": return .cubicMeters
         // Speed
         case "km/h", "kmh", "kph", "kilometerperhour", "kilometersperhour",
              "kilometreperhour", "kilometresperhour": return .kmh

@@ -137,6 +137,29 @@ final class UnitConversionFixesTests: XCTestCase {
                        "It is 3.1 mi away")
     }
 
+    // MARK: adversarial false-positives (Codex review) that must stay untouched
+    func testAdversarialFalsePositives() {
+        XCTAssertEqual(c("v3.5.2 m"), "v3.5.2 m")          // version string
+        XCTAssertEqual(c("10E3 m"), "10E3 m")              // sci-notation tail
+        XCTAssertEqual(c("$5 lb"), "$5 lb")                // currency
+        XCTAssertEqual(c("9 in, 10 out"), "9 in, 10 out")  // in-preposition + comma
+        let abc = c("5 ft 11abc")
+        XCTAssertFalse(abc.contains("11 ("), abc)          // 11abc is not inches
+    }
+
+    // MARK: adversarial cases that SHOULD now convert
+    func testAdversarialConversions() {
+        assertHas("10 m^2", "107.6 ft²")                   // caret exponent → area
+        assertHas("5 ft 0", "1.52 m")                      // 0 inches allowed
+        assertHas("5'0", "1.52 m")
+        assertHas("He is 5 ft 11.", "1.80 m")              // sentence period OK
+        // real measurement next to currency still converts
+        assertHas("price was $5 for 2 lb of apples", "907 g")
+        // A4 model name not converted, but the cm measurement is
+        let a4 = c("A4 paper is 21 cm")
+        XCTAssertTrue(a4.contains("21 cm (8.3 in)") && !a4.contains("A4 ("), a4)
+    }
+
     func testOutputModeSettingRoundTrips() {
         let id = "builtin.text.unit_conversion"
         let original = UnitConversionSettings.replaceMode(for: id)

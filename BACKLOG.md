@@ -3554,11 +3554,27 @@ captured here so they are not rediscovered from scratch.
 - Spelled-out numbers: `six-foot-two`, `five eleven`, `5 foot eleven`.
 - Glued metric compound: `2m15cm` → currently splits into two conversions.
 
+**Deferred adversarial cases (Codex review, ranges/feet/two-mode pass):**
+- Signed ranges: `−5–10°C` / `minus 5–10°C` — first endpoint sign is dropped
+  (converts only the unsigned part). Add an optional sign to each range endpoint.
+- Phone/range collision: `call 1-800 m` → `1-800 m (3.3 ft–0.5 mi)`. Suppress
+  ranges that look like phone/area-code patterns (leading `1-800`, `1-`).
+- Coordinate/angle/time prime collision: `40° 5'11" N` converts as height; bare
+  `wait 5'` converts as feet. Gate prime forms on a non-coordinate context.
+- Compound range: `5–10 lb 3 oz` splits oddly; needs a purpose-built parse.
+- `m/h` (meters per hour) → currently `5 m (16.4 ft)/h`; either support or block.
+- Range endpoints beyond plain decimal: `1/2–1 cup` (fraction endpoint) only
+  converts one side.
+- Mixed-unit range output near thresholds: `0.39–0.4 in` → `10 mm–1.0 cm`
+  (mathematically right but reads oddly) — decide and lock desired behavior.
+
 **Implementation notes:** ranges and the feet+inches-no-marker case are the
 highest value. Keep the regex's leftmost-longest ordering invariant (speed and
 area units before the length units whose prefixes they share) when adding
-anything new. Every change must keep the false-positive suite green
-(`1st` / `2x4` / `1 c` / `a ton` / `9 in 10`).
+anything new. A leading boundary lookbehind `(?<![\w.,$£€#])` blocks
+`v3.5.2 m`, `10E3 m`, `$5 lb`; do not weaken it. Every change must keep the
+false-positive suite green (`1st` / `2x4` / `1 c` / `a ton` / `9 in 10` /
+`v3.5.2 m` / `$5 lb`).
 
 ---
 
