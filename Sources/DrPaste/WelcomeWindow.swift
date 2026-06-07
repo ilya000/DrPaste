@@ -70,7 +70,7 @@ final class WelcomeWindowController {
 
     private func buildWindow() {
         let w = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 600, height: 620),
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 680),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered, defer: false
         )
@@ -104,7 +104,7 @@ struct WelcomeView: View {
             Divider()
             footer
         }
-        .frame(width: 560, height: 580)
+        .frame(width: 560, height: 640)
         .background(Color(NSColor.windowBackgroundColor))
     }
 
@@ -200,7 +200,10 @@ struct WelcomeView: View {
                         "Tracking URL → Clean URL → Share")
             workflowRow("wand.and.stars", .purple,
                         "Transform copied content instantly",
-                        "Fix grammar · Translate · Summarize · Hello World → 𝐇𝐞𝐥𝐥𝐨 𝐖𝐨𝐫𝐥𝐝")
+                        "Fix grammar · Translate · Summarize · Make shorter")
+            workflowRow("bubble.left.and.bubble.right.fill", .pink,
+                        "Stand out in chats & social",
+                        "Selected in Discord → 𝐁𝐨𝐥𝐝 · 𝐼𝑡𝑎𝑙𝑖𝑐 · 𝒮𝒸𝓇𝒾𝓅𝓉 — Unicode that pastes anywhere")
         }
     }
 

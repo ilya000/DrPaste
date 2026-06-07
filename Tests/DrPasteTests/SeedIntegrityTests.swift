@@ -61,6 +61,7 @@ final class SeedIntegrityTests: XCTestCase {
         "builtin.text.type_slowly",
         "builtin.text.generate_qr",
         "builtin.text.unit_conversion",
+        "builtin.text.ipa_local",
         "builtin.rich.strip_formatting",
         "builtin.rich.to_md",
         "builtin.rich.to_html",

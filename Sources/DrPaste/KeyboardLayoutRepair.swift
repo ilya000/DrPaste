@@ -6,9 +6,19 @@
 //  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
 //  See LICENSE for terms.
 //
-//  Local repair for text typed in the wrong keyboard layout.
-//  Minimal Punto-Switcher-style heuristic: character-level RU/EN mapping plus
-//  scoring via NSSpellChecker to decide whether the swap is an improvement.
+//  Local repair for text typed in the wrong keyboard layout (Punto-Switcher
+//  style). Two directions per layout:
+//    1. local-script text touch-typed on a US/QWERTY layout → Latin gibberish
+//       ("Rcnfnb" → "Кстати");
+//    2. English text touch-typed on a local layout → local-script gibberish
+//       ("руддщ" → "hello").
+//  A per-key character map per layout swaps the text; `NSSpellChecker` scores
+//  whether the swap is a real improvement in the appropriate language. Multiple
+//  layouts (Russian, Ukrainian) are tried and the best-scoring swap wins.
+//
+//  Latin↔Latin layouts (French AZERTY, German QWERTZ) are tracked in BACKLOG
+//  #A86 — they need accent/AltGr handling and a stricter detector to avoid
+//  false positives, so they're deliberately not included here yet.
 //
 
 import Foundation
@@ -16,7 +26,29 @@ import AppKit
 
 enum KeyboardLayoutRepair {
 
-    private static let enToRu: [Character: Character] = [
+    // MARK: - Layout model
+
+    struct Layout {
+        let id: String
+        /// Spell-check language of the LOCAL (non-Latin) side.
+        let language: String
+        /// english-QWERTY character → local-layout character at the same key.
+        let enToLocal: [Character: Character]
+        /// Inverse map, built once.
+        let localToEn: [Character: Character]
+
+        init(id: String, language: String, enToLocal: [Character: Character]) {
+            self.id = id
+            self.language = language
+            self.enToLocal = enToLocal
+            var inverse: [Character: Character] = [:]
+            for (k, v) in enToLocal { inverse[v] = k }
+            self.localToEn = inverse
+        }
+    }
+
+    // Russian ЙЦУКЕН.
+    private static let russianMap: [Character: Character] = [
         "q":"й","w":"ц","e":"у","r":"к","t":"е","y":"н","u":"г","i":"ш","o":"щ","p":"з","[":"х","]":"ъ",
         "a":"ф","s":"ы","d":"в","f":"а","g":"п","h":"р","j":"о","k":"л","l":"д",";":"ж","'":"э",
         "z":"я","x":"ч","c":"с","v":"м","b":"и","n":"т","m":"ь",",":"б",".":"ю","/":".",
@@ -25,58 +57,132 @@ enum KeyboardLayoutRepair {
         "Z":"Я","X":"Ч","C":"С","V":"М","B":"И","N":"Т","M":"Ь","<":"Б",">":"Ю","?":","
     ]
 
-    private static let ruToEn: [Character: Character] = {
-        var m: [Character: Character] = [:]
-        for (k, v) in enToRu { m[v] = k }
+    // Ukrainian ЙЦУКЕН — Russian base, with the Ukrainian-specific letters
+    // replacing ы/э/ъ (which Ukrainian doesn't have): s→і, '→є, ]→ї.
+    private static let ukrainianMap: [Character: Character] = {
+        var m = russianMap
+        m["s"] = "і"; m["S"] = "І"
+        m["'"] = "є"; m["\""] = "Є"
+        m["]"] = "ї"; m["}"] = "Ї"
         return m
     }()
 
-    static func looksWrongLayout(_ text: String) -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count >= 3 else { return false }
-        let original = scoreLikelihood(trimmed)
-        let swapped = scoreLikelihood(swap(trimmed))
-        return swapped > original + 2
-    }
+    private static let russian = Layout(id: "ru", language: "ru", enToLocal: russianMap)
+    private static let ukrainian = Layout(id: "uk", language: "uk", enToLocal: ukrainianMap)
 
-    static func repair(_ text: String) -> String {
-        let swapped = swap(text)
-        return scoreLikelihood(swapped) > scoreLikelihood(text) ? swapped : text
-    }
+    /// All supported layouts, tried in turn.
+    static let layouts: [Layout] = [russian, ukrainian]
 
-    static func swap(_ text: String) -> String {
+    // MARK: - Swapping
+
+    /// Swap `text` through one layout, in whichever direction applies per
+    /// character (english→local or local→english).
+    static func swap(_ text: String, with layout: Layout) -> String {
         var out = ""
         out.reserveCapacity(text.count)
         for ch in text {
-            if let r = enToRu[ch] { out.append(r); continue }
-            if let e = ruToEn[ch] { out.append(e); continue }
-            out.append(ch)
+            if let local = layout.enToLocal[ch] { out.append(local) }
+            else if let en = layout.localToEn[ch] { out.append(en) }
+            else { out.append(ch) }
         }
         return out
     }
 
-    private static func scoreLikelihood(_ text: String) -> Double {
-        let dominantLang = guessDominantLanguage(text)
-        let words = text.split(whereSeparator: { !$0.isLetter && $0 != "-" && $0 != "'" })
-            .map(String.init)
-            .filter { $0.count >= 2 }
-        guard !words.isEmpty else { return 0 }
+    /// Back-compat convenience: swap through the Russian layout.
+    static func swap(_ text: String) -> String { swap(text, with: russian) }
 
-        let checker = NSSpellChecker.shared
-        var goodWords = 0
-        for w in words {
-            let r = checker.checkSpelling(of: w, startingAt: 0, language: dominantLang, wrap: false, inSpellDocumentWithTag: 0, wordCount: nil)
-            if r.location == NSNotFound { goodWords += 1 }
-        }
-        return Double(goodWords) * 10.0 / Double(max(text.count, 1))
+    // MARK: - Detection & repair
+
+    static func looksWrongLayout(_ text: String) -> Bool {
+        decideLayout(sample(of: text)) != nil
     }
 
-    private static func guessDominantLanguage(_ text: String) -> String {
-        var cyr = 0, lat = 0
-        for ch in text.unicodeScalars {
-            if (0x0400...0x04FF).contains(ch.value) { cyr += 1 }
-            else if (0x0041...0x007A).contains(ch.value) { lat += 1 }
+    static func repair(_ text: String) -> String {
+        // Decide on a bounded sample (cheap), then apply the chosen swap to the
+        // FULL string — avoids several full-length NSSpellChecker passes on a
+        // long clip.
+        guard let layout = decideLayout(sample(of: text)) else { return text }
+        return swap(text, with: layout)
+    }
+
+    /// Bounded, trimmed sample used for the decision.
+    private static func sample(of text: String) -> String {
+        String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(400))
+    }
+
+    /// Pick the layout whose swap is a clear, confident improvement over the
+    /// sample as-is, or nil if none qualifies.
+    private static func decideLayout(_ trimmed: String) -> Layout? {
+        guard trimmed.count >= 3 else { return nil }
+        let original = originalScore(trimmed)
+        var best: (Layout, Double)?
+        for layout in layouts {
+            let swapped = swap(trimmed, with: layout)
+            guard swapped != trimmed else { continue }
+            // Confidence guard against short collisions: a single short word that
+            // happens to swap to a valid word is NOT enough — require ≥2 scored
+            // words, or one word of ≥4 letters ("руддщ" → "hello").
+            let scoredWords = words(in: swapped)
+            if scoredWords.isEmpty { continue }
+            if scoredWords.count == 1 && (scoredWords.first?.count ?? 0) < 4 { continue }
+            let score = scoreInLanguage(swapped, language: swapLanguage(of: trimmed, layout: layout))
+            if score >= 0.5 && score > original + 0.3, best == nil || score > best!.1 {
+                best = (layout, score)
+            }
         }
-        return cyr > lat ? "ru" : "en"
+        return best?.0
+    }
+
+    // MARK: - Scoring
+
+    /// The language to spell-check a SWAP result in: Latin input swaps to the
+    /// local script (score in the layout's language); local-script input swaps
+    /// back to Latin (score in English).
+    private static func swapLanguage(of input: String, layout: Layout) -> String {
+        isLatinDominant(input) ? layout.language : "en"
+    }
+
+    /// How valid the text is AS-IS, in its most plausible language (so genuine
+    /// text is never "repaired"). Latin → English; Cyrillic → best of ru / uk.
+    private static func originalScore(_ text: String) -> Double {
+        let languages = isLatinDominant(text) ? ["en"] : ["ru", "uk"]
+        return languages.map { scoreInLanguage(text, language: $0) }.max() ?? 0
+    }
+
+    /// Scorable words (≥2 letters) in `text`.
+    private static func words(in text: String) -> [String] {
+        text.split(whereSeparator: { !$0.isLetter && $0 != "-" && $0 != "'" })
+            .map(String.init)
+            .filter { $0.count >= 2 }
+    }
+
+    /// Fraction of words (0…1) the given language's speller accepts.
+    private static func scoreInLanguage(_ text: String, language: String) -> Double {
+        let ws = words(in: text)
+        guard !ws.isEmpty else { return 0 }
+        let checker = NSSpellChecker.shared
+        var good = 0
+        for w in ws {
+            let r = checker.checkSpelling(of: w, startingAt: 0, language: language,
+                                          wrap: false, inSpellDocumentWithTag: 0, wordCount: nil)
+            if r.location == NSNotFound { good += 1 }
+        }
+        return Double(good) / Double(ws.count)
+    }
+
+    // MARK: - Script helpers
+
+    private static func scriptCounts(_ text: String) -> (latin: Int, cyrillic: Int) {
+        var latin = 0, cyrillic = 0
+        for s in text.unicodeScalars {
+            if (0x0400...0x04FF).contains(s.value) { cyrillic += 1 }
+            else if (0x41...0x5A).contains(s.value) || (0x61...0x7A).contains(s.value) { latin += 1 }
+        }
+        return (latin, cyrillic)
+    }
+
+    private static func isLatinDominant(_ text: String) -> Bool {
+        let c = scriptCounts(text)
+        return c.latin >= c.cyrillic
     }
 }

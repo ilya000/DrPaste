@@ -81,11 +81,12 @@ final class ApplicabilityScopingTests: XCTestCase {
 
     func testAIDefaultsCurated() {
         for id in ["ai.text.summarize", "ai.text.translate", "ai.text.fix_grammar",
-                   "ai.code.explain", "ai.code.find_bugs", "ai.text.clean_ocr"] {
+                   "ai.code.explain", "ai.code.find_bugs", "ai.text.clean_ocr",
+                   "ai.text.image_whiteboard"] {   // part of the wow / first-open set
             XCTAssertTrue(CuratedDefaults.isEnabledByDefault(id), "\(id) should be ON")
         }
         for id in ["ai.text.ipa_transcription", "ai.image.sketch", "ai.image.watercolor",
-                   "ai.image.cartoon", "ai.text.image_whiteboard", "ai.text.latin_to_cyrillic",
+                   "ai.image.cartoon", "ai.text.latin_to_cyrillic",
                    "ai.code.translate", "ai.code.pretty"] {
             XCTAssertFalse(CuratedDefaults.isEnabledByDefault(id), "\(id) should be OFF (novelty)")
         }

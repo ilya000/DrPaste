@@ -1269,7 +1269,7 @@ inline.
 
 ### #A14 — Resize Images universal transformation
 
-**Status:** planned. Most-requested missing image action.
+**Status:** ✅ Shipped. `builtin.image.resize` (universal: image / file-list / rich-embedded), small-image preview 1:1 fix in 0.57.x.
 **Touches:** new `ImageResizeTransformation.swift` (or extension to
 `ImageActions.swift`), `DefaultTransformationSeed.swift` (registry entry),
 applicableTypes wiring on three input kinds.
@@ -1297,7 +1297,7 @@ workflows.
 
 ### #A15 — CSV → Wiki table and CSV → Rich (RTFD) table
 
-**Status:** planned. Closes a gap in tabular output formats.
+**Status:** ✅ Shipped. `builtin.table.to_wiki` / `to_rich` (RTFD) / `to_html`.
 **Touches:** `TableActions.swift` (new file or add to `TextActions.swift`),
 two action seeds, `RichTextHelpers.swift` (NSTextTable builder).
 **Context:** Already have CSV-passing-through actions and the wiki engine
@@ -1373,7 +1373,7 @@ sample), `BigHUD.swift` row rendering for `.files`, `RichTextHelpers.swift`
 
 ### #A18 — Latin → Cyrillic: deterministic + AI parallel actions
 
-**Status:** planned. Mirrors Cyrillic → Latin which already exists.
+**Status:** ✅ Shipped. `builtin.text.latin_to_cyrillic` (deterministic) + `ai.text.latin_to_cyrillic`.
 **Touches:** new `TransliterationLatinToCyrillic.swift`,
 `AIPromptTemplates.swift` (seed), `DefaultTransformationSeed.swift`.
 **Context:** Have Cyrillic → Latin transliteration with variant detection.
@@ -1393,7 +1393,7 @@ deterministic path is enough for 80% of cases.
 
 ### #A19 — Pretty Code: two parallel actions — local (deterministic) + AI
 
-**Status:** planned. Confirmed explicitly: two actions, two implementations,
+**Status:** ✅ Shipped. `builtin.code.pretty_local` (offline) + `ai.code.pretty`.
 NOT merged into one.
 **Touches:** new `LocalPrettyCode.swift` (deterministic
 JSON/XML/HTML/CSS + simple code reformat), `AIPromptTemplates.swift`
@@ -1430,7 +1430,7 @@ quality.
 
 ### #A20 — Unit conversion: local action with metric ↔ imperial round-trip
 
-**Status:** planned. New idea from flight-test session. High user value
+**Status:** ✅ Shipped. Hardened extensively in 0.57.x; remaining edge cases tracked in #A83.
 (immigrant from metric country grappling with imperial measurements).
 **Touches:** new `UnitConversionAction.swift`,
 `DefaultTransformationSeed.swift`, parser tables for each unit category.
@@ -1472,7 +1472,7 @@ opposite, replace in place. Works offline.
 
 ### #A21 — File → Image extraction (PDF first page, simple)
 
-**Status:** planned. Solves common case of "I want the cover image".
+**Status:** ✅ Shipped. `builtin.files.extract_image` (PDF page 1 + HEIC/TIFF/BMP/GIF → PNG).
 **Touches:** new `FileToImageAction.swift`, `DefaultTransformationSeed.swift`.
 **Context:** A clip containing a single PDF / image-format file should
 have an action that extracts the first page (PDF) or just re-encodes the
@@ -1492,7 +1492,7 @@ first page, only simple cases.
 
 ### #A22 — URL preview cards via local HTML parsing
 
-**Status:** planned. Adds richness to URL-type clips without external calls.
+**Status:** ✅ Shipped. `builtin.url.preview_card` (Open Graph / title / description, local fetch).
 **Touches:** `URLActions.swift` (new fetch + parse), `BigHUD.swift` /
 `RichTextPreviewView.swift` (card rendering).
 **Context:** URL-type clips currently show as plain links. A "Preview"
@@ -1685,7 +1685,7 @@ files / image / richText / pdf / code / markdown / json / table. Missing:
 
 ### #A30 — HUD Pin button (per-session sticky stay-open)
 
-**Status:** planned. Power-user surface.
+**Status:** ✅ Shipped. `bigHUDState.isPinned` per-session sticky stay-open.
 **Touches:** `BigHUD.swift` (header pin button next to ✕), `HudState.swift`
 (`isPinned` flag).
 **Context:** When working through multiple clips iteratively, the user
@@ -1719,7 +1719,7 @@ mouse-only user from learning the keybinds.
 
 ### #A32 — Bug: Unicode fancy reverse table is wrong (𝐓𝐡𝐞 → "The bnick")
 
-**Status:** planned. Small bug.
+**Status:** ✅ Shipped. `UnicodeStylizer.normalize` round-trips A–Z / a–z / 0–9 and every style; covered by `UnicodeStylizerTests`.
 **Touches:** `UnicodeStyles.swift` reverse lookup table.
 **Context:** When pasting unicode-styled text back through the
 `unicodeStyle` action's denormalize-then-restyle path, the reverse
@@ -1737,7 +1737,7 @@ table.
 
 ### #A33 — Bug: Unicode Stylize doesn't denormalize its own outputs
 
-**Status:** planned. Depends on #A32.
+**Status:** ✅ Shipped. Denormalize-then-restyle; `UnicodeStylizerTests.testStylingAlreadyStyledTextDenormalizesFirst`.
 **Touches:** `UnicodeStyles.swift` (stylize entry point), seed metadata.
 **Context:** Applying Unicode Stylize to already-styled text should first
 strip the existing style (using the reverse table) and then apply the
@@ -1752,7 +1752,7 @@ producing junk.
 
 ### #A34 — Bug: Save button broken in New Built-in action
 
-**Status:** planned. Small bug.
+**Status:** ✅ Resolved. The standalone `BuiltinActionEditor` was replaced by the unified `ActionEditor`; `.createNew` + `.builtin` Save is wired in `ActionEditor.save()` (enables + dismisses).
 **Touches:** `BuiltinActionEditor.swift` Save action wiring.
 **Context:** Creating a new Built-in action from the "+ New" palette and
 hitting Save does nothing — the sheet doesn't dismiss, the action isn't
@@ -1766,7 +1766,7 @@ persisted. Probably stale binding from an earlier refactor.
 
 ### #A35 — Bug: Extract links / Extract headings × Rich Text input
 
-**Status:** planned. Small bug.
+**Status:** ✅ Resolved. `builtin.md.extract_headings` is seeded with `types: [.markdown, .richText]`; the universal `builtin.text.extract_links` handles links across types.
 **Touches:** `MarkdownActions.swift` (extractLinks / extractHeadings handlers),
 applicable-types metadata.
 **Context:** When a `.richText` clip is input to Extract Links or Extract
@@ -1783,7 +1783,7 @@ text input.
 
 ### #A36 — Bug / audit: engine visibility inconsistency in pickers
 
-**Status:** planned. Small bug + audit.
+**Status:** ✅ Resolved. Engine pickers consolidated into the single `ActionEditor`; the separate `TransformationEditor` surface no longer exists.
 **Touches:** `TransformationEditor.swift` engine picker, registry pass.
 **Context:** Markdown → Plain text and Extract headings engines are
 visible in one engine picker dropdown but not another. Same engine,
@@ -1965,7 +1965,7 @@ rows show only the title, which leaves no scannable answer to
 
 ### #A65 — Append Copy lightweight feedback toast
 
-**Status:** planned. UX from review.
+**Status:** ✅ Shipped. Append-copy toast via `ToastController` (toggle `appendToastsEnabled`).
 **Touches:** new `ToastController.swift` (or extend MiniHUD),
 `main.swift` `hotkeyEngineDidAppendCopy()`.
 **Context:** The menu-bar dot is the primary append-session
@@ -2011,7 +2011,7 @@ needed — open System Settings" toast instead of silent failure.
 
 ### #A67 — Cheat sheet line: "Tap to run · hold ⌥⌘ to preview"
 
-**Status:** planned. UX from review. Trivial.
+**Status:** ✅ Shipped. Per-action rows read 'tap run, hold preview'; empty-state hint states the mechanic too.
 **Touches:** `RegionCaptureCheatSheet.swift` legend, Welcome
 window per-action hotkeys section, Hotkey Recorder helper text.
 **Context:** Per-action hotkey "tap = direct, hold = BigHUD preview"
@@ -2716,7 +2716,7 @@ combinatorics.
 
 ### #A43 — PreferencesKeys enum (single source of truth for UserDefaults)
 
-**Status:** planned. Cheap win. ~30 minutes work, prevents subtle
+**Status:** ✅ Shipped. `PreferenceKeys.swift` is the single source of truth for UserDefaults keys (+ Factory Reset list).
 "key drift" bugs in Factory Reset and Settings.
 **Touches:** new `PreferenceKeys.swift`, every UserDefaults string
 literal call site, `SettingsWindow.swift` Factory Reset path.
@@ -3575,6 +3575,115 @@ anything new. A leading boundary lookbehind `(?<![\w.,$£€#])` blocks
 `v3.5.2 m`, `10E3 m`, `$5 lb`; do not weaken it. Every change must keep the
 false-positive suite green (`1st` / `2x4` / `1 c` / `a ton` / `9 in 10` /
 `v3.5.2 m` / `$5 lb`).
+
+---
+
+### #A84 — Reconsider trait-gated actions that ship disabled by default
+
+**Status:** planned (owner review — decide per action; do NOT blanket-flip).
+**Touches:** `CuratedDefaults.enabledByDefault`, `DefaultTransformationSeed` /
+`DefaultAISeed` `requiredTraits`, an optional one-shot migration.
+**Context:** A Settings row toggle renders YELLOW when
+`registry.hasActiveTraits(id)` is true — the action is gated by a trait and
+only surfaces in the HUD when the focused clip matches that condition. Several
+such actions ALSO ship disabled by default. The two together are partly
+redundant for the "don't clutter the HUD" goal the disable was meant to serve:
+the trait already hides the action for non-matching clips, so enabling it would
+not pollute the everyday HUD — it would appear exactly when relevant. Worth
+reconsidering each one. Observed by the owner directly in the Settings list.
+
+Concrete candidates — trait-gated AND disabled today:
+- `builtin.text.title_case` — traits `[uppercaseHeavy, lowercaseHeavy]`
+- `builtin.text.sentence_case` — `[uppercaseHeavy, lowercaseHeavy]`
+- `builtin.text.sort_lines` — `[multiline]`
+- `builtin.text.unique_lines` — `[multiline]`
+- `builtin.text.remove_line_breaks` — `[wrappedLines]`
+- `builtin.text.latin_to_cyrillic` — `[containsLatin]`
+- `ai.text.clean_ocr` — `[fromOCR]` (AI — needs a provider)
+- `ai.text.generate_email_subject` — `[containsEmails, fromMailApp]` (AI)
+- `builtin.text.zalgo` — `[fromChat]` (novelty)
+
+**Notable inconsistency to resolve:** `builtin.text.uppercase` and
+`builtin.text.lowercase` ship ENABLED with the SAME traits
+(`[uppercaseHeavy, lowercaseHeavy]`), while `title_case` / `sentence_case` ship
+DISABLED — there is no principled reason for the split.
+
+**Requirements:**
+- Decide per action: enable (trait gating is sufficient to avoid clutter) vs
+  keep disabled (genuinely niche / novelty / destructive, or AI-cost-bearing).
+- Resolve the case-action split (uppercase/lowercase vs title/sentence) one way.
+- AI actions (`clean_ocr`, `generate_email_subject`) remain gated on a
+  configured provider regardless; flipping the curated flag does not change the
+  no-provider behavior.
+- `zalgo` is a deliberate novelty — likely stays off even when `fromChat` holds.
+- If flipping any default, add a one-shot migration guarded by a UserDefaults
+  key, and do NOT stomp users who already customized those flags
+  (#A41 / #A76 invariant).
+
+**Implementation notes:** audit query — cross `registry.actions` with
+`hasActiveTraits(id)` and `CuratedDefaults.isEnabledByDefault(id)`; the trait
+lists live in `DefaultTransformationSeed` / `DefaultAISeed` `requiredTraits`.
+The yellow toggle style is `EnabledCheckboxToggleStyle`, driven by
+`registry.hasActiveTraits`.
+
+**Partial progress:** the "wow / first-open" marketing set —
+`builtin.url.preview_card`, `builtin.text.generate_qr`, `builtin.image.ocr`,
+`builtin.files.to_rich_icons`, `ai.text.image_whiteboard` — was force-enabled
+on existing configs (one-shot `applyWowSetEnableIfNeeded`, all already in
+`enabledByDefault`). The remaining trait-gated-but-disabled candidates above
+(title/sentence case, sort/unique lines, etc.) still need a per-action call.
+
+---
+
+### #A85 — Curated default action order (per content kind)
+
+**Status:** ✅ Shipped. `CuratedActionOrder` defines a per-kind ordered ID list
+(Hero/WOW → Everyday → Useful → Niche, identity pinned first), applied by
+`ActionRegistry.reorder` as a live fallback when the user has not hand-ordered
+a kind. A re-forceable one-shot reset (`applyCuratedOrderResetIfNeeded`,
+version-keyed) discards any saved order so the curated order applies to every
+user; bump the version when re-tuning. Ordering synthesised from a Codex review
++ owner intent. Covered by `CuratedActionOrderTests`.
+
+---
+
+### #A86 — Wrong-layout repair: Latin↔Latin layouts (AZERTY, QWERTZ, …)
+
+**Status:** planned. Cyrillic layouts (Russian, Ukrainian) shipped; Latin ones
+deferred.
+**Touches:** `KeyboardLayoutRepair` (per-layout maps + detector), tests.
+**Context:** `Fix layout` now handles English ↔ Russian / Ukrainian in both
+directions (local text typed on QWERTY → local script; English typed on the
+local layout → English), choosing the best-scoring swap via NSSpellChecker.
+The owner noted that NON-Cyrillic layouts cause the same class of error — e.g.
+a French AZERTY typist (a↔q, z↔w, m at the `;` key) or a German QWERTZ typist
+(y↔z) touch-typing on a US layout produces wrong Latin letters. NSSpellChecker
+has `fr` / `de` / `es` dictionaries available, so detection is feasible.
+
+**Why deferred (the hard parts):**
+- Latin↔Latin detection is weaker and false-positive-prone: both the original
+  and the swapped text are Latin, so the decision rests entirely on
+  English-vs-French/German spellcheck rather than a clean script flip. A
+  stricter margin (and maybe a minimum word count) is needed.
+- The repair is incomplete: AZERTY accents (é è à ç …) and German umlauts /
+  ß live on the number row / AltGr, which a US layout renders as digits or
+  drops — so swapping only the letter positions leaves accented words broken.
+- QWERTZ differs from QWERTY in only y↔z, so many German words are unaffected
+  and detection signal is thin.
+
+**Requirements:**
+- Extend the `Layout` model with Latin-script layouts (mark `isLatin`), each
+  with its `enToLocal` position map and spellcheck language.
+- Tighten `looksWrongLayout` / `repair` for Latin↔Latin (higher margin, min
+  words) so genuine English/French/German prose is never repaired.
+- Decide accent handling: either best-effort letters-only (document the gap) or
+  a richer map that recovers dead-key accents.
+- Tests: both directions per layout + a strong false-positive suite (genuine
+  en / fr / de prose left untouched).
+
+**Implementation notes:** the architecture already supports N layouts and a
+script-aware swap language (`swapLanguage(of:layout:)`); adding a Latin layout
+mainly needs the map + a Latin-specific detection threshold.
 
 ---
 

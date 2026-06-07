@@ -73,6 +73,14 @@ final class BigHUDState: ObservableObject {
     /// when the view is created.
     var actionTitleProvider: ((String, String) -> String)? = nil
 
+    /// Optional provider telling the HUD whether an action is trait-gated —
+    /// i.e. it is only in this list because its trait condition matched the
+    /// focused clip. Such "conditional / surprise" chips get a yellow accent
+    /// (same yellow as the Settings trait toggle) so they stand out: the user
+    /// doesn't expect them and they appear/disappear with context. Wired in by
+    /// AppDelegate.showBigHUD.
+    var traitGatedProvider: ((String) -> Bool)? = nil
+
     /// #A13 — In-HUD inline search. nil = inactive; "" = active but
     /// empty (prompt visible, all rows still shown); non-empty = active
     /// + filter rows by `previewText` substring (case-insensitive).
@@ -1019,6 +1027,10 @@ struct BigHUDView: View {
         let isActive = idx == state.actionIndex
         let isHover = hoveredActionID == a.id
         let title = state.actionTitleProvider?(a.id, a.title) ?? a.title
+        // Conditional ("surprise") action — shown only because its trait
+        // matched the clip. Same yellow as the Settings trait toggle.
+        let traitGated = state.traitGatedProvider?(a.id) ?? false
+        let traitYellow = Color(red: 1.0, green: 0.82, blue: 0.0)
         return HStack(spacing: 4) {
             if let badge = providerBadge(for: a) {
                 // AI action — provider badge with brand color.
@@ -1048,15 +1060,22 @@ struct BigHUDView: View {
             // — disambiguates the two surfaces visually when both are
             // focused under release-to-paste.
             Capsule().fill(
-                isActive
-                ? accent.opacity(0.10)
-                : (isHover ? Color.primary.opacity(0.10) : Color.primary.opacity(0.06))
+                traitGated
+                ? traitYellow.opacity(isActive ? 0.15 : (isHover ? 0.12 : 0.08))
+                : (isActive
+                   ? accent.opacity(0.10)
+                   : (isHover ? Color.primary.opacity(0.10) : Color.primary.opacity(0.06)))
             )
         )
         .overlay(
+            // Trait-gated chips carry a yellow border at all times so they read
+            // as "conditional" even when not selected; selection just thickens it.
             Capsule()
-                .strokeBorder(isActive ? accent.opacity(0.95) : Color.clear,
-                              lineWidth: isActive ? 1.5 : 0)
+                .strokeBorder(
+                    traitGated ? traitYellow.opacity(isActive ? 0.8 : 0.5)
+                               : (isActive ? accent.opacity(0.95) : Color.clear),
+                    lineWidth: isActive ? 1.5 : (traitGated ? 1.0 : 0)
+                )
         )
         .contentShape(Capsule())
         .onHover { hovering in hoveredActionID = hovering ? a.id : nil }

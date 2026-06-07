@@ -81,6 +81,7 @@ struct GenerateQRAction: ClipboardAction {
 enum TextActionsPack {
     static var all: [ClipboardAction] {
         [GenerateQRAction(),
-         UnitConversionAction()]   // #A20 metric ↔ imperial
+         UnitConversionAction(),   // #A20 metric ↔ imperial
+         IPALocalAction()]         // offline English → IPA (CMUdict)
     }
 }

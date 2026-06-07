@@ -131,7 +131,7 @@ func makePlainText(_ item: ClipboardItem) -> ClipboardItem {
 
 struct LayoutRepairAction: ClipboardAction {
     let id = "builtin.text.layout_repair"
-    let title = "Fix keyboard layout"
+    let title = "Fix layout"
     let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         context.contains(.layoutWrong) || context.contains(.mixedScript)
@@ -267,8 +267,100 @@ final class ActionRegistry: ObservableObject {
         if applyRemoveRetiredStandalonesIfNeeded(into: &copy) { changed = true }
         if applyA78CurationIfNeeded(into: &copy) { changed = true }
         if applyA78CurationV2IfNeeded(into: &copy) { changed = true }
+        if applyCuratedOrderResetIfNeeded(into: &copy) { changed = true }
+        if applyWowSetEnableIfNeeded(into: &copy) { changed = true }
+        if applyRetireFontPlainIfNeeded(into: &copy) { changed = true }
+        if applyFontMarkdownMdOnlyIfNeeded(into: &copy) { changed = true }
 
         if changed { config = copy }
+    }
+
+    /// One-shot: scope "**md** → 𝐦𝐝" (`builtin.text.font_markdown`) to Markdown
+    /// only on existing configs — parsing **bold** / *italic* markup belongs to
+    /// Markdown clips, not arbitrary plain text.
+    private func applyFontMarkdownMdOnlyIfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.fontMarkdownMdOnly.v1"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        var changed = false
+        for idx in copy.customTransformations.indices
+        where copy.customTransformations[idx].id == "builtin.text.font_markdown"
+            // Only migrate the EXACT old shipped set — never stomp a user who
+            // deliberately changed the "Applies to" of this action (#A41/#A76).
+            && copy.customTransformations[idx].applicableTypes == ["text", "markdown"] {
+            copy.customTransformations[idx].applicableTypes = ["markdown"]
+            changed = true
+        }
+        UserDefaults.standard.set(true, forKey: key)
+        return changed
+    }
+
+    /// One-shot: remove the retired "𝒜 → ABC  Plain ASCII"
+    /// (`builtin.text.font_plain`) from existing configs. It is fully redundant
+    /// with "Plain text" (`builtin.rich.strip_formatting`), which already folds
+    /// styled Unicode → ASCII for every clip kind. Create-Unicode actions
+    /// (Bold / Italic / … + Unicode Fancy) stay — they're already `fromChat`-
+    /// gated for chat/social use.
+    private func applyRetireFontPlainIfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.retireFontPlain.v1"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        let before = copy.customTransformations.count
+        copy.customTransformations.removeAll { $0.id == "builtin.text.font_plain" }
+        copy.enabledFlags.removeValue(forKey: "builtin.text.font_plain")
+        copy.actionHotkeys.removeValue(forKey: "builtin.text.font_plain")
+        UserDefaults.standard.set(true, forKey: key)
+        return copy.customTransformations.count != before
+    }
+
+    /// One-shot: force-ENABLE the "wow / first-open" marketing set on existing
+    /// configs, even if an earlier declutter migration had turned some off.
+    /// All five are already in `CuratedDefaults.enabledByDefault` (new installs
+    /// get them on); this fixes EXISTING configs where the stored
+    /// `enabledFlags` / descriptor `enabled` says otherwise. Covers all three
+    /// storage paths (custom AI descriptor, custom transformation descriptor,
+    /// standalone built-in `enabledFlags`). Owner decision — force on everyone.
+    private func applyWowSetEnableIfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.wowSetEnable.v1"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        let wow: Set<String> = [
+            "builtin.url.preview_card",
+            "builtin.text.generate_qr",
+            "builtin.image.ocr",
+            "builtin.files.to_rich_icons",
+            "ai.text.image_whiteboard",
+        ]
+        var changed = false
+        for idx in copy.customAI.indices
+        where wow.contains(copy.customAI[idx].id) && !copy.customAI[idx].enabled {
+            copy.customAI[idx].enabled = true; changed = true
+        }
+        for idx in copy.customTransformations.indices
+        where wow.contains(copy.customTransformations[idx].id) && !copy.customTransformations[idx].enabled {
+            copy.customTransformations[idx].enabled = true; changed = true
+        }
+        // Standalone built-ins (not descriptor-backed) read `enabledFlags`.
+        let descriptorIDs = Set(copy.customAI.map { $0.id })
+            .union(copy.customTransformations.map { $0.id })
+        for id in wow where !descriptorIDs.contains(id) && copy.enabledFlags[id] != true {
+            copy.enabledFlags[id] = true; changed = true
+        }
+        UserDefaults.standard.set(true, forKey: key)
+        return changed
+    }
+
+    /// One-shot, RE-FORCEABLE reset (deliberately NOT a preserve-edits
+    /// migration): discard ANY saved per-kind action order so the curated
+    /// default order (`CuratedActionOrder`) applies to every user — including
+    /// those who had hand-ordered. Owner decision: the new order is forced on
+    /// everyone, customizations are dropped. Bump `version` whenever the
+    /// curated order is re-tuned to push the fresh order out to everyone again.
+    private func applyCuratedOrderResetIfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.curatedOrder.resetVersion"
+        let version = 2   // bump when re-tuning CuratedActionOrder to re-force everyone
+        guard UserDefaults.standard.integer(forKey: key) < version else { return false }
+        let changed = !copy.actionOrder.isEmpty
+        copy.actionOrder.removeAll()
+        UserDefaults.standard.set(version, forKey: key)
+        return changed
     }
 
     /// One-shot: sharpen the HUD by context-gating broad utilities — they now
@@ -984,15 +1076,20 @@ final class ActionRegistry: ObservableObject {
     /// (Paste as is) is always first; the rest follow actionOrder. Actions
     /// without an entry in actionOrder appear after, in their original order.
     func reorder(_ list: [ClipboardAction], forContentType kind: SemanticKind) -> [ClipboardAction] {
-        let savedOrder = config.actionOrder[kind.rawValue] ?? []
-        guard !savedOrder.isEmpty else { return moveIdentityFirst(list) }
+        // The user's explicit hand-ordering wins; otherwise fall back to the
+        // curated default order (most valuable / wow first, novelty last). Any
+        // applicable action not named in the order is appended afterwards in
+        // registration order, so the curated list need not be exhaustive.
+        let userOrder = config.actionOrder[kind.rawValue] ?? []
+        let order = userOrder.isEmpty ? CuratedActionOrder.order(for: kind) : userOrder
+        guard !order.isEmpty else { return moveIdentityFirst(list) }
         var byID: [String: ClipboardAction] = [:]
         for a in list { byID[a.id] = a }
         var result: [ClipboardAction] = []
-        for id in savedOrder {
+        for id in order {
             if let a = byID.removeValue(forKey: id) { result.append(a) }
         }
-        // Append actions that were not in the saved order, preserving default order.
+        // Append actions that were not in the order, preserving default order.
         for a in list where byID[a.id] != nil {
             result.append(a)
             byID.removeValue(forKey: a.id)

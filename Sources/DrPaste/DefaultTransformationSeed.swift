@@ -182,16 +182,15 @@ enum DefaultTransformationSeed {
                 title: "**md** → 𝐦𝐝  Markdown styles → Unicode",
                 engine: .unicodeStyle,
                 params: ["style": UnicodeFontStyle.markdownAware.rawValue],
-                types: [.text, .markdown]
+                // Markdown only — parsing **bold** / *italic* markup belongs to
+                // Markdown clips, not arbitrary plain text.
+                types: [.markdown]
             ),
-            // Reverse pass — strip any styled Unicode back to plain ASCII.
-            descriptor(
-                id: "builtin.text.font_plain",
-                title: "𝒜 → ABC  Plain ASCII",
-                engine: .unicodeStyle,
-                params: ["style": UnicodeFontStyle.plain.rawValue],
-                types: [.text]
-            ),
+            // (Retired) "𝒜 → ABC  Plain ASCII" (builtin.text.font_plain) —
+            // fully redundant with "Plain text" (builtin.rich.strip_formatting),
+            // which already folds styled Unicode → ASCII for every clip kind,
+            // including plain text carrying pseudo-font glyphs. Dropped from the
+            // seed; existing configs are cleaned by applyRetireFontPlainIfNeeded.
 
             // MARK: text — transliteration
             descriptor(

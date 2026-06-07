@@ -740,6 +740,9 @@ struct ActionEditor: View {
                 if actionID == "builtin.text.unit_conversion" {
                     unitConversionModeField(actionID: actionID)
                 }
+                if actionID == "builtin.text.ipa_local" {
+                    ipaModeField(actionID: actionID)
+                }
             } else {
                 Picker("", selection: $builtinID) {
                     Text("Choose handler…").tag("")
@@ -822,6 +825,28 @@ struct ActionEditor: View {
             .pickerStyle(.radioGroup)
             .labelsHidden()
             Text("“Append” keeps the original and adds the converted value alongside; “Replace” swaps the original for the converted value.")
+                .font(.caption2).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Output-mode picker for the local English IPA action: annotate each word
+    /// with its IPA in brackets, or replace the word with its IPA.
+    @ViewBuilder
+    private func ipaModeField(actionID: String) -> some View {
+        Divider().padding(.vertical, 2)
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Output").font(.caption).foregroundStyle(.secondary)
+            Picker("", selection: Binding(
+                get: { IPALocalSettings.replaceMode(for: actionID) },
+                set: { IPALocalSettings.setReplaceMode($0, for: actionID) }
+            )) {
+                Text("Annotate — The [ðə] quick [ˈkwɪk]").tag(false)
+                Text("Replace — ðə ˈkwɪk").tag(true)
+            }
+            .pickerStyle(.radioGroup)
+            .labelsHidden()
+            Text("“Annotate” keeps each English word and adds its IPA in brackets after it; “Replace” swaps the word for its IPA. Unknown words pass through unchanged.")
                 .font(.caption2).foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }

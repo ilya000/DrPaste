@@ -305,10 +305,6 @@ enum ActionTestSamples {
              "builtin.text.font_upside_down":
             return "The quick brown fox 123"
 
-        case "builtin.text.font_plain":
-            // Stylized input that the action collapses back to plain ASCII.
-            return "𝐓𝐡𝐞 𝐪𝐮𝐢𝐜𝐤 𝐛𝐫𝐨𝐰𝐧 𝐟𝐨𝐱 𝟏𝟐𝟑"
-
         case "builtin.text.font_markdown":
             // Markdown markup that the action converts span-by-span into
             // Unicode pseudo-fonts. Plain text outside markup stays as-is.

@@ -116,7 +116,11 @@ enum ContextDetector {
         let needles = [
             "slack", "discord", "telegram", "whatsapp", "messenger", "instagram",
             "viber", "signal", "wechat", "microsoft teams", "skype", "facebook",
-            "kakaotalk", "kakao", "threads", "mastodon", "matrix", "element"
+            "kakaotalk", "kakao", "threads", "mastodon", "matrix", "element",
+            // Expanded coverage (avoid short ambiguous substrings like "x"/"line").
+            "twitter", "tweetdeck", "reddit", "linkedin", "snapchat",
+            "mattermost", "rocket.chat", "rocketchat", "google chat", "hangouts",
+            "bluesky", "bsky", "tumblr", "threema", "zalo"
         ]
         return haystacks.contains { hay in needles.contains { hay.contains($0) } }
     }

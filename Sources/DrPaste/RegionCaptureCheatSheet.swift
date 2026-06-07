@@ -239,7 +239,7 @@ struct RegionCaptureCheatSheetView: View {
             // bounded; surplus collapses into a "+ N more" line.
             VStack(alignment: .leading, spacing: 4) {
                 if userHotkeys.isEmpty {
-                    cheatRow(combo: "⌥⌘ + <letter>", title: "your custom actions appear here", muted: true)
+                    cheatRow(combo: "⌥⌘ + <letter>", title: "your actions — tap to run · hold to preview", muted: true)
                 } else {
                     ForEach(Array(userHotkeys.prefix(5))) { hk in
                         cheatRow(combo: "⌥⌘\(hk.letter)", title: "\(hk.title) — tap run, hold preview")

@@ -2,9 +2,9 @@
 //  KeyboardLayoutRepairTests.swift
 //  DrPasteTests
 //
-//  Repair logic for text typed in the wrong keyboard layout. The repair only
-//  fires when the character-swapped variant scores higher on the dominant
-//  language spellcheck, so the test inputs deliberately use real words.
+//  Wrong-keyboard-layout repair, both directions and multiple layouts
+//  (Russian, Ukrainian). The repair only fires when the character-swapped
+//  variant scores higher on the appropriate-language spellcheck.
 //
 
 import XCTest
@@ -12,44 +12,68 @@ import XCTest
 
 final class KeyboardLayoutRepairTests: XCTestCase {
 
+    private func repair(_ s: String) -> String { KeyboardLayoutRepair.repair(s) }
+    private func wrong(_ s: String) -> Bool { KeyboardLayoutRepair.looksWrongLayout(s) }
+
+    // MARK: swap primitive
     func testSwapEnglishToRussian() {
-        // "руддщ" is what "hello" becomes when typed on Russian layout.
-        let swapped = KeyboardLayoutRepair.swap("hello")
-        XCTAssertEqual(swapped, "руддщ")
+        XCTAssertEqual(KeyboardLayoutRepair.swap("hello"), "руддщ")
     }
-
     func testSwapIsInvolutive() {
-        // Swapping twice returns the original for any pure-letter input.
         let original = "Hello, world"
-        let twice = KeyboardLayoutRepair.swap(KeyboardLayoutRepair.swap(original))
-        XCTAssertEqual(twice, original)
+        XCTAssertEqual(KeyboardLayoutRepair.swap(KeyboardLayoutRepair.swap(original)), original)
     }
-
     func testSwapPreservesUnknownCharacters() {
-        // Digits and special characters not in the map are passed through.
-        let out = KeyboardLayoutRepair.swap("abc 123!?")
-        XCTAssertTrue(out.contains("123"))
+        XCTAssertTrue(KeyboardLayoutRepair.swap("abc 123!?").contains("123"))
     }
 
-    func testRepairLeavesEnglishAlone() {
-        // Genuine English text should not be "repaired" to gibberish.
-        let input = "The quick brown fox jumps over the lazy dog"
-        let repaired = KeyboardLayoutRepair.repair(input)
-        XCTAssertEqual(repaired, input)
+    // MARK: direction 1 — local text touch-typed on a US/QWERTY layout
+    func testRussianSentenceTypedOnQwerty() {
+        XCTAssertTrue(wrong("Rcnfnb ns pyftim xnj z nen gbie"))
+        XCTAssertEqual(repair("Rcnfnb ns pyftim xnj z nen gbie"),
+                       "Кстати ты знаешь что я тут пишу")
+    }
+    func testUkrainianTypedOnQwerty() {
+        // "привіт світ" touch-typed on QWERTY → "ghbdsn cdsn"
+        XCTAssertTrue(wrong("ghbdsn cdsn"))
+        XCTAssertEqual(repair("ghbdsn cdsn"), "привіт світ")
     }
 
-    func testRepairLeavesRussianAlone() {
-        let input = "Съешь же ещё этих мягких французских булок"
-        let repaired = KeyboardLayoutRepair.repair(input)
-        XCTAssertEqual(repaired, input)
+    // MARK: direction 2 — English touch-typed on a local layout
+    func testEnglishTypedOnRussianLayout() {
+        XCTAssertTrue(wrong("руддщ"))
+        XCTAssertEqual(repair("руддщ"), "hello")
+    }
+    func testEnglishTypedOnUkrainianLayout() {
+        // "this" on the Ukrainian layout uses the і key → "ерші"
+        XCTAssertEqual(repair("ерші"), "this")
     }
 
-    func testLooksWrongLayoutFalseOnShortInput() {
-        // Threshold guards: under 3 chars never triggers.
-        XCTAssertFalse(KeyboardLayoutRepair.looksWrongLayout("ab"))
+    // MARK: genuine text must be left alone (no false positives)
+    func testGenuineEnglishUnchanged() {
+        let s = "The quick brown fox jumps over the lazy dog"
+        XCTAssertEqual(repair(s), s)
+        XCTAssertFalse(wrong("hello world this is fine"))
+    }
+    func testGenuineRussianUnchanged() {
+        let s = "Съешь же ещё этих мягких французских булок"
+        XCTAssertEqual(repair(s), s)
+        XCTAssertFalse(wrong("Привет мир как дела сегодня"))
+    }
+    func testGenuineUkrainianUnchanged() {
+        XCTAssertFalse(wrong("Привіт світ як твої справи"))
+        let s = "Привіт світ як твої справи"
+        XCTAssertEqual(repair(s), s)
     }
 
-    func testLooksWrongLayoutFalseOnGenuineText() {
-        XCTAssertFalse(KeyboardLayoutRepair.looksWrongLayout("hello world this is fine"))
+    func testShortInputNeverTriggers() {
+        XCTAssertFalse(wrong("ab"))
+    }
+
+    /// Confidence guard: a single short token must not trigger just because its
+    /// swap happens to land on a valid word.
+    func testShortSingleTokenNoFalsePositive() {
+        XCTAssertFalse(wrong("ds"))
+        XCTAssertFalse(wrong("abc"))
     }
 }

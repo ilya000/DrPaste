@@ -2694,6 +2694,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             bigHUDState.actionTitleProvider = { [weak self] (id, defaultTitle) in
                 self?.registry.displayTitle(forActionID: id, defaultTitle: defaultTitle) ?? defaultTitle
             }
+            // Yellow-accent conditional (trait-gated) chips so the "surprise"
+            // context-dependent actions stand out from the always-on ones.
+            bigHUDState.traitGatedProvider = { [weak self] id in
+                self?.registry.hasActiveTraits(id) ?? false
+            }
             let view = BigHUDView(
                 state: bigHUDState,
                 onPick: { [weak self] itemIdx, actionIdx in

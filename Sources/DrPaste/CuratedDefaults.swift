@@ -170,8 +170,10 @@ enum CuratedDefaults {
         "ai.text.improve_clarity",
         "ai.code.translate",             // requires a target language
         "ai.code.pretty",                // local "Pretty Code" covers it
-        "ai.image.sketch", "ai.image.watercolor", "ai.image.cartoon",
-        "ai.text.image_whiteboard"       // text→image styles (generate cost)
+        "ai.image.sketch", "ai.image.watercolor", "ai.image.cartoon"
+        // NOTE: ai.text.image_whiteboard is intentionally NOT here — it ships ON
+        // as part of the "wow / first-open" set (see applyWowSetEnableIfNeeded),
+        // so the canonical default and the migration agree.
     ]
 
     static func isEnabledByDefault(_ actionID: String) -> Bool {
