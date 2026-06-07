@@ -1430,7 +1430,11 @@ struct ImagePreview: View {
                 Image(nsImage: img)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: 480, maxHeight: 280)
+                    // Cap to the image's NATIVE size so a small image (e.g. a
+                    // resize result) is shown 1:1 instead of being stretched up
+                    // to fill the 480×280 pane.
+                    .frame(maxWidth: min(480, max(1, img.size.width)),
+                           maxHeight: min(280, max(1, img.size.height)))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)

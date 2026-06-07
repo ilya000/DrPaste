@@ -121,7 +121,7 @@ enum UnitConversion {
         // Temperature
         case celsius, fahrenheit
         // Volume
-        case milliliters, liters, cc, cubicMeters
+        case milliliters, liters, cc, cubicMeters, cubicFeet
         case fluidOunces, gallons, quarts, pints, cups, tablespoons, teaspoons
         // Speed
         case kmh, mph, metersPerSecond, kmPerMin, cmPerSecond
@@ -166,7 +166,7 @@ enum UnitConversion {
             "\\d+\\s*[\(f)]",                        // mixed Unicode: 6½
             #"\d+\s*[/⁄∕]\s*\d+"#,                 // simple ASCII: 3/4
             "[\(f)]",                               // bare Unicode: ½
-                        #"\d{1,3}(?:[ \x{00A0}\x{202F}]\d{3})+(?:[.,]\d+)?"#,  // space thousands: 1 200
+            #"\d{1,3}(?:[ \x{00A0}\x{202F}]\d{3})+(?:[.,]\d+)?"#,  // space thousands: 1 200
             #"\d{1,3}(?:\.\d{3})+,\d+"#,           // EU mixed: 1.200,5
             #"\d{1,3}(?:,\d{3})+(?:\.\d+)?"#,      // 1,760  12,345.5
             #"\d+(?:[.,]\d+)?"#,                    // 5  5.5  5,5
@@ -195,6 +195,7 @@ enum UnitConversion {
             "hectares?", "ha", "acres?",
             // VOLUME (cubic before the length units they share a prefix with)
             #"cubic[\s\-]*met(?:er|re)s?"#, "m³", #"m\^3"#, "cm³", "cc",
+            #"cubic[\s\-]*f(?:ee|oo)t"#, "ft³", #"ft\^3"#,
             #"fluid[\s\-]*ounces?"#, #"fl\s*oz"#, "gallons?", "gal", "quarts?", "qt", "pints?", "pt",
             "tablespoons?", "tbsp", "teaspoons?", "tsp", "cups?",
             #"millilit(?:er|re)s?"#, "ml", #"lit(?:er|re)s?"#, "l",
@@ -205,7 +206,9 @@ enum UnitConversion {
             // WEIGHT
             "kilogrammes?", "kilograms?", "kg",
             #"(?:metric\s+)?tonnes?"#, #"metric\s+tons?"#, #"(?:short\s+|long\s+)?tons?"#,
-            "pounds?", "lbs?", "ounces?", "oz", "stones?", "grams?", "g",
+            // Bare "st" requires a preceding space so "1st"/"21st" ordinals
+            // (digit before "st") are never read as stone.
+            "pounds?", "lbs?", "ounces?", "oz", "stones?", #"(?<=\s)st"#, "grams?", "g",
             // LENGTH
             #"kilomet(?:er|re)s?"#, "km", #"centimet(?:er|re)s?"#, "cm",
             #"millimet(?:er|re)s?"#, "mm", #"met(?:er|re)s?"#, "m",
@@ -237,8 +240,9 @@ enum UnitConversion {
         ]
         // Leading boundary: a measurement must not start in the middle of a
         // larger token — blocks "v3.5.2 m" (→5.2 m), "10E3 m" (→3 m), "$5 lb",
-        // "A4 m". Allows space, "(", a sign, or start-of-string before it.
-        let combined = #"(?<![\w.,$£€#])(?:"# + alternatives.joined(separator: "|") + ")"
+        // "A4 m", "5:30 m" (a time → 30 m). Allows space, "(", a sign, or
+        // start-of-string before it.
+        let combined = #"(?<![\w.,$£€#:])(?:"# + alternatives.joined(separator: "|") + ")"
         return try! NSRegularExpression(pattern: combined, options: [.caseInsensitive])
     }()
 
@@ -501,6 +505,7 @@ enum UnitConversion {
         case "tsp", "teaspoon", "teaspoons":      return .teaspoons
         case "cc", "cm³", "cm3":      return .cc
         case "m³", "m3", "cubicmeter", "cubicmeters", "cubicmetre", "cubicmetres": return .cubicMeters
+        case "ft³", "ft3", "cubicfeet", "cubicfoot": return .cubicFeet
         // Speed
         case "km/h", "kmh", "kph", "kilometerperhour", "kilometersperhour",
              "kilometreperhour", "kilometresperhour": return .kmh
@@ -559,6 +564,10 @@ enum UnitConversion {
         case .teaspoons:   return formatMetric(m.value * 0.00492892, baseUnit: .liters, toMetric: true)
         case .cc:          return formatMetric(m.value / 1000, baseUnit: .liters, toMetric: false)
         case .cubicMeters: return String(format: "%.1f ft³", m.value * 35.3147)
+        case .cubicFeet:
+            let m3 = m.value * 0.0283168
+            return m3 >= 1 ? String(format: "%.2f m³", m3)
+                           : String(format: "%.0f L", m3 * 1000)
         // Speed
         case .kmh: return String(format: "%.1f mph", m.value / 1.609344)
         case .mph: return String(format: "%.1f km/h", m.value * 1.609344)

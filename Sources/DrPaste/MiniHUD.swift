@@ -592,11 +592,13 @@ struct MiniHUDView: View {
                 .frame(maxWidth: 288)
                 .frame(height: min(previewContentCap, 320))
         case .image(let img):
-            // Grow up to ~2/3 screen, keeping aspect ratio.
+            // Grow up to ~2/3 screen, keeping aspect ratio — but never upscale a
+            // small image past its native size (it would look stretched/blurry).
             Image(nsImage: img)
                 .resizable()
                 .scaledToFit()
-                .frame(maxWidth: 288, maxHeight: previewContentCap)
+                .frame(maxWidth: min(288, max(1, img.size.width)),
+                       maxHeight: min(previewContentCap, max(1, img.size.height)))
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         case .files(let paths):
             VStack(alignment: .leading, spacing: 3) {
