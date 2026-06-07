@@ -257,8 +257,9 @@ enum UnicodeStylizer {
     ///      and any other styled forms NFKC leaves alone.
     static func normalize(_ input: String) -> String {
         // Pass 1 — NFKC.
-        var work = input.precomposedStringWithCompatibilityMapping
-        // Pass 2 — custom reverse.
+        let work = input.precomposedStringWithCompatibilityMapping
+        // Pass 2 — custom reverse (upside-down + small-caps glyphs NFKC leaves
+        // alone). All keys are non-ASCII, so plain text is never rewritten.
         var out = ""
         out.reserveCapacity(work.count)
         for ch in work {
@@ -268,29 +269,14 @@ enum UnicodeStylizer {
                 out.append(ch)
             }
         }
-        // NFKC inserts "()" around circled letters (Ⓐ → "(A)") and similar.
-        // Strip those wrappers when they look like our own forward output.
-        work = out
-        out = ""
-        out.reserveCapacity(work.count)
-        var iter = work.makeIterator()
-        var buffer: Character? = iter.next()
-        while let ch = buffer {
-            // Pattern: "(X)" where X is a single ASCII letter or digit ->
-            // unwrap to X. Done greedily on the fly to avoid an extra pass.
-            if ch == "(",
-               let mid = iter.next(),
-               (mid.isLetter || mid.isNumber),
-               mid.isASCII,
-               let close = iter.next(),
-               close == ")" {
-                out.append(mid)
-                buffer = iter.next()
-                continue
-            }
-            out.append(ch)
-            buffer = iter.next()
-        }
+        // NOTE: an earlier "(X)" → X unwrap pass was removed (#A78). It existed
+        // to undo NFKC's expansion of *parenthesized* letter glyphs (⒜ → "(a)"),
+        // but it (a) dropped the character after any "(" that wasn't followed by
+        // the full "(letter)" pattern — corrupting plain code like `foo()` into
+        // `foo(` — and (b) unwrapped legitimate plain "(a)" / "(1)" to "a"/"1".
+        // Circled letters (Ⓐ) already reverse correctly via NFKC alone, so the
+        // only loss is the rare pasted parenthesized-letter glyph, which now
+        // stays "(a)". Preserving literal parentheses matters far more.
         return out
     }
 

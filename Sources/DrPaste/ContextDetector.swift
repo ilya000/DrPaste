@@ -46,6 +46,9 @@ struct ContentContext: OptionSet, Hashable {
     static let lowercaseHeavy   = ContentContext(rawValue: 1 << 23)  // no capitals at all (typed all-lowercase)
     static let fromMailApp      = ContentContext(rawValue: 1 << 24)  // copied from a mail app / webmail
     static let containsHTMLMarkup = ContentContext(rawValue: 1 << 25) // real HTML tags present
+    static let fromChat         = ContentContext(rawValue: 1 << 26)  // copied from a chat / social app
+    static let hasTrackingParams = ContentContext(rawValue: 1 << 27) // URL with utm_/fbclid/… params
+    static let richHasImage     = ContentContext(rawValue: 1 << 28)  // rich text carrying ≥1 embedded image
 }
 
 extension ContentContext {
@@ -64,7 +67,9 @@ extension ContentContext {
             (.uppercaseHeavy, "uppercaseHeavy"), (.lowercaseHeavy, "lowercaseHeavy"),
             (.messySpacing, "messySpacing"),
             (.wrappedLines, "wrappedLines"), (.fromOCR, "fromOCR"),
-            (.fromMailApp, "fromMailApp"), (.containsHTMLMarkup, "containsHTMLMarkup")
+            (.fromMailApp, "fromMailApp"), (.containsHTMLMarkup, "containsHTMLMarkup"),
+            (.fromChat, "fromChat"), (.hasTrackingParams, "hasTrackingParams"),
+            (.richHasImage, "richHasImage")
         ]
         return table.compactMap { contains($0.0) ? $0.1 : nil }
     }
@@ -96,17 +101,42 @@ enum ContextDetector {
         return haystacks.contains { hay in needles.contains { hay.contains($0) } }
     }
 
+    /// Heuristic: was this clip copied from a chat / social-messaging app
+    /// (native or web)? Used to surface playful styling (Unicode fancy fonts,
+    /// UwU) only in a conversational context. Note: this is the *source* app —
+    /// where the text was copied from, not where it will be pasted.
+    static func looksLikeChatSource(_ item: ClipboardItem) -> Bool {
+        let haystacks = [item.sourceAppName, item.sourceWindowTitle, item.sourceBundleID]
+            .compactMap { $0?.lowercased() }
+        guard !haystacks.isEmpty else { return false }
+        // Apple Messages (generic word "messages" is risky, so match precisely).
+        if haystacks.contains(where: { $0.contains("com.apple.mobilesms") || $0 == "messages" }) {
+            return true
+        }
+        let needles = [
+            "slack", "discord", "telegram", "whatsapp", "messenger", "instagram",
+            "viber", "signal", "wechat", "microsoft teams", "skype", "facebook",
+            "kakaotalk", "kakao", "threads", "mastodon", "matrix", "element"
+        ]
+        return haystacks.contains { hay in needles.contains { hay.contains($0) } }
+    }
+
     static func detect(_ item: ClipboardItem) -> ContentContext {
         var ctx = ContentContext()
 
         // Provenance (stored, not derived from content).
         if item.tags.contains(ocrProvenanceTag) { ctx.insert(.fromOCR) }
         if looksLikeMailSource(item) { ctx.insert(.fromMailApp) }
+        if looksLikeChatSource(item) { ctx.insert(.fromChat) }
 
         // Map SemanticKind to the primary flag.
         switch item.semantic {
         case .text:     ctx.insert(.plain)
-        case .richText: ctx.insert(.richText); ctx.insert(.plain)
+        case .richText:
+            ctx.insert(.richText); ctx.insert(.plain)
+            // Rich text carrying ≥1 embedded image → image actions (Rotate,
+            // Grayscale, OCR, …) operate on the embedded picture(s).
+            if RichTextImageExtractor.hasEmbeddedImage(item) { ctx.insert(.richHasImage) }
         case .url:      ctx.insert(.url); ctx.insert(.plain)
         case .email:    ctx.insert(.email); ctx.insert(.plain)
         case .json:     ctx.insert(.json); ctx.insert(.plain)
@@ -169,6 +199,12 @@ enum ContextDetector {
         if trimmed.range(of: #"</[a-zA-Z][\w]*\s*>|<[a-zA-Z][\w]*\s+[\w:.\-]+\s*=|<[a-zA-Z][\w]*\s*/>"#,
                          options: .regularExpression) != nil {
             ctx.insert(.containsHTMLMarkup)
+        }
+        // Tracking parameters in a URL — utm_*, fbclid, gclid, igshid, …. Lets
+        // "Clean URL" surface only when there's actually something to strip.
+        if trimmed.range(of: #"[?&](utm_[a-z]+|fbclid|gclid|gad|gbraid|wbraid|igshid|mc_eid|mkt_tok|yclid|msclkid|_hsenc|_hsmi|ref_src|vero_id|oly_enc_id|spm)="#,
+                         options: [.regularExpression, .caseInsensitive]) != nil {
+            ctx.insert(.hasTrackingParams)
         }
 
         // Messy spacing — a tab, a non-breaking space, or a run of 2+ spaces.

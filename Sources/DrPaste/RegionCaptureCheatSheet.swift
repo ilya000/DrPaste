@@ -225,12 +225,12 @@ struct RegionCaptureCheatSheetView: View {
             // armed state (we let ⌥⌘V/C/X/S cancel the arm and run
             // their normal flow — see EventTapEngine).
             VStack(alignment: .leading, spacing: 4) {
-                cheatRow(combo: "⌥⌘ + drag", title: "capture region", emphasized: true)
-                cheatRow(combo: "⌥⌘V", title: "open BigHUD")
+                cheatRow(combo: "⌥⌘ + drag", title: "capture screen region", emphasized: true)
+                cheatRow(combo: "⌥⌘V", title: "open clipboard HUD")
+                cheatRow(combo: "⌥⌘S", title: "merge clipboard items")
                 cheatRow(combo: "⌥⌘C", title: "quick copy")
                 cheatRow(combo: "⌥⌘X", title: "cut & replace")
-                cheatRow(combo: "⌥⌘S", title: "append copy")
-                cheatRow(combo: "⌥⌘⏎", title: "paste & keep HUD")
+                cheatRow(combo: "⌥⌘⏎", title: "paste & keep HUD open")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 

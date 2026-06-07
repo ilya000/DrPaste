@@ -28,10 +28,14 @@ import CoreImage.CIFilterBuiltins
 
 struct GenerateQRAction: ClipboardAction {
     let id = "builtin.text.generate_qr"
-    let title = "Generate QR code"
+    let title = "QR code"
     let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        context.contains(.qrEligible)
+        guard context.contains(.qrEligible) else { return false }
+        // #A78 — QR is for "scan this link with your phone": URLs only. On
+        // arbitrary short prose a QR chip is noise, and code / JSON / tables are
+        // nonsensical to encode.
+        return item.semantic == .url
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
         guard let text = item.previewText, !text.isEmpty,

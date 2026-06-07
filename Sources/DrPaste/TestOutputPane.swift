@@ -145,8 +145,13 @@ struct TestOutputPane: View {
             switch outcome {
             case .failed(_, let reason, _):
                 failureNotice(reason)
-            case .sideEffect(let desc, _):
-                sideEffectNotice(desc)
+            case .sideEffect(let desc, let perform):
+                sideEffectNotice(desc, perform: perform)
+            // Type Slowly's own preview below already carries a "Typing live …"
+            // header, so the generic "Alternative commit: Type slowly" notice
+            // would be a redundant double header — skip it.
+            case .alternativeCommit(_, .typeSlowly):
+                EmptyView()
             case .alternativeCommit(_, let style):
                 alternativeNotice(style)
             case .preview:
@@ -260,16 +265,27 @@ struct TestOutputPane: View {
         .background(RoundedRectangle(cornerRadius: 4).fill(Color.orange.opacity(0.08)))
     }
 
-    private func sideEffectNotice(_ description: String) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "arrow.right.circle.fill")
-                .foregroundStyle(.blue)
-                .font(.system(size: 11))
-            Text(description)
-                .font(.system(size: 11))
+    private func sideEffectNotice(_ description: String, perform: @escaping () -> Void) -> some View {
+        // A button, not just a label: the side effect (e.g. Reveal in Finder)
+        // fires ONLY when the user clicks it here — never automatically on Run.
+        Button(action: perform) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.right.circle.fill")
+                    .foregroundStyle(.blue)
+                    .font(.system(size: 11))
+                Text(description)
+                    .font(.system(size: 11))
+                Spacer(minLength: 0)
+                Image(systemName: "cursorarrow.click")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(6)
+            .background(RoundedRectangle(cornerRadius: 4).fill(Color.blue.opacity(0.08)))
+            .contentShape(Rectangle())
         }
-        .padding(6)
-        .background(RoundedRectangle(cornerRadius: 4).fill(Color.blue.opacity(0.08)))
+        .buttonStyle(.plain)
+        .help("Click to run this action")
     }
 
     private func alternativeNotice(_ style: CommitStyle) -> some View {

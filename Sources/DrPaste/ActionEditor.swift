@@ -272,6 +272,11 @@ struct ActionEditor: View {
 
     // Common fields
     @State private var title: String = ""
+    /// User-editable one-line description shown as the second line of the
+    /// action row in Settings. Pre-filled from the override (if any) or the
+    /// bundled default on load; cleared back to default on Save when it
+    /// matches the bundled text.
+    @State private var actionDescription: String = ""
     @State private var hotkey: ActionHotkey? = nil
     @State private var applicableTypes: Set<SemanticKind> = []
     @State private var requiredTraits: Set<String> = []   // #A75 "Show when…" conditions
@@ -369,6 +374,7 @@ struct ActionEditor: View {
                         modePicker
                         Divider().padding(.vertical, 2)
                         titleSection
+                        descriptionSection
                         hotkeySection
                         applicableTypesSection
                         if showsTraitConditions { traitConditionsSection }
@@ -480,6 +486,52 @@ struct ActionEditor: View {
         case .builtin: return "Display name"
         case .transformation: return "My transformation"
         case .ai: return "My AI action"
+        }
+    }
+
+    /// The bundled (factory) description for the action currently being edited.
+    /// Built-in → `BuiltinActionMetadata` blurb; transformation → engine
+    /// description; AI → empty (the user writes their own — the list falls
+    /// back to the prompt template when this is blank).
+    private var defaultDescription: String {
+        switch kind {
+        case .builtin:
+            if let id = currentActionID, let d = BuiltinActionMetadata.descriptions[id] { return d }
+            if !builtinID.isEmpty, let d = BuiltinActionMetadata.descriptions[builtinID] { return d }
+            return ""
+        case .transformation:
+            return transformationEngine.description
+        case .ai:
+            if let id = currentActionID, let d = BuiltinActionMetadata.descriptions[id] { return d }
+            return ""
+        }
+    }
+
+    /// Editable one-line description. Shown directly under the Title so the
+    /// identity fields (what it's called / what it does) sit together. The
+    /// text becomes the second line of the action's row in Settings → Actions.
+    private var descriptionSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Description").font(.caption).foregroundStyle(.secondary)
+            TextField("One-line description shown under the title in the list",
+                      text: $actionDescription, axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(1...3)
+            HStack(spacing: 6) {
+                Text("Appears as the second line of this action's row in Settings.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                Spacer()
+                let trimmed = actionDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !defaultDescription.isEmpty && trimmed != defaultDescription {
+                    Button { actionDescription = defaultDescription } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "arrow.counterclockwise")
+                            Text("Reset")
+                        }
+                    }
+                    .buttonStyle(.borderless).controlSize(.small)
+                }
+            }
         }
     }
 
@@ -671,7 +723,7 @@ struct ActionEditor: View {
     private var builtinConfig: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Built-in handler").font(.caption).foregroundStyle(.secondary)
-            if case .editBuiltin(let actionID, _, let description) = context {
+            if case .editBuiltin(let actionID, _, _) = context {
                 HStack {
                     Image(systemName: "lock.fill").foregroundStyle(.secondary)
                     Text(actionID).font(.system(size: 12, design: .monospaced))
@@ -680,13 +732,13 @@ struct ActionEditor: View {
                 }
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.06)))
-                if !description.isEmpty {
-                    Text(description).font(.caption)
-                        .foregroundStyle(.primary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                // Description is now an editable field at the top of the
+                // editor (descriptionSection) — no read-only repeat here.
                 if Self.resizeActionIDs.contains(actionID) {
                     resizeTargetField(actionID: actionID)
+                }
+                if actionID == "builtin.text.unit_conversion" {
+                    unitConversionModeField(actionID: actionID)
                 }
             } else {
                 Picker("", selection: $builtinID) {
@@ -747,6 +799,29 @@ struct ActionEditor: View {
                     .labelsHidden()
             }
             Text("Images larger than this on their longer side are scaled down to fit. Smaller images pass through unchanged.")
+                .font(.caption2).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Output-mode picker for the Convert-units action: append the conversion
+    /// in parentheses, or replace the original measurement. Writes through
+    /// `UnitConversionSettings` immediately.
+    @ViewBuilder
+    private func unitConversionModeField(actionID: String) -> some View {
+        Divider().padding(.vertical, 2)
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Output").font(.caption).foregroundStyle(.secondary)
+            Picker("", selection: Binding(
+                get: { UnitConversionSettings.replaceMode(for: actionID) },
+                set: { UnitConversionSettings.setReplaceMode($0, for: actionID) }
+            )) {
+                Text("Append in parentheses — 5 km (3.1 mi)").tag(false)
+                Text("Replace — 3.1 mi").tag(true)
+            }
+            .pickerStyle(.radioGroup)
+            .labelsHidden()
+            Text("“Append” keeps the original and adds the converted value alongside; “Replace” swaps the original for the converted value.")
                 .font(.caption2).foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -1862,6 +1937,15 @@ struct ActionEditor: View {
             aiProviderID = d.providerID
             aiKind = d.kind     // image-mode picker honours existing descriptor
         }
+        // Description field: user override if present, otherwise the bundled
+        // default text (edit mode only — a brand-new action starts blank so
+        // the placeholder invites the user to write one). `defaultDescription`
+        // is read AFTER the switch so it sees the loaded kind / engine / id.
+        if let id = currentActionID, let override = registry.customDescription(forActionID: id) {
+            actionDescription = override
+        } else if isEditing {
+            actionDescription = defaultDescription
+        }
         // Pre-fill the Test panel Input. Two render modes:
         //
         //   • Image-applicable actions (OCR / Grayscale / AI: Watercolor
@@ -2016,7 +2100,11 @@ struct ActionEditor: View {
         for kind in allTypes {
             let sample = SettingsSamples.sample(for: kind)
             let ctx = ContextDetector.detect(sample)
-            if action.isApplicable(item: sample, context: ctx) {
+            // Codex #9 — use appliesToContentType (TYPE-only), not isApplicable.
+            // The latter also applies the "Show this action when…" trait gate,
+            // so a chat-gated action (Unicode Fancy) inferred zero types on
+            // trait-less samples and fell back to [.text], misreporting scope.
+            if action.appliesToContentType(item: sample, context: ctx) {
                 result.insert(kind)
             }
         }
@@ -2057,18 +2145,14 @@ struct ActionEditor: View {
                 registry.setCustomTitle(trimmedTitle, forActionID: targetID)
             }
             registry.setHotkey(hotkey, for: targetID)
-            // Picking a built-in handler in "+ New" mode is an explicit
-            // gesture that the user wants this action in their list —
-            // even if it was disabled by curated defaults. Without this,
-            // Save would silently no-op on disabled handlers and feel
-            // broken ("I picked Save and nothing happened"). Edit-mode
-            // saves leave the enabled flag alone — the user can still
-            // disable a built-in via the action row toggle afterwards.
-            if case .createNew = context {
-                registry.setEnabled(true, for: targetID)
-            }
+            // Saving an action is an explicit "I want this active" gesture —
+            // Save always enables (per product decision). The user can still
+            // disable it afterwards via the action row toggle.
+            registry.setEnabled(true, for: targetID)
 
         case .transformation:
+            // Save always enables (product decision — "по сохранению надо
+            // включать"). The user can disable afterwards via the row toggle.
             let descriptor = CustomTransformationDescriptor(
                 id: targetID,
                 title: trimmedTitle,
@@ -2093,6 +2177,7 @@ struct ActionEditor: View {
             // self-consistent).
             let resolvedApplicableTypes: [String] =
                 aiKind == .image ? ["image"] : appliesArray
+            // Save always enables (see builtin/transformation cases above).
             let descriptor = CustomAIDescriptor(
                 id: targetID,
                 title: trimmedTitle,
@@ -2106,6 +2191,17 @@ struct ActionEditor: View {
             )
             registry.upsertCustomAI(descriptor)
             registry.setHotkey(hotkey, for: targetID)
+        }
+        // Description override: store only a deliberate change. Clear the
+        // override when the field is empty or still equals the bundled
+        // default — so the action keeps tracking future default updates
+        // instead of freezing a copy of today's text.
+        let trimmedDesc = actionDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedDefault = defaultDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedDesc.isEmpty || trimmedDesc == trimmedDefault {
+            registry.setCustomDescription(nil, forActionID: targetID)
+        } else {
+            registry.setCustomDescription(trimmedDesc, forActionID: targetID)
         }
         // Persist the test-panel Input sample only if the user actually
         // modified it this session. Diffing against the originalTestSample
@@ -2218,25 +2314,33 @@ struct ActionEditor: View {
                 }
             }
         case .transformation:
-            do {
-                let result = try TransformationRuntime.apply(engine: transformationEngine,
-                                                              input: testInput,
-                                                              params: transformationParams)
-                testOutcome = .preview(makeTextItem(result, from: inputItem))
-            } catch let TransformationError.invalidRegex(msg) {
-                testOutcome = .failed(
-                    original: inputItem,
-                    reason: "Invalid regex: \(msg)",
-                    recovery: nil
-                )
-            } catch {
-                testOutcome = .failed(
-                    original: inputItem,
-                    reason: error.localizedDescription,
-                    recovery: nil
-                )
+            // Codex #8 — route through CustomTransformationAction.apply (not
+            // TransformationRuntime.apply directly) so the test honours the SAME
+            // rich-text-preserving path the live HUD uses. Build the action from
+            // the CURRENT editor state so unsaved engine/param edits are tested.
+            let desc = CustomTransformationDescriptor(
+                id: currentActionID ?? "user.transform.test",
+                title: title.isEmpty ? "Test" : title,
+                engineID: transformationEngine.rawValue,
+                parameters: transformationParams,
+                applicableTypes: applicableTypes.map { $0.rawValue }.sorted(),
+                enabled: true,
+                requiredTraits: [],
+                forbiddenTraits: []
+            )
+            let kinds = Set(desc.applicableTypes.compactMap { SemanticKind(rawValue: $0) })
+            let action = CustomTransformationAction(
+                id: desc.id, title: desc.title, descriptor: desc,
+                applicableSet: kinds.isEmpty ? [.text, .richText, .markdown, .code] : kinds)
+            testTask = Task {
+                let outcome = await action.apply(item: inputItem, context: ctx)
+                await MainActor.run {
+                    guard !Task.isCancelled else { return }
+                    testOutcome = outcome
+                    testRunning = false
+                    testTask = nil
+                }
             }
-            testRunning = false
         case .ai:
             // Set up the AI inflight chrome so the Output pane shows the
             // same "Provider · Model · 4.2s" loading state as BigHUD/MiniHUD.

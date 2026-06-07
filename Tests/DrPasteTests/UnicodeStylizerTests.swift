@@ -21,6 +21,17 @@ final class UnicodeStylizerTests: XCTestCase {
         XCTAssertEqual(UnicodeStylizer.apply(to: "Ⓗⓔⓛⓛⓞ", style: .plain), "Hello")
     }
 
+    // #A78 — regression: the removed "(X)" unwrap pass used to DROP the
+    // character after any "(" not followed by a full "(letter)" (corrupting
+    // `foo()` → `foo(`) and to unwrap legitimate "(a)" / "(1)" to "a" / "1".
+    // Literal parentheses must now survive normalization untouched.
+    func testNormalizePreservesLiteralParentheses() {
+        for s in ["func foo() {", "a (b) c", "(1) (2) (3)", "call(x, y)", "()", "(a)"] {
+            XCTAssertEqual(UnicodeStylizer.normalize(s), s, "parens corrupted in: \(s)")
+            XCTAssertEqual(UnicodeStylizer.apply(to: s, style: .plain), s, "Plain ASCII corrupted: \(s)")
+        }
+    }
+
     func testMarkdownAwareAppliesInlineStylesAndDropsMarkup() {
         let input = "**bold** *italic* `code` ~~strike~~"
         let out = UnicodeStylizer.applyMarkdown(to: input)

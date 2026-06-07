@@ -164,6 +164,25 @@ final class ContextDetectorTests: XCTestCase {
         XCTAssertFalse(ContextDetector.detect(item(.code, text: "vector<int> v;")).contains(.containsHTMLMarkup))
     }
 
+    func testFromChatSource() {
+        func src(_ app: String?, _ win: String? = nil) -> ClipboardItem {
+            ClipboardItem(id: UUID(), semantic: .text, createdAt: Date(),
+                          representations: [:], typesOrdered: [], previewText: "hi",
+                          previewImageRel: nil, sourceBundleID: nil, sourceAppName: app,
+                          sourceWindowTitle: win, tags: [])
+        }
+        XCTAssertTrue(ContextDetector.detect(src("Slack")).contains(.fromChat))
+        XCTAssertTrue(ContextDetector.detect(src("Telegram")).contains(.fromChat))
+        XCTAssertTrue(ContextDetector.detect(src("Safari", "WhatsApp")).contains(.fromChat))
+        XCTAssertFalse(ContextDetector.detect(src("Xcode", "main.swift")).contains(.fromChat))
+    }
+
+    func testHasTrackingParams() {
+        XCTAssertTrue(ContextDetector.detect(item(.url, text: "https://x.com/a?utm_source=nl&id=1")).contains(.hasTrackingParams))
+        XCTAssertTrue(ContextDetector.detect(item(.url, text: "https://x.com/a?fbclid=abc")).contains(.hasTrackingParams))
+        XCTAssertFalse(ContextDetector.detect(item(.url, text: "https://x.com/a?id=1&page=2")).contains(.hasTrackingParams))
+    }
+
     func testEmptyAndWhitespaceText() {
         XCTAssertFalse(ContextDetector.detect(item(.text, text: "")).contains(.qrEligible))
         XCTAssertFalse(ContextDetector.detect(item(.text, text: "   \n  ")).contains(.multiline))

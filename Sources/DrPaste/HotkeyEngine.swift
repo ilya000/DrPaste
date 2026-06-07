@@ -62,6 +62,24 @@ protocol HotkeyEngineDelegate: AnyObject {
     func hotkeyEngineDidQuickCopy()
     func hotkeyEngineDidDeleteFocused()
     func hotkeyEngineDidAppendCopy()
+    /// #A12 — ⌥⌘C was held past the 250 ms grace period (quick copy already
+    /// fired). Show a decorative MiniHUD preview of what was just copied.
+    func hotkeyEngineDidHoldCopyPreview()
+    /// #A12 — ⌥⌘ released after a copy-hold preview, or the preview was
+    /// superseded (e.g. ⌥⌘V). Dismiss the MiniHUD; the item stays in history.
+    func hotkeyEngineDidEndCopyPreview()
+    /// #A12 — Esc during a copy-hold preview. Revert: pop the just-copied item
+    /// off the top of history and dismiss the preview.
+    func hotkeyEngineDidRevertCopy()
+    /// #A12 — ⌥⌘V pressed while a copy-hold preview is on screen: animate the
+    /// MiniHUD into the BigHUD (it's being promoted), rather than a plain hide.
+    /// Fired just before `hotkeyEngineDidSummon`.
+    func hotkeyEngineDidPromoteCopyPreview()
+    /// #A12 — ⌥⌘ released (bare modifier up). Used to dismiss the ⌥⌘S append
+    /// preview so it behaves like the copy preview: visible while ⌥⌘ is held,
+    /// gone on release. Fires on every release; the delegate no-ops when no
+    /// append preview is showing.
+    func hotkeyEngineDidReleaseModifiers()
     /// Fired when ⌥⌘S is pressed while the HUD is active. Drives the in-HUD
     /// clip accumulator (different code path from the outside-HUD Append Copy
     /// which goes through hotkeyEngineDidAppendCopy).
@@ -243,6 +261,16 @@ final class EventTapEngine: HotkeyEngine {
     /// Serialises access to regionCaptureState / generation across the
     /// CGEventTap callback thread and the main-queue grace-expiry block.
     private let regionCaptureQueue = DispatchQueue(label: "drpaste.eventtap.regioncapture")
+
+    // MARK: - #A12 copy-hold preview state
+
+    /// #A12 — ⌥⌘C hold-preview state machine, same shape as the region-capture
+    /// one. `pending` = quick copy fired, grace timer running; `active` = grace
+    /// expired with ⌥⌘ still held, MiniHUD preview on screen.
+    private enum CopyHoldState { case idle, pending, active }
+    private var copyHoldState: CopyHoldState = .idle
+    private var copyHoldGeneration: UInt64 = 0
+    private let copyHoldQueue = DispatchQueue(label: "drpaste.eventtap.copyhold")
 
     init(config: HotkeyConfig) { self.config = config }
 
@@ -426,6 +454,41 @@ final class EventTapEngine: HotkeyEngine {
                 break
             }
 
+            // #A12 — Esc during a copy-hold preview reverts the copy (pop the
+            // just-added item) and swallows the key.
+            if Int(kc) == kVK_Escape {
+                var shouldRevert = false
+                copyHoldQueue.sync {
+                    if self.copyHoldState == .active {
+                        self.copyHoldState = .idle
+                        self.copyHoldGeneration &+= 1
+                        shouldRevert = true
+                    }
+                }
+                if shouldRevert {
+                    DispatchQueue.main.async { self.delegate?.hotkeyEngineDidRevertCopy() }
+                    return nil
+                }
+            }
+
+            // #A12 — courtesy: if the user presses ⌥⌘+arrow while the copy-hold
+            // MiniHUD is up, they're treating it like the BigHUD (trying to
+            // navigate). Promote them straight into the BigHUD (same animated
+            // transition as ⌥⌘V) and swallow the key.
+            switch Int(kc) {
+            case kVK_UpArrow, kVK_DownArrow, kVK_LeftArrow, kVK_RightArrow:
+                var promote = false
+                copyHoldQueue.sync { if self.copyHoldState == .active { promote = true } }
+                if promote {
+                    promoteCopyHoldToBigHUD()
+                    bigHUDIsActive = true
+                    DispatchQueue.main.async { self.delegate?.hotkeyEngineDidSummon(reason: .paste) }
+                    return nil
+                }
+            default:
+                break
+            }
+
             if bigHUDIsActive {
                 switch Int(kc) {
                 case kVK_UpArrow:
@@ -493,6 +556,11 @@ final class EventTapEngine: HotkeyEngine {
             // not active
             if modsPresent {
                 if kc == config.pasteKeyCode {
+                    // #A12 — ⌥⌘V while a copy-hold preview is up: animate the
+                    // MiniHUD into the BigHUD, then open it. (Conservative
+                    // morph; the promote delegate runs before summon so the
+                    // mini fades as the big appears.)
+                    promoteCopyHoldToBigHUD()
                     bigHUDIsActive = true
                     DispatchQueue.main.async { self.delegate?.hotkeyEngineDidSummon(reason: .paste) }
                     return nil
@@ -504,6 +572,7 @@ final class EventTapEngine: HotkeyEngine {
                 }
                 if kc == config.copyKeyCode {
                     DispatchQueue.main.async { self.delegate?.hotkeyEngineDidQuickCopy() }
+                    scheduleCopyHoldPreview()   // #A12 — hold → preview
                     return nil
                 }
                 if kc == config.appendKeyCode {
@@ -522,7 +591,17 @@ final class EventTapEngine: HotkeyEngine {
                     holdPreviewActionID = self.holdPreviewActionHotkeys[UInt16(kc)]
                 }
                 if let actionID = holdPreviewActionID {
-                    schedulePendingActionFire(actionID: actionID)
+                    // Settings opt-out: if the user disabled the hold-preview,
+                    // fire the action immediately (like a tap) — no grace timer,
+                    // no BigHUD on hold.
+                    if UserDefaults.standard.bool(forKey: PreferenceKeys.actionHotkeyHoldPreviewDisabled) {
+                        DispatchQueue.main.async {
+                            self.delegate?.hotkeyEngineDidFireActionHotkey(actionID: actionID,
+                                                                           holdPreview: false)
+                        }
+                    } else {
+                        schedulePendingActionFire(actionID: actionID)
+                    }
                     return nil
                 }
             }
@@ -631,6 +710,27 @@ final class EventTapEngine: HotkeyEngine {
                 scheduleRegionCaptureArm()
             }
 
+            // #A12 — copy-hold preview: releasing ⌥⌘ dismisses any preview and
+            // cancels a still-pending grace. Notify on ANY non-idle state (not
+            // just active) so a re-copy that left an earlier preview on screen
+            // can't orphan it — `hide()` is idempotent.
+            if !modsPresent {
+                var shouldDismiss = false
+                copyHoldQueue.sync {
+                    if self.copyHoldState != .idle {
+                        shouldDismiss = true
+                        self.copyHoldState = .idle
+                        self.copyHoldGeneration &+= 1
+                    }
+                }
+                if shouldDismiss {
+                    DispatchQueue.main.async { self.delegate?.hotkeyEngineDidEndCopyPreview() }
+                }
+                // #A12 — generic "⌥⌘ up" signal so the append preview hides on
+                // release too (no-op when nothing append-y is showing).
+                DispatchQueue.main.async { self.delegate?.hotkeyEngineDidReleaseModifiers() }
+            }
+
             if bigHUDIsActive {
                 if !modsPresent {
                     bigHUDIsActive = false
@@ -710,6 +810,50 @@ final class EventTapEngine: HotkeyEngine {
                     holdPreview: true
                 )
             }
+        }
+    }
+
+    /// #A12 — arm the copy-hold preview grace timer after a ⌥⌘C quick copy.
+    /// If the grace expires with state still `.pending` (⌥⌘ still held — a
+    /// release would have reset it to `.idle`), transition to `.active` and ask
+    /// the delegate to show the MiniHUD preview. Same generation-counter guard
+    /// as the region-capture arm.
+    private func scheduleCopyHoldPreview() {
+        var generation: UInt64 = 0
+        copyHoldQueue.sync {
+            self.copyHoldState = .pending
+            self.copyHoldGeneration &+= 1
+            generation = self.copyHoldGeneration
+        }
+        let deadline = DispatchTime.now() + Self.holdPreviewGracePeriod
+        DispatchQueue.main.asyncAfter(deadline: deadline) { [weak self] in
+            guard let self = self else { return }
+            var shouldShow = false
+            self.copyHoldQueue.sync {
+                if self.copyHoldGeneration == generation, self.copyHoldState == .pending {
+                    self.copyHoldState = .active
+                    shouldShow = true
+                }
+            }
+            if shouldShow { self.delegate?.hotkeyEngineDidHoldCopyPreview() }
+        }
+    }
+
+    /// #A12 — ⌥⌘V superseded the copy-hold preview: promote it into the BigHUD.
+    /// If a preview was actually on screen (`.active`), ask the delegate to
+    /// ANIMATE it into the BigHUD; otherwise (`.pending`, nothing shown yet)
+    /// just reset state. Safe to call from the CGEventTap thread.
+    private func promoteCopyHoldToBigHUD() {
+        var wasActive = false
+        copyHoldQueue.sync {
+            if self.copyHoldState == .active { wasActive = true }
+            if self.copyHoldState != .idle {
+                self.copyHoldState = .idle
+                self.copyHoldGeneration &+= 1
+            }
+        }
+        if wasActive {
+            DispatchQueue.main.async { self.delegate?.hotkeyEngineDidPromoteCopyPreview() }
         }
     }
 

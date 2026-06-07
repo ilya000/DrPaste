@@ -26,15 +26,15 @@ struct TableToJSONAction: ClipboardAction {
         context.contains(.table)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        let lines = (item.previewText ?? "").split(separator: "\n").map(String.init)
-        guard lines.count >= 2 else {
+        // Codex sweep — robust parse (quoted fields with embedded delimiters /
+        // newlines survive) via the single shared CSVParser.
+        let source = item.previewText ?? ""
+        let table = CSVParser.parse(source, delimiter: CSVParser.detectDelimiter(source))
+        guard table.count >= 2, let headers = table.first else {
             return .failed(original: item, reason: "Need at least 2 rows", recovery: nil)
         }
-        let sep = lines[0].contains("\t") ? "\t" : ","
-        let headers = lines[0].components(separatedBy: sep)
         var rows: [[String: String]] = []
-        for line in lines.dropFirst() {
-            let values = line.components(separatedBy: sep)
+        for values in table.dropFirst() {
             var row: [String: String] = [:]
             for (i, h) in headers.enumerated() {
                 row[h] = i < values.count ? values[i] : ""
@@ -56,16 +56,19 @@ struct TableToMarkdownAction: ClipboardAction {
         context.contains(.table)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        let lines = (item.previewText ?? "").split(separator: "\n").map(String.init)
-        guard lines.count >= 2 else {
+        // Codex sweep — shared robust parser (quoted fields survive).
+        let source = item.previewText ?? ""
+        let rows = CSVParser.parse(source, delimiter: CSVParser.detectDelimiter(source))
+        guard rows.count >= 2 else {
             return .failed(original: item, reason: "Need at least 2 rows", recovery: nil)
         }
-        let sep = lines[0].contains("\t") ? "\t" : ","
-        let rows = lines.map { $0.components(separatedBy: sep) }
         let cols = rows[0].count
-        let header = "| " + rows[0].joined(separator: " | ") + " |"
+        // Markdown cells: escape the pipe so a value containing "|" doesn't
+        // break the table layout.
+        func cell(_ s: String) -> String { s.replacingOccurrences(of: "|", with: "\\|") }
+        let header = "| " + rows[0].map(cell).joined(separator: " | ") + " |"
         let divider = "| " + Array(repeating: "---", count: cols).joined(separator: " | ") + " |"
-        let body = rows.dropFirst().map { "| " + $0.joined(separator: " | ") + " |" }
+        let body = rows.dropFirst().map { "| " + $0.map(cell).joined(separator: " | ") + " |" }
         let result = ([header, divider] + body).joined(separator: "\n")
         return .preview(makeTextItem(result, from: item))
     }
@@ -82,27 +85,14 @@ struct RichTextToMarkdownAction: ClipboardAction {
         context.contains(.richText)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        // Minimal conversion: RTF → AttributedString → emit Markdown markers
-        // (bold/italic only). A full converter would require swift-markdown.
-        guard let rel = item.representations["public.rtf"],
-              let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
-              let attr = try? NSAttributedString(data: data,
-                                                  options: [.documentType: NSAttributedString.DocumentType.rtf],
-                                                  documentAttributes: nil) else {
+        // Codex #3 — load via the shared loader (flat-RTFD aware), and use the
+        // fuller RichTextHelpers converter (bold / italic / monospace / headings
+        // / links) rather than the old bold+italic-only inline pass.
+        guard let attr = RichTextHelpers.loadAttributed(from: item),
+              let md = RichTextHelpers.attributedStringToMarkdown(attr, escapeLiterals: true) else {
             return .preview(makePlainText(item))
         }
-        var result = ""
-        attr.enumerateAttributes(in: NSRange(location: 0, length: attr.length), options: []) { attrs, range, _ in
-            let substring = attr.attributedSubstring(from: range).string
-            let font = attrs[.font] as? NSFont
-            let isBold = font?.fontDescriptor.symbolicTraits.contains(.bold) ?? false
-            let isItalic = font?.fontDescriptor.symbolicTraits.contains(.italic) ?? false
-            var part = substring
-            if isBold { part = "**\(part)**" }
-            if isItalic { part = "*\(part)*" }
-            result += part
-        }
-        return .preview(makeTextItem(result, from: item))
+        return .preview(makeTextItem(md, from: item))
     }
 }
 
@@ -126,14 +116,12 @@ struct RichTextToHTMLAction: ClipboardAction {
         context.contains(.richText)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        guard let rel = item.representations["public.rtf"],
-              let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
-              let attr = try? NSAttributedString(data: data,
-                                                  options: [.documentType: NSAttributedString.DocumentType.rtf],
-                                                  documentAttributes: nil),
+        // Codex #3 — flat-RTFD aware loader (clips with attachments are stored
+        // as com.apple.flat-rtfd, not public.rtf).
+        guard let attr = RichTextHelpers.loadAttributed(from: item),
               let html = RichTextHelpers.attributedStringToHTML(attr)
         else {
-            return .failed(original: item, reason: "No RTF representation found", recovery: nil)
+            return .failed(original: item, reason: "No rich-text representation found", recovery: nil)
         }
         return .preview(makeTextItem(html, from: item))
     }
@@ -147,17 +135,10 @@ struct RichTextToWikiAction: ClipboardAction {
         context.contains(.richText)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        let attr: NSAttributedString
-        if let rel = item.representations["public.rtf"],
-           let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
-           let parsed = try? NSAttributedString(data: data,
-                                                options: [.documentType: NSAttributedString.DocumentType.rtf],
-                                                documentAttributes: nil) {
-            attr = parsed
-        } else {
-            attr = NSAttributedString(string: item.previewText ?? "")
-        }
-        let wiki = RichTextHelpers.attributedStringToWiki(attr)
+        // Codex #3 — flat-RTFD aware loader.
+        let attr = RichTextHelpers.loadAttributed(from: item)
+            ?? NSAttributedString(string: item.previewText ?? "")
+        let wiki = RichTextHelpers.attributedStringToWiki(attr, escapeLiterals: true)
         return .preview(makeTextItem(wiki, from: item))
     }
 }
@@ -176,7 +157,18 @@ struct RichTextToWikiAction: ClipboardAction {
 struct PasteAsTextAction: ClipboardAction {
     let id = "builtin.rich.strip_formatting"; let title = "Plain text"; let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        context.contains(.plain) || context.contains(.richText)
+        // #A78 — only surface when there is actually something to strip:
+        //   • rich text  → drop RTF/HTML styling
+        //   • markdown   → drop #, **, [](), … markup
+        //   • plain text / code carrying styled Unicode (𝐁𝐨𝐥𝐝 / Ⓐ / …) → fold it
+        // On already-plain prose it's a no-op, so it no longer clutters the strip.
+        if item.semantic == .richText || item.semantic == .markdown { return true }
+        guard context.contains(.plain) else { return false }
+        let text = item.previewText ?? ""
+        // Bound the scan — huge plain clips rarely carry pseudo-font styling and
+        // we don't want an O(n) fold on every applicability check.
+        guard !text.isEmpty, text.count < 5000 else { return false }
+        return UnicodeStylizer.normalize(text) != text
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
         var text = item.previewText ?? ""
@@ -212,7 +204,14 @@ struct RichTextToUnicodeStyledAction: ClipboardAction {
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         // Rich text OR Markdown — both carry bold/italic/code that map onto the
         // Unicode pseudo-fonts. Markdown source is parsed to an attributed
-        // string first (`**bold**` → 𝐛𝐨𝐥𝐝).
+        // string first (`**bold**` → 𝐛𝐨𝐥𝐝). Gated to a chat / social context so
+        // it doesn't clutter every rich/markdown clip.
+        guard context.contains(.fromChat) else { return false }
+        return context.contains(.richText) || item.semantic == .markdown
+    }
+    // Codex #9 — type-only membership (drops the fromChat gate) so the editor's
+    // "Applies to" inference reports rich text / markdown instead of nothing.
+    func appliesToContentType(item: ClipboardItem, context: ContentContext) -> Bool {
         context.contains(.richText) || item.semantic == .markdown
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
@@ -220,14 +219,10 @@ struct RichTextToUnicodeStyledAction: ClipboardAction {
         if item.semantic == .markdown {
             let src = item.previewText ?? ""
             attr = RichTextHelpers.markdownToAttributedString(src) ?? NSAttributedString(string: src)
-        } else if let rel = item.representations["public.rtf"],
-              let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
-              let parsed = try? NSAttributedString(data: data,
-                                                  options: [.documentType: NSAttributedString.DocumentType.rtf],
-                                                  documentAttributes: nil) {
-            attr = parsed
+        } else if let parsed = RichTextHelpers.loadAttributed(from: item) {
+            attr = parsed   // Codex #3 — flat-RTFD aware
         } else {
-            return .failed(original: item, reason: "No RTF representation found", recovery: nil)
+            return .failed(original: item, reason: "No rich-text representation found", recovery: nil)
         }
         var result = ""
         attr.enumerateAttributes(in: NSRange(location: 0, length: attr.length), options: []) { attrs, range, _ in

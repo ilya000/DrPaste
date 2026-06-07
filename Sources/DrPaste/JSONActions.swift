@@ -28,9 +28,19 @@ struct JSONFlattenAction: ClipboardAction {
               let obj = try? JSONSerialization.jsonObject(with: data, options: [.allowFragments]) else {
             return .failed(original: item, reason: "Couldn't parse as JSON", recovery: nil)
         }
-        let flat = flatten(obj, prefix: "")
-        let json = flat.map { "\"\($0.key)\": \(encodeValue($0.value))" }.sorted()
-        let result = "{\n  " + json.joined(separator: ",\n  ") + "\n}"
+        // Codex sweep — build a real dictionary and let JSONSerialization do the
+        // escaping. The old hand-rolled encoder did `"\(s)"` for strings and
+        // `"\(v)"` for everything else, so any key/value containing a quote,
+        // backslash or newline produced INVALID JSON, and booleans serialised as
+        // 1/0 and arrays as Swift's `[1, 2]` description.
+        var flatDict: [String: Any] = [:]
+        for (k, v) in flatten(obj, prefix: "") { flatDict[k] = v }
+        guard JSONSerialization.isValidJSONObject(flatDict),
+              let out = try? JSONSerialization.data(withJSONObject: flatDict,
+                                                    options: [.prettyPrinted, .sortedKeys]),
+              let result = String(data: out, encoding: .utf8) else {
+            return .failed(original: item, reason: "Couldn't serialize flattened JSON", recovery: nil)
+        }
         return .preview(makeTextItem(result, from: item))
     }
     private func flatten(_ obj: Any, prefix: String) -> [(key: String, value: Any)] {
@@ -40,11 +50,6 @@ struct JSONFlattenAction: ClipboardAction {
             }
         }
         return [(prefix, obj)]
-    }
-    private func encodeValue(_ v: Any) -> String {
-        if let s = v as? String { return "\"\(s)\"" }
-        if v is NSNull { return "null" }
-        return "\(v)"
     }
 }
 

@@ -402,15 +402,18 @@ enum AIImageHTTP {
     }
 
     /// Load the source PNG bytes for `item`, in priority order:
-    /// 1. The preview image on disk (highest quality, full-resolution).
-    /// 2. Raw representations the watcher captured (public.png / .tiff
-    ///    / .jpeg / .heic — re-encoded to PNG if needed).
-    /// 3. First embedded image from a rich-text attachment.
+    /// 1. Raw full-resolution representations the watcher captured (public.png
+    ///    / .tiff / .jpeg / .heic — re-encoded to PNG if needed).
+    /// 2. First embedded image from a rich-text attachment (original bytes).
+    /// 3. The preview thumbnail — LAST resort only.
+    ///
+    /// Codex regression — this used to read `previewImageRel` FIRST. But that's
+    /// a downscaled ≤600 pt thumbnail (PreviewSynthesizer.imageRelative), not
+    /// "highest quality" as the old comment claimed, so AI edits (watercolor /
+    /// sketch / cartoon) ran on a 600 px thumbnail of a 5K screenshot and
+    /// produced low-resolution output. Same lesson as #A48 for local image
+    /// actions: operate on the ORIGINAL bytes.
     static func sourcePNG(for item: ClipboardItem) -> Data? {
-        if let rel = item.previewImageRel,
-           let data = try? Data(contentsOf: AppStorage.imagesDir.appendingPathComponent(rel)) {
-            return reEncodeToPNG(data)
-        }
         for type in ["public.png", "public.tiff", "public.jpeg", "public.heic"] {
             if let rel = item.representations[type],
                let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)) {
@@ -423,6 +426,10 @@ enum AIImageHTTP {
            let bmp = NSBitmapImageRep(data: tiff),
            let png = bmp.representation(using: .png, properties: [:]) {
             return png
+        }
+        if let rel = item.previewImageRel,
+           let data = try? Data(contentsOf: AppStorage.imagesDir.appendingPathComponent(rel)) {
+            return reEncodeToPNG(data)
         }
         return nil
     }

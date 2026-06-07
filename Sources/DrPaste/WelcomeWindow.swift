@@ -93,18 +93,18 @@ struct WelcomeView: View {
             header
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 22) {
                     axWarningSection
-                    description
-                    featuresSection
-                    hotkeysSection
+                    workflowsSection
+                    primaryHotkeySection
                 }
-                .padding(24)
+                .padding(.horizontal, 28)
+                .padding(.vertical, 24)
             }
             Divider()
             footer
         }
-        .frame(width: 600, height: 620)
+        .frame(width: 560, height: 580)
         .background(Color(NSColor.windowBackgroundColor))
     }
 
@@ -165,148 +165,83 @@ struct WelcomeView: View {
         NSApp.terminate(nil)
     }
 
+    // Hero — the product promise, not a feature list. (#welcome-redesign)
     private var header: some View {
-        HStack(spacing: 16) {
+        HStack(alignment: .top, spacing: 16) {
             Image(nsImage: AppBrand.nsIcon)
                 .resizable()
-                .frame(width: 72, height: 72)
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Welcome to \(AppBrand.name)")
-                    .font(.system(size: 22, weight: .semibold))
-                Text(AppBrand.tagline)
+                .frame(width: 64, height: 64)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Copy anything.\nDrPaste knows what to do next.")
+                    .font(.system(size: 21, weight: .semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Hold ⌥⌘V to open the clipboard HUD. Choose an action. Release to paste.")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("Version \(AppBrand.version)")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.tertiary)
             }
-            Spacer()
+            Spacer(minLength: 0)
         }
-        .padding(24)
+        .padding(.horizontal, 28)
+        .padding(.vertical, 22)
     }
 
-    private var description: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("What is DrPaste?")
-                .font(.headline)
-            Text("DrPaste extends the macOS paste gesture. Press and hold ⌥⌘V — a HUD appears with your clipboard history and contextual actions. Release to paste. No separate window to manage, no toggle.")
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var featuresSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Key features")
-                .font(.headline)
-            // Grid keeps the icon column at a fixed width so the text column
-            // is perfectly aligned even when SF Symbols differ in glyph width.
-            // Using SF Symbols (instead of emoji) also guarantees uniform
-            // rendering across light/dark mode and font scaling.
-            Grid(alignment: .leadingFirstTextBaseline,
-                 horizontalSpacing: 12,
-                 verticalSpacing: 10) {
-                featureGridRow("doc.on.clipboard.fill", Color.blue,
-                               "Universal clipboard history — text, images, files, URLs, rich text")
-                featureGridRow("sparkles", Color.purple,
-                               "AI actions — multi-provider (Claude, GPT, Gemini, Ollama, etc.)")
-                featureGridRow("wrench.and.screwdriver.fill", Color.orange,
-                               "Custom transformations — regex, find/replace, prepend/append, wrap")
-                featureGridRow("keyboard.fill", Color.gray,
-                               "Per-action hotkeys — direct trigger, or hold ⌥⌘ to preview in HUD")
-                featureGridRow("photo.fill", Color.teal,
-                               "Image actions — OCR, QR decode, resize, grayscale, rotate, ASCII art")
-                featureGridRow("textformat", Color.pink,
-                               "𝐅𝐚𝐧𝐜𝐲 𝐔𝐧𝐢𝐜𝐨𝐝𝐞 — paste 𝑩𝒐𝒍𝒅, 𝐼𝑡𝑎𝑙𝑖𝑐, 𝒮𝒸𝓇𝒾𝓅𝓉 anywhere (Twitter, Telegram, LinkedIn)")
-                featureGridRow("globe", Color.indigo,
-                               "Format converters — Rich → Markdown / HTML / Wiki, Cyrillic → Latin")
-            }
+    // Short workflow stories — sells the product far better than a feature dump.
+    private var workflowsSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            workflowRow("keyboard.fill", .blue,
+                        "Paste where paste doesn’t work",
+                        "Clipboard → Type Slowly → password fields, terminals, anywhere")
+            workflowRow("text.viewfinder", .teal,
+                        "Copy text from screenshots",
+                        "Screenshot → Extract text (OCR) → Paste")
+            workflowRow("link", .green,
+                        "Clean links before sharing",
+                        "Tracking URL → Clean URL → Share")
+            workflowRow("wand.and.stars", .purple,
+                        "Transform copied content instantly",
+                        "Fix grammar · Translate · Summarize · Hello World → 𝐇𝐞𝐥𝐥𝐨 𝐖𝐨𝐫𝐥𝐝")
         }
     }
 
     @ViewBuilder
-    private func featureGridRow(_ icon: String,
-                                _ tint: Color,
-                                _ text: String) -> some View {
-        GridRow(alignment: .firstTextBaseline) {
+    private func workflowRow(_ icon: String, _ tint: Color,
+                             _ title: String, _ example: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
             Image(systemName: icon)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(tint)
-                .frame(width: 20, alignment: .center)
-            Text(text)
-                .font(.system(size: 12))
-                .foregroundStyle(.primary)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private var hotkeysSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Hotkeys")
-                .font(.headline)
-            Grid(alignment: .leadingFirstTextBaseline,
-                 horizontalSpacing: 14,
-                 verticalSpacing: 8) {
-                hotkeyGridRow("⌥⌘V", "Open HUD — press-and-hold, navigate with arrow keys, release to paste")
-                hotkeyGridRow("⌥⌘C", "Quick Copy — like ⌘C but with sound feedback")
-                hotkeyGridRow("⌥⌘X", "Cut & Replace — cut selection, choose what to paste in its place")
-                hotkeyGridRow("⌥⌘S", "Append Copy — accumulate copies into one combined clipboard entry")
-                // #A10: hint about hold-preview, shown only when the user has
-                // at least one per-action hotkey configured. Avoids cold-start
-                // noise for new users who haven't discovered action hotkeys
-                // yet (the hint would be meaningless without context).
-                if !registry.config.actionHotkeys.isEmpty {
-                    hotkeyGridRow("⌥⌘<key>", "Custom action hotkeys — tap for instant paste, or keep ⌥⌘ held after the key to preview in HUD")
-                }
-            }
-
-            if !registry.config.actionHotkeys.isEmpty {
-                Text("Your custom action hotkeys")
-                    .font(.system(size: 12, weight: .semibold))
+                .frame(width: 24, alignment: .center)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                Text(example)
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
-                    .padding(.top, 6)
-                Grid(alignment: .leadingFirstTextBaseline,
-                     horizontalSpacing: 14,
-                     verticalSpacing: 8) {
-                    ForEach(Array(registry.config.actionHotkeys.keys.sorted()), id: \.self) { actionID in
-                        if let hk = registry.config.actionHotkeys[actionID],
-                           let action = registry.actions.first(where: { $0.id == actionID }) {
-                            let title = registry.displayTitle(forActionID: actionID,
-                                                               defaultTitle: action.title)
-                            hotkeyGridRow(hk.displayString, title)
-                        }
-                    }
-                }
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            Spacer(minLength: 0)
         }
     }
 
-    @ViewBuilder
-    private func hotkeyGridRow(_ key: String, _ description: String) -> some View {
-        GridRow(alignment: .firstTextBaseline) {
-            // Fixed-width key badge so badges of different glyph widths
-            // (⌥⌘V vs ⌥⌘E vs longer combos) all align to the same column.
-            Text(key)
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(Color.primary.opacity(0.08))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
-                )
-                .frame(width: 64, alignment: .center)
-            Text(description)
-                .font(.system(size: 12))
-                .foregroundStyle(.primary)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+    // The ONE hotkey to learn first. Everything else is discovered later
+    // (menu-bar hints, the ⌥⌘-hold overlay).
+    private var primaryHotkeySection: some View {
+        HStack(spacing: 10) {
+            Text("⌥⌘V")
+                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                .padding(.horizontal, 9).padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.primary.opacity(0.08)))
+                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color.primary.opacity(0.12), lineWidth: 0.5))
+            Text("Hold to open DrPaste")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
         }
+        .padding(.top, 2)
     }
 
     private var footer: some View {

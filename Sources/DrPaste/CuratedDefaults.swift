@@ -37,11 +37,12 @@ enum CuratedDefaults {
         // remove_line_breaks (merged) are OFF by default.
         "builtin.text.trim",
 
-        // Text — derived.
-        "builtin.text.word_count",
+        // Text — derived. (#A78 — word_count moved OFF by default: it's an
+        // info utility that replaces the clip with a number; niche for the
+        // always-on strip.)
         "builtin.text.unit_conversion",
-        "builtin.text.generate_qr",
-        // Text — wrap (#A74 new).
+        "builtin.text.generate_qr",      // scoped to URLs via isApplicable (#A78)
+        // Text — wrap (#A74 new). Scoped to code / markdown via seed types (#A78).
         "builtin.text.wrap_quotes",
 
         // URL — decode is common.
@@ -132,7 +133,8 @@ enum CuratedDefaults {
         "builtin.files.to_md_links",
         "builtin.files.to_rich_icons",            // #A74 new
         "builtin.files.reveal_in_finder",
-        "builtin.files.extract_image"
+        "builtin.files.extract_image",
+        "builtin.text.to_files"                   // #A76 — Text → Files
 
         // NOTE: AI seeds (ids beginning with `ai.`) are managed via their
         // descriptor `enabled` flag (defaults true), not this table.
@@ -162,6 +164,10 @@ enum CuratedDefaults {
     static let aiOffByDefault: Set<String> = [
         "ai.text.ipa_transcription",     // phonetic transcription (niche)
         "ai.text.latin_to_cyrillic",     // local sibling covers 80%
+        // #A78 — keep a tight always-on AI core (Fix grammar / Translate /
+        // Summarize). These rewrites move OFF by default (still in Settings).
+        "ai.text.make_shorter",
+        "ai.text.improve_clarity",
         "ai.code.translate",             // requires a target language
         "ai.code.pretty",                // local "Pretty Code" covers it
         "ai.image.sketch", "ai.image.watercolor", "ai.image.cartoon",
@@ -173,9 +179,10 @@ enum CuratedDefaults {
         if actionID.hasPrefix("ai.") { return !aiOffByDefault.contains(actionID) }
         // User-created custom actions are always default-enabled.
         if actionID.hasPrefix("user.") { return true }
-        // #A77 — Latin→Cyrillic is curated-on only for Cyrillic-script users.
-        // (Cyrillic→Latin has an honest content trigger and is on everywhere.)
-        if actionID == "builtin.text.latin_to_cyrillic" { return localePrefersCyrillic }
+        // #A78 — Latin→Cyrillic transliteration is OFF by default for everyone
+        // (it fired on any Latin text — noise even for Cyrillic-locale users).
+        // Discoverable in Settings; `localePrefersCyrillic` is retained for any
+        // future locale-aware decisions.
         return enabledByDefault.contains(actionID)
     }
 

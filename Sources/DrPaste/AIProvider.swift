@@ -681,10 +681,13 @@ final class AIProviderRegistry: ObservableObject {
         APIKeyStorage.remove(for: providerID)
         var newCfg = config
         newCfg.providers.removeAll { $0.id == providerID }
-        if newCfg.defaultProviderID == providerID {
-            newCfg.defaultProviderID = newCfg.providers.first?.id
-        }
+        let removedDefault = (newCfg.defaultProviderID == providerID)
+        if removedDefault { newCfg.defaultProviderID = nil }
         config = newCfg
+        // Codex #7 — when the deleted provider was the default, promote the
+        // first READY provider (key present / local URL set), not just the first
+        // one in the list. reconcile clears the default to nil if none are ready.
+        if removedDefault { reconcileDefaultProvider() }
         providerCache.removeValue(forKey: providerID)
         invalidateImageProviderCache()
     }
@@ -1386,15 +1389,11 @@ struct AIAction: ClipboardAction {
     }
 
     private func loadAttr(item: ClipboardItem) -> NSAttributedString {
-        guard let rel = item.representations["public.rtf"],
-              let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
-              let attr = try? NSAttributedString(data: data,
-                                                 options: [.documentType: NSAttributedString.DocumentType.rtf],
-                                                 documentAttributes: nil)
-        else {
-            return NSAttributedString(string: item.previewText ?? "")
-        }
-        return attr
+        // Codex #4 — flat-RTFD aware: rich clips with attachments are stored as
+        // com.apple.flat-rtfd, not public.rtf. Reading only RTF lost them, so
+        // Translate / Fix grammar fell back to the plain previewText.
+        RichTextHelpers.loadAttributed(from: item)
+            ?? NSAttributedString(string: item.previewText ?? "")
     }
 
     /// Streaming entry point — same logic flow as `apply()` but consumes
@@ -1608,7 +1607,7 @@ enum DefaultAISeed {
             ),
             CustomAIDescriptor(
                 id: "ai.text.ipa_transcription",
-                title: "Phonetic transcription (IPA)",
+                title: "IPA",
                 promptTemplate: "Transcribe the input into the International Phonetic Alphabet (IPA) — how it is pronounced. Use broad/phonemic transcription wrapped in slashes, e.g. /həˈloʊ/. Transcribe each word; keep the original word order and line breaks. Detect the language automatically. Reply with the IPA transcription only — no preamble, no explanations.",
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText", "markdown"]
@@ -1748,7 +1747,7 @@ enum DefaultAISeed {
             // rather than "AI made this for me".
             CustomAIDescriptor(
                 id: "ai.text.image_whiteboard",
-                title: "Whiteboard sketch",
+                title: "Whiteboard",
                 promptTemplate: """
                 Create a clean black-and-white whiteboard-style \
                 illustration of the concept described below. Hand-drawn \
@@ -1826,7 +1825,7 @@ enum DefaultAISeed {
 
             CustomAIDescriptor(
                 id: "ai.text.draft_email_reply",
-                title: "Draft email reply",
+                title: "Email reply",
                 promptTemplate: "Draft a polite email reply to the message below. Keep it concise, practical, and professional. Do not invent commitments or facts. Reply with the draft only.",
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText"],
@@ -1834,7 +1833,7 @@ enum DefaultAISeed {
             ),
             CustomAIDescriptor(
                 id: "ai.text.generate_email_subject",
-                title: "Generate email subject",
+                title: "Email subject",
                 promptTemplate: "Generate a concise email subject line for this message. Reply with the subject only.",
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText"],
@@ -1849,7 +1848,7 @@ enum DefaultAISeed {
             // chain naturally after running OCR.
             CustomAIDescriptor(
                 id: "ai.text.clean_ocr",
-                title: "Clean OCR text",
+                title: "Clean OCR",
                 promptTemplate: "Clean up OCR text. Fix broken line breaks, spacing, punctuation, and obvious recognition errors while preserving the original meaning. Do not add new facts. Reply with the cleaned text only.",
                 providerID: defaultProviderSentinel,
                 applicableTypes: ["text", "richText"],

@@ -3512,6 +3512,56 @@ constrained-vocabulary prompt; cache result on the descriptor.
 
 ---
 
+### #A83 — Unit conversion: remaining edge cases
+
+**Status:** planned (deferred from the 0.57.x converter hardening pass).
+**Touches:** `UnitConversion.swift` (regex, `parseChunk`, `parseUnit`,
+`convertMeasurement`), `UnitConversionFixesTests`.
+**Context:** The inline measurement converter was substantially hardened —
+fractions (ASCII / Unicode / hyphen-mixed), thousands/decimal separators
+(comma, dot, space, EU `1.200,5`), spelled-out + hyphenated units, stone and
+pound+ounce compounds, °C-vs-cup disambiguation, square/cubic units, hectare,
+tonne, kph, m/s, and the `9 in 10` preposition false-positive. The cases below
+were consciously left out as lower-value or genuinely ambiguous, and are
+captured here so they are not rediscovered from scratch.
+
+**Requirements (each independent; pick by value):**
+- Numeric ranges: `25–30°C` / `25-30°C` → convert BOTH endpoints
+  (`77.0–86.0°F`); currently only one endpoint is converted. Needs a
+  range-aware match (`A[–-]B unit` → `convA–convB unit`).
+- Feet+inches without an inch marker: `5 ft 11` / `5'11` → treat the trailing
+  bare number as inches (→ `1.80 m`). Risky (`5 ft 11 people`), so gate on the
+  trailing number being ≤ 11 and end-of-token.
+- Fractional inch inside a compound: `6 ft 4½ in` / `5' 7½"` → single combined
+  value instead of splitting into two conversions.
+- Context-sensitive `oz`: `8 oz water` / `12 oz beer` → fluid ounces (volume)
+  when the following noun implies liquid (water/soda/beer/milk/juice/…);
+  default stays weight.
+- `in` preposition before a noun: `5 in stock`, `9 in total` still convert as
+  inches. Needs a small stop-word list (stock/total/fact/front/charge/order/…);
+  the number-followed case (`9 in 10`) is already handled.
+- Bare metric-ton `t` (`3,2 t`) — currently skipped to avoid false positives
+  (`Section 5 t`); revisit with a tighter guard.
+- `mg` (milligrams): produces a near-useless `0.0 oz`; needs grain output or a
+  "too small to convert" skip rule.
+- `cm²` / `cm³` / `2500 sq cm` square-and-cubic centimetres.
+- Contextual temperature with no unit: `low 60s`, `mid-80s`, `thermostat set
+  to 74`, `275-degree smoker`, `triple-digit`, `below zero`. Requires
+  weather/oven context inference — high false-positive risk.
+- Nominal sizes that must NOT convert: `2x4 lumber` (already skipped), but
+  `9x13 pan`, `40x60 barn`, `20x30 ft` partial — distinguish real dimensions
+  from nominal part numbers.
+- Spelled-out numbers: `six-foot-two`, `five eleven`, `5 foot eleven`.
+- Glued metric compound: `2m15cm` → currently splits into two conversions.
+
+**Implementation notes:** ranges and the feet+inches-no-marker case are the
+highest value. Keep the regex's leftmost-longest ordering invariant (speed and
+area units before the length units whose prefixes they share) when adding
+anything new. Every change must keep the false-positive suite green
+(`1st` / `2x4` / `1 c` / `a ton` / `9 in 10`).
+
+---
+
 ## Changelog
 
 Shipped versions. Each bullet is one observable change. Implementation-level

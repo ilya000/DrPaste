@@ -255,7 +255,7 @@ enum TransformationEngine: String, Codable, CaseIterable, Identifiable {
         case .latinToCyrillic: return ["target": "auto"]
         case .leetspeak:    return ["aggressive": "false"]
         case .uwuSpeak:     return ["faces": "true"]
-        case .zalgo:        return ["intensity": "medium"]
+        case .zalgo:        return ["intensity": "light"]
         case .trim,
              .camelCase, .snakeCase, .kebabCase,
              .base64Encode, .base64Decode,
@@ -430,14 +430,44 @@ struct CustomTransformationAction: ClipboardAction {
     let descriptor: CustomTransformationDescriptor
     let applicableSet: Set<SemanticKind>
 
+    /// Text/code actions that must NEVER apply to a rich-text clip (#A77). The
+    /// general rule is "rich text IS text, so text actions work on its plain
+    /// content" — but for these the operation is meaningless on formatted
+    /// content: it would flatten the rich clip to plain (line ops, encoding,
+    /// identifier-casing, slugify, wrapping, whitespace conversion) or compute a
+    /// count. The user curated this list by walking the RichText Settings tab.
+    /// They remain available on plain text / code / markdown as before. This is
+    /// authoritative — it suppresses rich text even for an action that lists
+    /// `.richText` in its own "Applies to" (e.g. remove_line_breaks).
+    static let richTextDenylist: Set<String> = [
+        "builtin.text.camel_case", "builtin.text.snake_case", "builtin.text.kebab_case",
+        "builtin.text.sort_lines", "builtin.text.unique_lines", "builtin.text.remove_line_breaks",
+        "builtin.text.base64_encode", "builtin.text.base64_decode",
+        "builtin.url.encode", "builtin.url.decode",
+        "builtin.text.slugify", "builtin.text.word_count",
+        "builtin.text.wrap_quotes", "builtin.text.wrap_parens", "builtin.code.wrap_block",
+        "builtin.code.tabs_to_spaces", "builtin.code.spaces_to_tabs"
+    ]
+
+    /// Whether this action is allowed on a rich-text clip at all — either it
+    /// lists `.richText` explicitly, or it bridges via `.text` — unless the
+    /// curated denylist forbids it outright.
+    private func allowsRichText() -> Bool {
+        guard !Self.richTextDenylist.contains(id) else { return false }
+        return applicableSet.contains(.richText) || applicableSet.contains(.text)
+    }
+
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         // Strict "Applies to" correspondence: the action applies ONLY to the
         // content kinds checked in its descriptor — so it never leaks into a
         // Settings tab (or HUD clip) it isn't enabled for. The one allowance:
         // a rich-text clip also surfaces text actions (rich text IS text), so
-        // toggling Plain text keeps the action working on formatted clips.
-        guard applicableSet.contains(item.semantic)
-            || (item.semantic == .richText && applicableSet.contains(.text)) else { return false }
+        // toggling Plain text keeps the action working on formatted clips —
+        // EXCEPT for the curated denylist (structural / encoding ops).
+        let kindOK = item.semantic == .richText
+            ? allowsRichText()
+            : applicableSet.contains(item.semantic)
+        guard kindOK else { return false }
         // #A75 — honour the descriptor's "Show this action when…" conditions.
         return ActionTrait.passes(required: descriptor.requiredTraits,
                                   forbidden: descriptor.forbiddenTraits,
@@ -446,8 +476,9 @@ struct CustomTransformationAction: ClipboardAction {
 
     /// Type-only membership (no trait gate) — see ClipboardAction default.
     func appliesToContentType(item: ClipboardItem, context: ContentContext) -> Bool {
-        applicableSet.contains(item.semantic)
-            || (item.semantic == .richText && applicableSet.contains(.text))
+        item.semantic == .richText
+            ? allowsRichText()
+            : applicableSet.contains(item.semantic)
     }
 
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
@@ -1507,11 +1538,18 @@ enum TransformationRuntime {
         if lower.hasPrefix("<!doctype") || lower.hasPrefix("<html") || (firstChar == "<" && lower.contains("</")) {
             return prettyHTMLLike(trimmed)
         }
-        // CSS: contains "{...}" structure.
-        if trimmed.contains("{") && trimmed.contains("}") && trimmed.contains(":") {
+        // CSS: a real `selector { prop: value; }` rule. The old check —
+        // contains("{") && contains("}") && contains(":") — misfired on ANY
+        // braced language with a colon (Swift `name: String`, TypeScript,
+        // Go structs), routing it to the CSS reformatter which destroyed its
+        // layout. Require an actual semicolon-terminated `property: value`
+        // declaration, which non-CSS code essentially never has.
+        if trimmed.contains("{"), trimmed.contains("}"),
+           trimmed.range(of: #"[-a-zA-Z]+\s*:\s*[^;{}\n]+;"#,
+                         options: .regularExpression) != nil {
             return prettyCSS(trimmed)
         }
-        // Generic whitespace cleanup.
+        // Generic whitespace cleanup (preserves indentation).
         return prettyGeneric(trimmed)
     }
 
@@ -1578,8 +1616,14 @@ enum TransformationRuntime {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Generic fallback: trim trailing whitespace per line, normalize
-    /// line endings, expand tabs → 4 spaces, collapse 3+ blank lines.
+    /// Generic fallback: trim TRAILING whitespace per line, normalize line
+    /// endings, expand tabs → 4 spaces, collapse 3+ blank lines.
+    ///
+    /// CRITICAL: only trailing whitespace is stripped. The previous version
+    /// trimmed BOTH sides of every line, which flattened all indentation —
+    /// `    return x` became `return x` at column 0, breaking the structure of
+    /// any indented language (Swift, Python, …). Leading indentation is
+    /// semantically meaningful and must be preserved.
     private static func prettyGeneric(_ s: String) -> String {
         var src = s.replacingOccurrences(of: "\r\n", with: "\n")
         src = src.replacingOccurrences(of: "\t", with: "    ")
@@ -1587,7 +1631,11 @@ enum TransformationRuntime {
                                        with: "\n\n",
                                        options: .regularExpression)
         let lines = src.split(separator: "\n", omittingEmptySubsequences: false)
-            .map { $0.trimmingCharacters(in: .init(charactersIn: " \t")) }
+            .map { line -> String in
+                var l = String(line)
+                while let last = l.last, last == " " || last == "\t" { l.removeLast() }
+                return l
+            }
         return lines.joined(separator: "\n")
     }
 

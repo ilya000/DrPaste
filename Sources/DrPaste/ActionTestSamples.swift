@@ -164,12 +164,6 @@ enum ActionTestSamples {
         case "builtin.text.unique_lines":
             return "apple\nbanana\napple\ncherry\nbanana\ndate"
 
-        case "builtin.text.normalize_spaces":
-            return "The   quick    brown\tfox  jumps  over    the lazy dog."
-
-        case "builtin.text.collapse_blank_lines":
-            return "first paragraph\n\n\n\nsecond paragraph after lots of empty lines\n\n\n\n\nthird paragraph"
-
         case "builtin.text.remove_line_breaks":
             return """
             This paragraph from a PDF has hard
@@ -238,9 +232,6 @@ enum ActionTestSamples {
             return "&lt;div class=&quot;quote&quot;&gt;He said &amp; she said&lt;/div&gt;"
 
         // MARK: Markdown
-        case "builtin.md.to_plain":
-            return "# Title\n\nSome **bold** and *italic* text with a [link](https://example.com).\n\n- bullet one\n- bullet two"
-
         case "builtin.md.to_rich":
             return "A line with **bold**, *italic*, and `inline code`.\n\nFollowed by a [linked phrase](https://example.com)."
 
@@ -277,7 +268,7 @@ enum ActionTestSamples {
 
         // MARK: URL
         case "builtin.url.strip_tracking":
-            return "https://example.com/article?utm_source=newsletter&utm_medium=email&utm_campaign=launch&fbclid=abc123&id=42"
+            return "https://example.com/?utm_source=newsletter&utm_medium=email&utm_campaign=launch&fbclid=abc123&id=42"
 
         case "builtin.url.extract_domain":
             return "https://docs.example.com/path/to/page?ref=home"
@@ -464,6 +455,11 @@ enum ActionTestSamples {
             return "/Users/example/Documents/Q4-report.pdf, " +
                    "/Users/example/Pictures/team-photo.jpg, " +
                    "/Users/example/Desktop/notes with spaces.txt"
+
+        // Text → Files: needs REAL existing paths so the action recognises
+        // them and emits a files clip. Home dir + /Applications always exist.
+        case "builtin.text.to_files":
+            return "\(NSHomeDirectory())\n/Applications"
 
         case "builtin.files.reveal_in_finder":
             return "(Side-effect action — Run test would reveal the file in Finder; " +
@@ -1042,6 +1038,11 @@ enum ActionTestSamples {
         switch id {
         case "builtin.image.ocr":       return makeOCRSampleItem() ?? makeSampleImageItem()
         case "builtin.image.decode_qr": return makeQRSampleItem() ?? makeSampleImageItem()
+        // Image info / Strip metadata need an input that actually CARRIES
+        // metadata, otherwise the demo just says "Metadata: none".
+        case "builtin.image.info",
+             "builtin.image.strip_metadata":
+            return makeMetadataRichSampleItem() ?? makeSampleImageItem()
         default:                        return makeSampleImageItem()
         }
     }

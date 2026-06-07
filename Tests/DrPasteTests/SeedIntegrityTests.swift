@@ -96,13 +96,16 @@ final class SeedIntegrityTests: XCTestCase {
         "builtin.files.reveal_in_finder",
         "builtin.files.copy_shell_safe_paths",
         "builtin.files.to_rich_icons",
-        "builtin.files.extract_image"
+        "builtin.files.extract_image",
+        "builtin.text.to_files"
     ]
 
-    /// Every action ID known to be real: seeded transformations + the
-    /// hardcoded standalone registrations.
+    /// Every action ID known to be real: seeded transformations + bundled
+    /// default AI actions + the hardcoded standalone registrations.
     static var knownActionIDs: Set<String> {
-        Set(DefaultTransformationSeed.defaults().map(\.id)).union(standaloneActionIDs)
+        Set(DefaultTransformationSeed.defaults().map(\.id))
+            .union(DefaultAISeed.defaults().map(\.id))
+            .union(standaloneActionIDs)
     }
 
     func testCuratedDefaultsContainOnlyKnownActions() {

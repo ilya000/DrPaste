@@ -256,6 +256,21 @@ extension ActionConfig {
             }
         }
 
+        // customDescriptions — current wins. Record conflicts (mirrors customTitles).
+        for (k, v) in incoming.customDescriptions {
+            if let current = merged.customDescriptions[k], current != v {
+                report.conflicts.append(.init(
+                    actionID: k,
+                    field: "customDescriptions",
+                    currentValue: current,
+                    incomingValue: v
+                ))
+                // current wins → don't overwrite
+            } else if merged.customDescriptions[k] == nil {
+                merged.customDescriptions[k] = v
+            }
+        }
+
         // actionOrder — per-kind. Incoming list applied to ids that
         // weren't already ordered locally; new ids land at the end.
         for (kind, incomingOrder) in incoming.actionOrder {

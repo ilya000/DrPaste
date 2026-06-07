@@ -67,14 +67,15 @@ enum UnitConversion {
             result += input[lastEnd..<match.range.lowerBound]
             // Decide whether this match should be converted given
             // `direction`.
+            let convertOne: () -> String? = {
+                if let v2 = match.value2 { return convertRange(match.value, v2, match.unit) }
+                return convertMeasurement(match)
+            }
             let converted: String? = {
                 switch direction {
-                case .auto:
-                    return convertMeasurement(match)
-                case .toMetric:
-                    return match.isMetric ? nil : convertMeasurement(match)
-                case .toImperial:
-                    return match.isMetric ? convertMeasurement(match) : nil
+                case .auto:      return convertOne()
+                case .toMetric:  return match.isMetric ? nil : convertOne()
+                case .toImperial: return match.isMetric ? convertOne() : nil
                 }
             }()
             switch mode {
@@ -103,6 +104,9 @@ enum UnitConversion {
     struct Match {
         let range: Range<String.Index>
         let value: Double
+        /// Second endpoint for a numeric range ("25–30 °C"). nil for a single
+        /// measurement.
+        var value2: Double? = nil
         let unit: Unit
         var isMetric: Bool { unit.isMetric }
     }
@@ -112,26 +116,27 @@ enum UnitConversion {
         case mm, cm, m, km
         case inches, feet, yards, miles
         // Weight
-        case grams, kilograms
-        case ounces, pounds
+        case grams, kilograms, tonne
+        case ounces, pounds, stone, shortTon, longTon
         // Temperature
         case celsius, fahrenheit
         // Volume
-        case milliliters, liters
-        case fluidOunces, gallons, quarts, pints
+        case milliliters, liters, cc, cubicMeters
+        case fluidOunces, gallons, quarts, pints, cups, tablespoons, teaspoons
         // Speed
-        case kmh, mph
+        case kmh, mph, metersPerSecond, kmPerMin, cmPerSecond
         // Area
-        case squareMeters, squareFeet
+        case squareMeters, squareFeet, acre
+        case squareYards, squareMiles, squareKm, hectare
 
         var isMetric: Bool {
             switch self {
             case .mm, .cm, .m, .km,
-                 .grams, .kilograms,
+                 .grams, .kilograms, .tonne,
                  .celsius,
-                 .milliliters, .liters,
-                 .kmh,
-                 .squareMeters:
+                 .milliliters, .liters, .cc, .cubicMeters,
+                 .kmh, .metersPerSecond, .kmPerMin, .cmPerSecond,
+                 .squareMeters, .squareKm, .hectare:
                 return true
             default:
                 return false
@@ -139,23 +144,99 @@ enum UnitConversion {
         }
     }
 
-    /// Regex over the input. Order matters: longer literals first
-    /// so "feet" is matched before "ft" (the latter is a substring).
+    /// Unicode vulgar fractions → decimal value.
+    static let unicodeFractions: [Character: Double] = [
+        "¼": 1.0/4, "½": 1.0/2, "¾": 3.0/4,
+        "⅓": 1.0/3, "⅔": 2.0/3,
+        "⅕": 1.0/5, "⅖": 2.0/5, "⅗": 3.0/5, "⅘": 4.0/5,
+        "⅙": 1.0/6, "⅚": 5.0/6,
+        "⅛": 1.0/8, "⅜": 3.0/8, "⅝": 5.0/8, "⅞": 7.0/8,
+        "⅐": 1.0/7, "⅑": 1.0/9, "⅒": 1.0/10
+    ]
+    private static let fracClass = "¼½¾⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞⅐⅑⅒"
+
+    /// One quantity token: mixed/simple fractions (ASCII or Unicode), a
+    /// thousands-grouped or decimal number, or a bare ".75". Sign is `-`,
+    /// the Unicode minus `−`, or the words "minus"/"negative" (handled in
+    /// `parseChunk`). Ordered longest-first so "2 3/4" beats "3/4" beats "4".
+    private static var qty: String {
+        let f = fracClass
+        return "(?:" + [
+            #"\d+[\s\-]+\d+\s*[/⁄∕]\s*\d+"#,      // mixed ASCII: 2 3/4  or  2-1/2
+            "\\d+\\s*[\(f)]",                        // mixed Unicode: 6½
+            #"\d+\s*[/⁄∕]\s*\d+"#,                 // simple ASCII: 3/4
+            "[\(f)]",                               // bare Unicode: ½
+                        #"\d{1,3}(?:[ \x{00A0}\x{202F}]\d{3})+(?:[.,]\d+)?"#,  // space thousands: 1 200
+            #"\d{1,3}(?:\.\d{3})+,\d+"#,           // EU mixed: 1.200,5
+            #"\d{1,3}(?:,\d{3})+(?:\.\d+)?"#,      // 1,760  12,345.5
+            #"\d+(?:[.,]\d+)?"#,                    // 5  5.5  5,5
+            #"\.\d+"#                                // .75
+        ].joined(separator: "|") + ")"
+    }
+
+    /// Regex over the input. Order matters in the unit list: speed and area
+    /// units come before the length units whose abbreviations they share a
+    /// prefix with ("mi/h" before "mi", "ft²" before "ft"), and spelled-out
+    /// forms before abbreviations.
     private static let pattern: NSRegularExpression = {
+        let q = qty
         let units = [
-            // compound foot+inch. Inch alternatives are ordered longest-first
-            // ("inches" before "inch" before "in") so the regex consumes the
-            // whole word — matching "in" first left a dangling "ches"
-            // ("6 feet 2 in (…)ches"). `in\b` also prevents "in" matching
-            // inside another word.
-            #"(\d+(?:[.,]\d+)?)\s*(?:ft|feet|')\s*(\d+(?:[.,]\d+)?)\s*(?:inch(?:es)?|in\b|")"#,
-            #"(\d+(?:[.,]\d+)?)'(\d+(?:[.,]\d+)?)""#,
-            // single value
-            #"(-?\d+(?:[.,]\d+)?)\s*°?\s*(km/h|mph|°?C|°?F|kg|lb|lbs|oz|fl\s*oz|gal|qt|pt|m²|ft²|km|cm|mm|m\b|ft|feet|inches|inch|in\b|yd|yards|yard|mi|miles|mile|g|L|mL|ml)\b"#
+            // SPEED (before the length units mi / km / m / cm they share a prefix
+            // with). Per-hour / per-second phrases allow hyphen joiners.
+            #"km\s*/\s*h"#, "kmh", "kph", #"kilomet(?:er|re)s?[\s\-]+per[\s\-]+hour"#,
+            "mph", #"mi\s*/\s*h"#, #"miles?[\s\-]+per[\s\-]+hour"#,
+            #"m\s*/\s*s"#, #"met(?:er|re)s?[\s\-]+per[\s\-]+second"#,
+            #"km\s*/\s*min"#, #"cm\s*/\s*s"#,
+            // AREA (before length, because of the ² / m / ft prefixes)
+            #"square[\s\-]*kilomet(?:er|re)s?"#, #"sq\.?\s*km"#, "km²", "km2",
+            #"square[\s\-]*f(?:ee|oo)t"#, #"sq\.?\s*ft"#, "sqft", "ft²", "ft2",
+            #"square[\s\-]*met(?:er|re)s?"#, #"sq\.?\s*m"#, "m²", "m2",
+            #"square[\s\-]*yards?"#, #"sq\.?\s*yd"#, #"square[\s\-]*miles?"#, #"sq\.?\s*mi"#,
+            "hectares?", "ha", "acres?",
+            // VOLUME (cubic before the length units they share a prefix with)
+            #"cubic[\s\-]*met(?:er|re)s?"#, "m³", "cm³", "cc",
+            #"fluid[\s\-]*ounces?"#, #"fl\s*oz"#, "gallons?", "gal", "quarts?", "qt", "pints?", "pt",
+            "tablespoons?", "tbsp", "teaspoons?", "tsp", "cups?",
+            #"millilit(?:er|re)s?"#, "ml", #"lit(?:er|re)s?"#, "l",
+            // TEMPERATURE. Bare "C" is case-sensitive (uppercase only) so it does
+            // not swallow "c" = cup; bare "f"/"F" stays case-insensitive.
+            #"degrees?\s+fahrenheit"#, #"degrees?\s+celsius"#, #"degrees?\s+[cf]\b"#,
+            "fahrenheit", "celsius", "°c", "°f", "(?-i:C)", "f",
+            // WEIGHT
+            "kilogrammes?", "kilograms?", "kg", "milligrams?", "mg",
+            #"(?:metric\s+)?tonnes?"#, #"metric\s+tons?"#, #"(?:short\s+|long\s+)?tons?"#,
+            "pounds?", "lbs?", "ounces?", "oz", "stones?", "grams?", "g",
+            // LENGTH
+            #"kilomet(?:er|re)s?"#, "km", #"centimet(?:er|re)s?"#, "cm",
+            #"millimet(?:er|re)s?"#, "mm", #"met(?:er|re)s?"#, "m",
+            // Bare "in" must not fire when a number follows ("9 in 10 odds",
+            // "1 in 5") — that's the preposition, not inches.
+            "inch(?:es)?", #"in(?!\s*\d)"#, "feet", "foot", "ft", "yards?", "yd", "miles?", "mi",
+            "['’′]", "[\"”″]"     // straight + typographic foot ′ / inch ″ marks
         ]
-        let combined = "(?:" + units.joined(separator: "|") + ")"
-        return try! NSRegularExpression(pattern: combined,
-                                        options: [.caseInsensitive])
+        let unitGroup = "(?:" + units.joined(separator: "|") + ")"
+        let alternatives = [
+            // compound foot+inch (longest-first inch alt so the word is consumed)
+            #"(\d+(?:[.,]\d+)?)\s*(?:ft|feet|['’′])\s*(\d+(?:[.,]\d+)?)\s*(?:inch(?:es)?|in\b|["”″])"#,
+            #"(\d+(?:[.,]\d+)?)['’′](\d+(?:[.,]\d+)?)["”″]"#,
+            // feet + bare number (no inch marker): "5 ft 11" / "5'11". The
+            // trailing number is gated to 1–11 (inches) so "5 ft 20" stays a
+            // plain "5 ft" plus an unrelated 20.
+            #"(\d+(?:[.,]\d+)?)\s*(?:ft|feet|['’′])\s*(1[01]|[1-9])(?![\d/⁄∕.,])"#,
+            // compound stone+pound: "11 st 4 lb" / "11 stone 4" / "11st4lb"
+            #"\d+(?:[.,]\d+)?\s*(?:stones?|st)\s*\d+(?:[.,]\d+)?\s*(?:lbs?|pounds?)?"#,
+            // compound pound+ounce: "6 lb 4 oz" / "6lb4oz"
+            #"\d+(?:[.,]\d+)?\s*(?:lbs?|pounds?)\s*\d+(?:[.,]\d+)?\s*(?:oz|ounces?)"#,
+            // numeric range: "25–30 °C" / "25-30°C" (two plain numbers, one
+            // unit). Requires a real unit right after the second number, so
+            // "2-1/2 ft" and "8-ounce" never match here.
+            #"\d+(?:[.,]\d+)?\s*[–—-]\s*\d+(?:[.,]\d+)?\s*°?\s*"# + unitGroup + #"(?=[^A-Za-z]|$)"#,
+            // single value + unit. Trailing lookahead replaces \b so units that
+            // end in a non-word char (ft² / m²) still match fully.
+            "(?:(?:minus|negative)\\s+)?[-−]?" + q + #"\s*°?\s*-?\s*"# + unitGroup + #"(?=[^A-Za-z]|$)"#
+        ]
+        let combined = "(?:" + alternatives.joined(separator: "|") + ")"
+        return try! NSRegularExpression(pattern: combined, options: [.caseInsensitive])
     }()
 
     private static func scan(_ input: String) -> [Match] {
@@ -174,30 +255,140 @@ enum UnitConversion {
 
     /// Parse one regex-matched chunk into a `Match`.
     private static func parseChunk(_ chunk: String, range: Range<String.Index>) -> Match? {
-        let lower = chunk.lowercased()
-        // Compound foot+inch
-        if let compound = parseCompoundFeetInches(lower) {
-            return Match(range: range, value: compound, unit: .feet)
+        var lower = chunk.lowercased()
+        // Leading sign word ("minus 4°F" → −4°F).
+        var negate = false
+        for word in ["minus ", "negative "] where lower.hasPrefix(word) {
+            negate = true
+            lower = String(lower.dropFirst(word.count))
+            break
         }
-        // Single value + unit
-        // Extract leading number.
-        let scalar = parseLeadingDouble(chunk)
-        guard let value = scalar.value else { return nil }
-        let rest = chunk
-            .dropFirst(scalar.consumed)
-            .trimmingCharacters(in: .whitespaces)
-            .lowercased()
-            .replacingOccurrences(of: "°", with: "")
+        // Compound stone+pound ("11 st 4 lb") — try before feet+inch.
+        if let st = parseCompoundStoneLb(lower) {
+            return Match(range: range, value: negate ? -st : st, unit: .stone)
+        }
+        // Compound pound+ounce ("6 lb 4 oz" → pounds).
+        if let lb = parseCompoundPoundOz(lower) {
+            return Match(range: range, value: negate ? -lb : lb, unit: .pounds)
+        }
+        // Compound foot+inch.
+        if let compound = parseCompoundFeetInches(lower) {
+            return Match(range: range, value: negate ? -compound : compound, unit: .feet)
+        }
+        // Numeric range ("25–30 °C").
+        if let (v1, v2, unit) = parseRange(lower) {
+            return Match(range: range, value: negate ? -v1 : v1,
+                         value2: negate ? -v2 : v2, unit: unit)
+        }
+        // Single value + unit. Extract the leading quantity (handles fractions).
+        let q = parseLeadingQuantity(lower)
+        guard var value = q.value else { return nil }
+        if negate { value = -value }
+        // Strip the gap between number and unit — spaces and an optional hyphen
+        // ("14-inch" → "inch") — but KEEP the ° so parseUnit can tell "°C"
+        // (valid) from "c" (a cup, deliberately not Celsius).
+        let rest = String(lower.dropFirst(q.consumed))
+            .trimmingCharacters(in: CharacterSet(charactersIn: " \t-"))
         guard let unit = parseUnit(rest) else { return nil }
         return Match(range: range, value: value, unit: unit)
+    }
+
+    /// Compound "11 st 4 lb" / "11 stone 4" / "11st4lb" → value in stones.
+    private static func parseCompoundStoneLb(_ s: String) -> Double? {
+        let pat = #"^(\d+(?:[.,]\d+)?)\s*(?:stones?|st)\s*(\d+(?:[.,]\d+)?)\s*(?:lbs?|pounds?)?$"#
+        guard let re = try? NSRegularExpression(pattern: pat, options: [.caseInsensitive]) else { return nil }
+        let nsr = NSRange(s.startIndex..<s.endIndex, in: s)
+        guard let m = re.firstMatch(in: s, options: [], range: nsr),
+              m.numberOfRanges == 3,
+              let r1 = Range(m.range(at: 1), in: s),
+              let r2 = Range(m.range(at: 2), in: s) else { return nil }
+        let st = Double(String(s[r1]).replacingOccurrences(of: ",", with: ".")) ?? 0
+        let lb = Double(String(s[r2]).replacingOccurrences(of: ",", with: ".")) ?? 0
+        return st + lb / 14.0     // 1 stone = 14 lb
+    }
+
+    /// Numeric range "25-30 °c" → (25, 30, .celsius). Both endpoints are plain
+    /// numbers separated by a dash; a real unit must follow the second one.
+    private static func parseRange(_ s: String) -> (Double, Double, Unit)? {
+        let pat = #"^(\d+(?:[.,]\d+)?)\s*[–—-]\s*(\d+(?:[.,]\d+)?)\s*(.+)$"#
+        guard let re = try? NSRegularExpression(pattern: pat, options: [.caseInsensitive]) else { return nil }
+        let nsr = NSRange(s.startIndex..<s.endIndex, in: s)
+        guard let m = re.firstMatch(in: s, options: [], range: nsr),
+              m.numberOfRanges == 4,
+              let r1 = Range(m.range(at: 1), in: s),
+              let r2 = Range(m.range(at: 2), in: s),
+              let r3 = Range(m.range(at: 3), in: s),
+              let v1 = normalizeNumber(String(s[r1])),
+              let v2 = normalizeNumber(String(s[r2])) else { return nil }
+        let rest = String(s[r3]).trimmingCharacters(in: CharacterSet(charactersIn: " \t-"))
+        guard let unit = parseUnit(rest) else { return nil }
+        return (v1, v2, unit)
+    }
+
+    /// Compound "6 lb 4 oz" / "6lb4oz" → value in pounds (1 lb = 16 oz).
+    private static func parseCompoundPoundOz(_ s: String) -> Double? {
+        let pat = #"^(\d+(?:[.,]\d+)?)\s*(?:lbs?|pounds?)\s*(\d+(?:[.,]\d+)?)\s*(?:oz|ounces?)$"#
+        guard let re = try? NSRegularExpression(pattern: pat, options: [.caseInsensitive]) else { return nil }
+        let nsr = NSRange(s.startIndex..<s.endIndex, in: s)
+        guard let m = re.firstMatch(in: s, options: [], range: nsr),
+              m.numberOfRanges == 3,
+              let r1 = Range(m.range(at: 1), in: s),
+              let r2 = Range(m.range(at: 2), in: s) else { return nil }
+        let lb = Double(String(s[r1]).replacingOccurrences(of: ",", with: ".")) ?? 0
+        let oz = Double(String(s[r2]).replacingOccurrences(of: ",", with: ".")) ?? 0
+        return lb + oz / 16.0
+    }
+
+    /// Extract the leading quantity token and its consumed character count.
+    private static func parseLeadingQuantity(_ s: String) -> (value: Double?, consumed: Int) {
+        guard let re = try? NSRegularExpression(pattern: "^[-−]?" + qty,
+                                                options: [.caseInsensitive]) else { return (nil, 0) }
+        let nsr = NSRange(s.startIndex..<s.endIndex, in: s)
+        guard let m = re.firstMatch(in: s, options: [], range: nsr),
+              let r = Range(m.range, in: s) else { return (nil, 0) }
+        let token = String(s[r])
+        let consumed = s.distance(from: s.startIndex, to: r.upperBound)
+        return (parseQuantityValue(token), consumed)
+    }
+
+    /// Turn a quantity token ("2 3/4", "6½", "3/8", "½", "1,760", ".75")
+    /// into a Double.
+    static func parseQuantityValue(_ raw: String) -> Double? {
+        var s = raw.trimmingCharacters(in: .whitespaces)
+        var sign = 1.0
+        if s.hasPrefix("-") || s.hasPrefix("−") { sign = -1; s.removeFirst() }
+        // Unicode fraction, optionally with a leading whole number ("6½", "½").
+        if let last = s.last, let fv = unicodeFractions[last] {
+            let intPart = String(s.dropLast()).trimmingCharacters(in: .whitespaces)
+            let whole = intPart.isEmpty ? 0 : (normalizeNumber(intPart) ?? 0)
+            return sign * (whole + fv)
+        }
+        // ASCII fraction, mixed ("2 3/4", "2-1/2") or simple ("3/4").
+        if let slashIdx = s.firstIndex(where: { "/⁄∕".contains($0) }) {
+            let denom = Double(String(s[s.index(after: slashIdx)...]).trimmingCharacters(in: .whitespaces))
+            let left = String(s[..<slashIdx]).trimmingCharacters(in: .whitespaces)
+            // Whole and numerator may be separated by a space OR a hyphen.
+            let parts = left.split(whereSeparator: { $0 == " " || $0 == "-" })
+            guard let d = denom, d != 0 else { return nil }
+            if parts.count == 2, let whole = Double(parts[0]), let num = Double(parts[1]) {
+                return sign * (whole + num / d)
+            }
+            if parts.count == 1, let num = Double(parts[0]) {
+                return sign * (num / d)
+            }
+            return nil
+        }
+        // Plain number (thousands / decimal handled by normalizeNumber).
+        guard let v = normalizeNumber(s) else { return nil }
+        return sign * v
     }
 
     private static func parseCompoundFeetInches(_ s: String) -> Double? {
         // Patterns covered:
         //   "6 ft 7 in" / "6 feet 7 inches" / "6'7""
         let patterns = [
-            #"^(\d+(?:[.,]\d+)?)\s*(?:ft|feet|')\s*(\d+(?:[.,]\d+)?)\s*(?:inch(?:es)?|in|"?)$"#,
-            #"^(\d+(?:[.,]\d+)?)'(\d+(?:[.,]\d+)?)""?$"#
+            #"^(\d+(?:[.,]\d+)?)\s*(?:ft|feet|['’′])\s*(\d+(?:[.,]\d+)?)\s*(?:inch(?:es)?|in|["”″]?)$"#,
+            #"^(\d+(?:[.,]\d+)?)['’′](\d+(?:[.,]\d+)?)["”″]?$"#
         ]
         for pat in patterns {
             guard let re = try? NSRegularExpression(pattern: pat,
@@ -215,48 +406,110 @@ enum UnitConversion {
         return nil
     }
 
-    private static func parseLeadingDouble(_ s: String) -> (value: Double?, consumed: Int) {
-        var consumed = 0
-        var buf = ""
-        for ch in s {
-            if ch.isWholeNumber || ch == "." || ch == "," || (ch == "-" && buf.isEmpty) {
-                buf.append(ch == "," ? "." : ch)
-                consumed += 1
-            } else {
-                break
-            }
+    /// Turn a raw numeric token ("1,760", "5,5", "1,234.5", "3.5") into a
+    /// Double, deciding whether each `.`/`,` is a thousands grouping or a
+    /// decimal separator. Needed because a thousands comma ("1,760 yards")
+    /// was previously read as a decimal point → 1.76 instead of 1760.
+    private static func normalizeNumber(_ raw: String) -> Double? {
+        var s = raw
+        let negative = s.hasPrefix("-")
+        if negative { s.removeFirst() }
+        // A trailing `.`/`,` is sentence punctuation, not part of the number.
+        while let last = s.last, last == "." || last == "," { s.removeLast() }
+        guard !s.isEmpty else { return nil }
+
+        // Space-grouped thousands ("1 200" / "1 200 000") → strip the spaces.
+        if s.range(of: #"^\d{1,3}([ \x{00A0}\x{202F}]\d{3})+([.,]\d+)?$"#,
+                   options: .regularExpression) != nil {
+            s = s.replacingOccurrences(of: " ", with: "")
+                 .replacingOccurrences(of: "\u{00A0}", with: "")
+                 .replacingOccurrences(of: "\u{202F}", with: "")
         }
-        return (Double(buf), consumed)
+
+        let hasComma = s.contains(",")
+        let hasDot = s.contains(".")
+        let normalized: String
+        if hasComma && hasDot {
+            // Mixed: the LAST-occurring separator is the decimal point; the
+            // other groups thousands. Handles "1,234.5" and "1.234,5".
+            if s.lastIndex(of: ",")! > s.lastIndex(of: ".")! {
+                normalized = s.replacingOccurrences(of: ".", with: "")
+                              .replacingOccurrences(of: ",", with: ".")
+            } else {
+                normalized = s.replacingOccurrences(of: ",", with: "")
+            }
+        } else if hasComma {
+            // Comma only. Thousands grouping ("1,760", "12,345") vs European
+            // decimal ("5,5", "12,75"). Grouping is exactly groups of 3 digits.
+            if s.range(of: #"^\d{1,3}(,\d{3})+$"#, options: .regularExpression) != nil {
+                normalized = s.replacingOccurrences(of: ",", with: "")    // thousands
+            } else {
+                normalized = s.replacingOccurrences(of: ",", with: ".")   // decimal
+            }
+        } else {
+            // Dot only (or no separators). Treat dot as decimal — the common
+            // case ("3.5"); English text rarely uses dot as a thousands mark.
+            normalized = s
+        }
+        guard let v = Double(normalized) else { return nil }
+        return negative ? -v : v
     }
 
     private static func parseUnit(_ s: String) -> Unit? {
-        // Normalize whitespace away
+        // Normalize away spaces, dots and hyphens ("fl oz" → "floz",
+        // "sq. ft." → "sqft", "mile-per-hour" → "mileperhour", "11 in." → "in").
+        // The degree sign is KEPT so "°c" stays distinct from "c" (a cup, which
+        // we deliberately don't treat as Celsius).
         let t = s.replacingOccurrences(of: " ", with: "")
+                 .replacingOccurrences(of: ".", with: "")
+                 .replacingOccurrences(of: "-", with: "")
         switch t {
-        case "mm": return .mm
-        case "cm": return .cm
-        case "m":  return .m
-        case "km": return .km
-        case "in", "inch", "inches", "\"": return .inches
-        case "ft", "feet", "foot", "'":    return .feet
+        case "mm", "millimeter", "millimeters", "millimetre", "millimetres": return .mm
+        case "cm", "centimeter", "centimeters", "centimetre", "centimetres": return .cm
+        case "m", "meter", "meters", "metre", "metres":  return .m
+        case "km", "kilometer", "kilometers", "kilometre", "kilometres": return .km
+        case "in", "inch", "inches", "\"", "”", "″": return .inches
+        case "ft", "feet", "foot", "'", "’", "′":    return .feet
         case "yd", "yard", "yards":        return .yards
         case "mi", "mile", "miles":        return .miles
-        case "g":  return .grams
-        case "kg": return .kilograms
-        case "oz": return .ounces
-        case "lb", "lbs": return .pounds
-        case "c", "celsius": return .celsius
-        case "f", "fahrenheit": return .fahrenheit
-        case "ml": return .milliliters
-        case "l":  return .liters
-        case "floz", "fl oz", "fluidounces": return .fluidOunces
+        case "g", "gram", "grams":  return .grams
+        case "kg", "kilogram", "kilograms", "kilogramme", "kilogrammes": return .kilograms
+        case "oz", "ounce", "ounces": return .ounces
+        case "lb", "lbs", "pound", "pounds": return .pounds
+        case "st", "stone", "stones": return .stone
+        case "ton", "tons", "shortton", "shorttons": return .shortTon
+        case "longton", "longtons": return .longTon
+        case "tonne", "tonnes", "metricton", "metrictons", "metrictonne", "metrictonnes": return .tonne
+        // Bare "c" only reaches here when the regex matched an UPPERCASE C
+        // (case-sensitive) — lowercase "c" (cup) never gets this far.
+        case "c", "°c", "celsius", "degreec", "degreesc", "degreecelsius", "degreescelsius": return .celsius
+        case "°f", "f", "fahrenheit", "degreef", "degreesf", "degreefahrenheit", "degreesfahrenheit": return .fahrenheit
+        case "ml", "milliliter", "milliliters", "millilitre", "millilitres": return .milliliters
+        case "l", "liter", "liters", "litre", "litres":  return .liters
+        case "floz", "fluidounce", "fluidounces": return .fluidOunces
         case "gal", "gallon", "gallons": return .gallons
         case "qt", "quart", "quarts": return .quarts
         case "pt", "pint", "pints":   return .pints
-        case "km/h", "kmh": return .kmh
-        case "mph":         return .mph
-        case "m²", "m2":    return .squareMeters
-        case "ft²", "ft2":  return .squareFeet
+        case "cup", "cups":           return .cups
+        case "tbsp", "tablespoon", "tablespoons": return .tablespoons
+        case "tsp", "teaspoon", "teaspoons":      return .teaspoons
+        case "cc", "cm³", "cm3":      return .cc
+        case "m³", "cubicmeter", "cubicmeters", "cubicmetre", "cubicmetres": return .cubicMeters
+        // Speed
+        case "km/h", "kmh", "kph", "kilometerperhour", "kilometersperhour",
+             "kilometreperhour", "kilometresperhour": return .kmh
+        case "mph", "mi/h", "mileperhour", "milesperhour": return .mph
+        case "m/s", "meterpersecond", "meterspersecond", "metrepersecond", "metrespersecond": return .metersPerSecond
+        case "km/min": return .kmPerMin
+        case "cm/s":   return .cmPerSecond
+        // Area
+        case "m²", "m2", "sqm", "squarem", "squaremeter", "squaremeters", "squaremetre", "squaremetres": return .squareMeters
+        case "ft²", "ft2", "sqft", "squarefeet", "squarefoot": return .squareFeet
+        case "km²", "km2", "sqkm", "squarekm", "squarekilometer", "squarekilometers", "squarekilometre", "squarekilometres": return .squareKm
+        case "sqyd", "squareyard", "squareyards": return .squareYards
+        case "sqmi", "squaremile", "squaremiles": return .squareMiles
+        case "ha", "hectare", "hectares": return .hectare
+        case "acre", "acres": return .acre
         default: return nil
         }
     }
@@ -281,6 +534,10 @@ enum UnitConversion {
         case .kilograms: return formatMetric(m.value, baseUnit: .kilograms, toMetric: false)
         case .ounces:    return formatMetric(m.value * 0.0283495, baseUnit: .kilograms, toMetric: true)
         case .pounds:    return formatMetric(m.value * 0.453592, baseUnit: .kilograms, toMetric: true)
+        case .stone:     return formatMetric(m.value * 6.35029, baseUnit: .kilograms, toMetric: true)
+        case .shortTon:  return formatMetric(m.value * 907.18474, baseUnit: .kilograms, toMetric: true)
+        case .longTon:   return formatMetric(m.value * 1016.0469, baseUnit: .kilograms, toMetric: true)
+        case .tonne:     return formatMetric(m.value * 1000, baseUnit: .kilograms, toMetric: false)
         // Temperature
         case .celsius:    return String(format: "%.1f°F", m.value * 9.0/5.0 + 32)
         case .fahrenheit: return String(format: "%.1f°C", (m.value - 32) * 5.0/9.0)
@@ -291,13 +548,57 @@ enum UnitConversion {
         case .gallons:     return formatMetric(m.value * 3.78541, baseUnit: .liters, toMetric: true)
         case .quarts:      return formatMetric(m.value * 0.94635, baseUnit: .liters, toMetric: true)
         case .pints:       return formatMetric(m.value * 0.47318, baseUnit: .liters, toMetric: true)
+        case .cups:        return formatMetric(m.value * 0.236588, baseUnit: .liters, toMetric: true)
+        case .tablespoons: return formatMetric(m.value * 0.0147868, baseUnit: .liters, toMetric: true)
+        case .teaspoons:   return formatMetric(m.value * 0.00492892, baseUnit: .liters, toMetric: true)
+        case .cc:          return formatMetric(m.value / 1000, baseUnit: .liters, toMetric: false)
+        case .cubicMeters: return String(format: "%.1f ft³", m.value * 35.3147)
         // Speed
         case .kmh: return String(format: "%.1f mph", m.value / 1.609344)
         case .mph: return String(format: "%.1f km/h", m.value * 1.609344)
+        case .metersPerSecond: return String(format: "%.1f mph", m.value * 2.236936)
+        case .kmPerMin:        return String(format: "%.1f mph", m.value * 37.28227)
+        case .cmPerSecond:     return String(format: "%.1f mph", m.value * 0.02236936)
         // Area: SI base = m²
         case .squareMeters: return String(format: "%.1f ft²", m.value * 10.7639)
         case .squareFeet:   return String(format: "%.1f m²", m.value * 0.092903)
+        case .squareYards:  return String(format: "%.1f m²", m.value * 0.836127)
+        case .squareMiles:  return String(format: "%.2f km²", m.value * 2.589988)
+        case .squareKm:     return String(format: "%.2f sq mi", m.value * 0.386102)
+        case .hectare:      return String(format: "%.2f acres", m.value * 2.47105)
+        case .acre:
+            // acre → m², promoting to hectares once it gets large.
+            let m2 = m.value * 4046.8564
+            return m2 >= 10000 ? String(format: "%.2f ha", m2 / 10000)
+                               : String(format: "%.0f m²", m2)
         }
+    }
+
+    /// Convert a numeric range ("25–30 °C") by converting both endpoints and,
+    /// when they share a unit suffix, merging to "A–B suffix" ("77.0–86.0°F").
+    private static func convertRange(_ a: Double, _ b: Double, _ unit: Unit) -> String? {
+        let z = "".startIndex
+        guard let sa = convertMeasurement(Match(range: z..<z, value: a, unit: unit)),
+              let sb = convertMeasurement(Match(range: z..<z, value: b, unit: unit)) else { return nil }
+        let (na, ua) = splitNumberUnit(sa)
+        let (nb, ub) = splitNumberUnit(sb)
+        if !ua.isEmpty && ua == ub { return "\(na)–\(nb)\(ua)" }
+        return "\(sa)–\(sb)"
+    }
+
+    /// Split "77.0°F" → ("77.0", "°F") and "1.6 km" → ("1.6", " km").
+    private static func splitNumberUnit(_ s: String) -> (String, String) {
+        var num = "", suffix = ""
+        var inNumber = true
+        for ch in s {
+            if inNumber && (ch.isNumber || ch == "." || ch == "," || ch == "-") {
+                num.append(ch)
+            } else {
+                inNumber = false
+                suffix.append(ch)
+            }
+        }
+        return (num, suffix)
     }
 
     private enum BaseUnit {
@@ -355,6 +656,22 @@ enum UnitConversion {
     }
 }
 
+// MARK: - Per-action settings
+
+/// User choice for how the converter renders its result: append the
+/// conversion in parentheses (default) or replace the original measurement.
+/// Stored per action ID so a duplicated action can differ.
+enum UnitConversionSettings {
+    private static func key(_ id: String) -> String { "drpaste.units.replaceMode.\(id)" }
+
+    static func replaceMode(for id: String) -> Bool {
+        UserDefaults.standard.bool(forKey: key(id))   // default false = append
+    }
+    static func setReplaceMode(_ replace: Bool, for id: String) {
+        UserDefaults.standard.set(replace, forKey: key(id))
+    }
+}
+
 // MARK: - ClipboardAction wrapper
 
 struct UnitConversionAction: ClipboardAction {
@@ -377,8 +694,10 @@ struct UnitConversionAction: ClipboardAction {
         guard let text = item.previewText else {
             return .failed(original: item, reason: "Convert units: empty text.", recovery: nil)
         }
+        let mode: UnitConversion.OutputMode =
+            UnitConversionSettings.replaceMode(for: id) ? .replace : .append
         let converted = await runOffMain {
-            UnitConversion.convert(text, direction: .auto, mode: .append)
+            UnitConversion.convert(text, direction: .auto, mode: mode)
         }
         if converted == text {
             return .failed(original: item,

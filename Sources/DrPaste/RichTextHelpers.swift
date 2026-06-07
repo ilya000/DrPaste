@@ -15,16 +15,72 @@ import AppKit
 
 enum RichTextHelpers {
 
+    // MARK: - Load a rich clip's attributed string
+
+    /// Loads the NSAttributedString for a rich clip from its stored
+    /// representations, trying every rich format the app may have written.
+    ///
+    /// CRITICAL (#A78 / Codex #3): when a rich clip carries inline attachments
+    /// (rich-OCR output, files-as-icons, the append accumulator), the app
+    /// serialises it as **flat-RTFD** (`com.apple.flat-rtfd`), NOT `public.rtf`
+    /// — RTF silently drops attachments. Rich → Markdown / HTML / Wiki / Unicode
+    /// used to read only `public.rtf`, so on those clips they fell back to plain
+    /// text and lost all formatting / attachments. Try RTFD first, then RTF,
+    /// then HTML.
+    static func loadAttributed(from item: ClipboardItem) -> NSAttributedString? {
+        func data(_ key: String) -> Data? {
+            guard let rel = item.representations[key] else { return nil }
+            return try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel))
+        }
+        if let d = data("com.apple.flat-rtfd") ?? data("public.rtfd"),
+           let attr = try? NSAttributedString(
+               data: d, options: [.documentType: NSAttributedString.DocumentType.rtfd],
+               documentAttributes: nil) {
+            return attr
+        }
+        if let d = data("public.rtf"),
+           let attr = try? NSAttributedString(
+               data: d, options: [.documentType: NSAttributedString.DocumentType.rtf],
+               documentAttributes: nil) {
+            return attr
+        }
+        if let d = data("public.html"),
+           let attr = try? NSAttributedString(
+               data: d, options: [.documentType: NSAttributedString.DocumentType.html,
+                                  .characterEncoding: String.Encoding.utf8.rawValue],
+               documentAttributes: nil) {
+            return attr
+        }
+        return nil
+    }
+
     // MARK: - NSAttributedString → Markdown
 
     /// Coarse attributed → Markdown conversion. Covers bold, italic, monospace
     /// (inline code), headings inferred from font size, and links. Does not
     /// cover tables, blockquotes, or nested lists. Sufficient for round-tripping
     /// AI transformations through Markdown.
-    static func attributedStringToMarkdown(_ attr: NSAttributedString) -> String? {
+    /// `escapeLiterals` (#A78 / Codex #10): when true, literal markdown
+    /// metacharacters in the TEXT content (`\ ` `` ` `` `* _ [ ]`) are
+    /// backslash-escaped so a value like `5 * 3` or `my_var` doesn't render as
+    /// emphasis. Used by the explicit Rich → Markdown EXPORT action. Left OFF
+    /// for the AI round-trip path (it would add escaping the model has to
+    /// preserve and reverse).
+    static func attributedStringToMarkdown(_ attr: NSAttributedString,
+                                           escapeLiterals: Bool = false) -> String? {
         guard attr.length > 0 else { return "" }
         var result = ""
         attr.enumerateAttributes(in: NSRange(location: 0, length: attr.length), options: []) { attrs, range, _ in
+            // Embedded image → a self-contained data-URI image, exactly like the
+            // HTML export embeds base64. Most Markdown renderers (Obsidian,
+            // Typora, VS Code preview, …) display these. Skip the U+FFFC
+            // attachment placeholder char that would otherwise leak through.
+            if let attachment = attrs[.attachment] as? NSTextAttachment {
+                if let png = attachmentPNG(attachment) {
+                    result += "![image](data:image/png;base64,\(png.base64EncodedString()))"
+                }
+                return
+            }
             let substring = attr.attributedSubstring(from: range).string
             guard !substring.isEmpty else { return }
 
@@ -40,7 +96,9 @@ enum RichTextHelpers {
             let isHeading2 = size >= 17 && size < 22 && isBold && lineStart
             let isHeading3 = size >= 14 && size < 17 && isBold && lineStart
 
-            var segment = substring
+            // Escape literal metachars in plain text runs (not inside a code
+            // span — markdown doesn't interpret markup there).
+            var segment = (escapeLiterals && !isMonospace) ? escapeMarkdownLiterals(substring) : substring
             if let link = attrs[.link] as? URL {
                 segment = "[\(segment)](\(link.absoluteString))"
             } else if let linkStr = attrs[.link] as? String {
@@ -186,10 +244,27 @@ enum RichTextHelpers {
 
     /// MediaWiki syntax (Wikipedia). Used by engine.rich_to_wiki and the
     /// Rich → Wiki markup built-in action.
-    static func attributedStringToWiki(_ attr: NSAttributedString) -> String {
+    /// `escapeLiterals` (Codex #10): when true, the wiki link / template
+    /// metacharacters `[ ] |` in the TEXT content are replaced with HTML
+    /// entities so literal brackets / pipes don't create spurious links or
+    /// break table cells. Single quotes are left alone — only runs of 2+ `'`
+    /// are wiki markup and apostrophes are far too common in prose to escape.
+    static func attributedStringToWiki(_ attr: NSAttributedString,
+                                       escapeLiterals: Bool = false) -> String {
         guard attr.length > 0 else { return "" }
         var result = ""
+        var imageIndex = 0
         attr.enumerateAttributes(in: NSRange(location: 0, length: attr.length), options: []) { attrs, range, _ in
+            // Embedded image → a `[[File:…]]` reference. MediaWiki cannot inline
+            // binary image data (no data-URI support); images live as uploaded
+            // files referenced by name. We can't upload, so emit a placeholder
+            // reference the user can point at their uploaded file — better than
+            // silently dropping the image. (Skips the U+FFFC placeholder char.)
+            if attrs[.attachment] is NSTextAttachment {
+                imageIndex += 1
+                result += "[[File:embedded-image-\(imageIndex).png|thumb]]"
+                return
+            }
             let substring = attr.attributedSubstring(from: range).string
             guard !substring.isEmpty else { return }
 
@@ -204,7 +279,7 @@ enum RichTextHelpers {
             let isHeading2 = size >= 17 && size < 22 && isBold && lineStart
             let isHeading3 = size >= 14 && size < 17 && isBold && lineStart
 
-            var segment = substring
+            var segment = (escapeLiterals && !isMonospace) ? escapeWikiLiterals(substring) : substring
             if let link = attrs[.link] as? URL {
                 segment = "[\(link.absoluteString) \(segment)]"
             }
@@ -222,6 +297,44 @@ enum RichTextHelpers {
         return result
     }
 
+    /// PNG bytes for an image text-attachment (re-encoded so any source format —
+    /// the FileWrapper contents, `.image`, or `.contents` — becomes uniform PNG).
+    private static func attachmentPNG(_ attachment: NSTextAttachment) -> Data? {
+        let image: NSImage?
+        if let data = attachment.fileWrapper?.regularFileContents {
+            image = NSImage(data: data)
+        } else if let img = attachment.image {
+            image = img
+        } else if let data = attachment.contents {
+            image = NSImage(data: data)
+        } else {
+            image = nil
+        }
+        guard let image, let tiff = image.tiffRepresentation,
+              let bmp = NSBitmapImageRep(data: tiff) else { return nil }
+        return bmp.representation(using: .png, properties: [:])
+    }
+
+    /// Backslash-escape literal markdown metacharacters in a text run.
+    private static func escapeMarkdownLiterals(_ s: String) -> String {
+        var out = ""
+        out.reserveCapacity(s.count)
+        for ch in s {
+            if ch == "\\" || ch == "`" || ch == "*" || ch == "_" || ch == "[" || ch == "]" {
+                out.append("\\")
+            }
+            out.append(ch)
+        }
+        return out
+    }
+
+    /// Entity-escape wiki link / table metacharacters in a text run.
+    private static func escapeWikiLiterals(_ s: String) -> String {
+        s.replacingOccurrences(of: "[", with: "&#91;")
+         .replacingOccurrences(of: "]", with: "&#93;")
+         .replacingOccurrences(of: "|", with: "&#124;")
+    }
+
     // MARK: - NSAttributedString → HTML
 
     /// Uses the native NSAttributedString.data(documentAttributes: .html) API.
@@ -231,6 +344,32 @@ enum RichTextHelpers {
               let str = String(data: data, encoding: .utf8) else {
             return nil
         }
-        return str
+        return htmlBodyFragment(from: str)
+    }
+
+    /// Reduces Cocoa's full-document HTML export to just the content fragment.
+    ///
+    /// `NSAttributedString`'s HTML writer emits a whole document — DOCTYPE,
+    /// `<head>` with a `<meta generator="Cocoa HTML Writer">` and an
+    /// autogenerated `<style>` block of `p.p1 { font: 13px 'Helvetica Neue' }`
+    /// rules, then `<body>`. You almost never paste a whole document; you paste
+    /// a snippet INTO existing HTML, so all that chrome is noise (and the
+    /// hardcoded Helvetica sizes actively fight the host page's CSS).
+    ///
+    /// Return only the inner `<body>` content, and drop the autogenerated
+    /// `class="p1"` / `class="s1"` attributes that referenced the now-removed
+    /// `<style>`. The structural tags (`<p>`, `<b>`, `<i>`, `<a href>`) carry
+    /// the meaning and survive.
+    private static func htmlBodyFragment(from full: String) -> String {
+        var s = full
+        if let open = s.range(of: "<body[^>]*>", options: [.regularExpression, .caseInsensitive]),
+           let close = s.range(of: "</body>", options: [.caseInsensitive, .backwards]),
+           open.upperBound <= close.lowerBound {
+            s = String(s[open.upperBound..<close.lowerBound])
+        }
+        // Strip Cocoa's style-class refs (class="p1", class="s3", class="Apple…").
+        s = s.replacingOccurrences(of: #"\s+class="(?:p|s|Apple)[^"]*""#,
+                                   with: "", options: .regularExpression)
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

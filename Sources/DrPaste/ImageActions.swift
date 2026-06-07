@@ -29,7 +29,10 @@ private let sharedCIContext: CIContext = CIContext(options: [.useSoftwareRendere
 /// image attachment, so an OCR / decode-QR / strip-metadata flow can pull
 /// images out of pasted Pages / Word / Mail content.
 private func imageActionApplies(item: ClipboardItem, context: ContentContext) -> Bool {
-    context.contains(.image) || RichTextImageExtractor.hasEmbeddedImage(item)
+    // `.richHasImage` is set by ContextDetector when a rich clip carries an
+    // embedded image, so the gate is a cheap flag check instead of re-decoding
+    // the attributed string on every applicability call.
+    context.contains(.image) || context.contains(.richHasImage)
 }
 
 /// Loads the **original** (full-size) image for an image transformation.
@@ -103,6 +106,18 @@ enum RichTextImageExtractor {
         return result
     }
 
+    /// Loads the rich-text attributed string for an item, or nil. Public so
+    /// the OCR action can walk every embedded image attachment.
+    static func attributed(_ item: ClipboardItem) -> NSAttributedString? {
+        loadAttributedString(item)
+    }
+
+    /// Extracts an NSImage from a text attachment, or nil. Public so the OCR
+    /// action can OCR each embedded image in turn.
+    static func image(from attachment: NSTextAttachment) -> NSImage? {
+        imageFromAttachment(attachment)
+    }
+
     /// Returns the first image found inside the rich-text attachments, or nil.
     static func firstImage(in item: ClipboardItem) -> NSImage? {
         guard let attr = loadAttributedString(item) else { return nil }
@@ -127,29 +142,11 @@ enum RichTextImageExtractor {
     // MARK: - Helpers
 
     private static func loadAttributedString(_ item: ClipboardItem) -> NSAttributedString? {
-        if let rel = item.representations["public.rtfd"] ?? item.representations["com.apple.flat-rtfd"],
-           let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
-           let attr = try? NSAttributedString(data: data,
-                                              options: [.documentType: NSAttributedString.DocumentType.rtfd],
-                                              documentAttributes: nil) {
-            return attr
-        }
-        if let rel = item.representations["public.rtf"],
-           let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
-           let attr = try? NSAttributedString(data: data,
-                                              options: [.documentType: NSAttributedString.DocumentType.rtf],
-                                              documentAttributes: nil) {
-            return attr
-        }
-        if let rel = item.representations["public.html"],
-           let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
-           let attr = try? NSAttributedString(data: data,
-                                              options: [.documentType: NSAttributedString.DocumentType.html,
-                                                        .characterEncoding: String.Encoding.utf8.rawValue],
-                                              documentAttributes: nil) {
-            return attr
-        }
-        return nil
+        // Delegate to the single robust loader (uses NSAttributedString(rtfd:)
+        // for flat-RTFD / public.rtfd, which rehydrates embedded-image
+        // FileWrappers reliably) so image detection matches what the preview
+        // actually renders.
+        RichTextLoader.attributedString(from: item)
     }
 
     private static func containsImageAttachment(_ attr: NSAttributedString) -> Bool {
@@ -215,7 +212,89 @@ private func saveImage(_ image: NSImage, originalItem: ClipboardItem) -> Clipboa
     return copy
 }
 
+// MARK: - In-place image transforms for rich clips
+
+/// PNG bytes for an NSImage (via its bitmap rep).
+func pngData(from image: NSImage) -> Data? {
+    guard let tiff = image.tiffRepresentation, let bmp = NSBitmapImageRep(data: tiff) else { return nil }
+    return bmp.representation(using: .png, properties: [:])
+}
+
+/// JPEG bytes for an NSImage at the given quality.
+func jpegData(from image: NSImage, factor: Double) -> Data? {
+    guard let tiff = image.tiffRepresentation, let bmp = NSBitmapImageRep(data: tiff) else { return nil }
+    return bmp.representation(using: .jpeg, properties: [.compressionFactor: factor])
+}
+
+/// Applies `transform` to EVERY embedded image of a rich clip IN PLACE,
+/// returning a rich clip (flat-RTFD) with the surrounding text and other runs
+/// preserved. This is what makes Rotate / Grayscale / Invert / Compress operate
+/// on the picture INSIDE the rich text instead of extracting it and discarding
+/// the prose. `transform` returns encoded bytes + extension, or nil to leave an
+/// attachment untouched. Runs off-main; returns nil when nothing was changed.
+func transformRichEmbeddedImages(
+    _ item: ClipboardItem,
+    _ transform: @escaping (NSImage) -> (data: Data, ext: String)?
+) async -> ApplyOutcome? {
+    let rtfd: Data? = await runOffMain {
+        guard let attr = RichTextLoader.attributedString(from: item) else { return nil }
+        let out = NSMutableAttributedString(attributedString: attr)
+        var anyReplaced = false
+        out.enumerateAttribute(.attachment,
+                               in: NSRange(location: 0, length: out.length)) { value, range, _ in
+            guard let attachment = value as? NSTextAttachment,
+                  let img = RichTextImageExtractor.image(from: attachment),
+                  let (data, ext) = transform(img) else { return }
+            let base = (attachment.fileWrapper?.preferredFilename as NSString?)?.deletingPathExtension ?? "image"
+            let wrapper = FileWrapper(regularFileWithContents: data)
+            wrapper.preferredFilename = base + "." + ext
+            out.replaceCharacters(in: range, with: NSAttributedString(attachment: NSTextAttachment(fileWrapper: wrapper)))
+            anyReplaced = true
+        }
+        guard anyReplaced else { return nil }
+        return try? out.data(from: NSRange(location: 0, length: out.length),
+                             documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd])
+    }
+    guard let rtfd,
+          let attr = try? NSAttributedString(
+              data: rtfd,
+              options: [.documentType: NSAttributedString.DocumentType.rtfd],
+              documentAttributes: nil) else {
+        return nil
+    }
+    return .preview(makeRichTextItem(attr, from: item))
+}
+
 // MARK: - OCR (Vision)
+
+/// Shared text recognizer — runs VNRecognizeText on one image and returns the
+/// joined lines, or nil if nothing was read. Caller hops off-main.
+func recognizeText(in image: NSImage) -> String? {
+    guard let cgImg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+    let request = VNRecognizeTextRequest()
+    request.recognitionLevel = .accurate
+    request.usesLanguageCorrection = true
+    request.recognitionLanguages = ["en-US", "ru-RU"]
+    let handler = VNImageRequestHandler(cgImage: cgImg, options: [:])
+    guard (try? handler.perform([request])) != nil else { return nil }
+    let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+    return lines.isEmpty ? nil : lines.joined(separator: "\n")
+}
+
+/// Builds a rich-text result item from already-serialized flat-RTFD bytes.
+/// Mirrors the RTFD branch of `makeRichTextItem` but takes Data so the
+/// NSAttributedString can be assembled (and OCR'd) entirely off-main.
+private func makeRichItem(fromRTFD data: Data, plain: String, from item: ClipboardItem) -> ClipboardItem {
+    var copy = item
+    copy.semantic = .richText
+    copy.previewText = plain
+    let tmpName = "ocr-rich-\(UUID().uuidString).rtfd"
+    try? data.write(to: AppStorage.blobsDir.appendingPathComponent(tmpName))
+    copy.representations = ["com.apple.flat-rtfd": tmpName]
+    copy.typesOrdered = ["com.apple.flat-rtfd"]
+    copy.previewImageRel = nil
+    return copy
+}
 
 struct ImageOCRAction: ClipboardAction {
     let id = "builtin.image.ocr"; let title = "Extract text (OCR)"; let isLocal = true
@@ -223,30 +302,23 @@ struct ImageOCRAction: ClipboardAction {
         imageActionApplies(item: item, context: context)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
-        // VNRecognizeTextRequest is heavy (50 ms–1 s on text-rich images).
-        // Run off-main so the HUD preview pane stays responsive while
-        // the user navigates between actions.
+        // Rich text with embedded images → OCR every image IN PLACE, replacing
+        // each attachment with its recognized text while keeping the
+        // surrounding rich text intact. The result stays a rich clip.
+        if item.semantic == .richText, RichTextImageExtractor.hasEmbeddedImage(item) {
+            return await applyToRichText(item)
+        }
+        // Plain image clip → recognize and return plain text. Heavy Vision work
+        // runs off-main so the HUD preview pane stays responsive.
         enum OCROutcome: Sendable { case ok(String); case failed(String) }
         let outcome: OCROutcome = await runOffMain {
-            guard let img = loadImage(item),
-                  let cgImg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            guard let img = loadImage(item) else {
                 return .failed("Couldn't read image")
             }
-            let request = VNRecognizeTextRequest()
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = true
-            request.recognitionLanguages = ["en-US", "ru-RU"]
-            let handler = VNImageRequestHandler(cgImage: cgImg, options: [:])
-            do {
-                try handler.perform([request])
-            } catch {
-                return .failed("OCR failed: \(error.localizedDescription)")
-            }
-            let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
-            guard !lines.isEmpty else {
+            guard let text = recognizeText(in: img) else {
                 return .failed("No text recognized in image")
             }
-            return .ok(lines.joined(separator: "\n"))
+            return .ok(text)
         }
         switch outcome {
         case .ok(let text):
@@ -259,14 +331,70 @@ struct ImageOCRAction: ClipboardAction {
             return .failed(original: item, reason: reason, recovery: nil)
         }
     }
+
+    /// OCR each embedded image attachment and splice the recognized text in its
+    /// place. Everything (decode → enumerate → Vision → re-serialize) happens
+    /// inside the off-main closure, so the NSAttributedString never escapes and
+    /// the only value crossing the boundary is Sendable Data + String.
+    private func applyToRichText(_ item: ClipboardItem) async -> ApplyOutcome {
+        enum RichOCR: Sendable { case ok(data: Data, text: String); case failed(String) }
+        let outcome: RichOCR = await runOffMain {
+            guard let attr = RichTextImageExtractor.attributed(item) else {
+                return .failed("Couldn't read rich text")
+            }
+            let mutable = NSMutableAttributedString(attributedString: attr)
+            // Collect every image-bearing attachment range up front.
+            var jobs: [(NSRange, NSImage)] = []
+            mutable.enumerateAttribute(.attachment,
+                                       in: NSRange(location: 0, length: mutable.length)) { value, range, _ in
+                if let a = value as? NSTextAttachment, let img = RichTextImageExtractor.image(from: a) {
+                    jobs.append((range, img))
+                }
+            }
+            guard !jobs.isEmpty else { return .failed("No images in rich text") }
+            // Replace back-to-front so earlier ranges stay valid as lengths change.
+            var recognizedAny = false
+            for (range, img) in jobs.reversed() {
+                let recognized = recognizeText(in: img)
+                if let recognized, !recognized.isEmpty {
+                    recognizedAny = true
+                    let replacement = NSAttributedString(
+                        string: recognized,
+                        attributes: [.font: NSFont.systemFont(ofSize: 13)])
+                    mutable.replaceCharacters(in: range, with: replacement)
+                }
+                // Image with no readable text: leave the attachment untouched.
+            }
+            guard recognizedAny else {
+                return .failed("No text recognized in embedded image(s)")
+            }
+            let full = NSRange(location: 0, length: mutable.length)
+            guard let data = try? mutable.data(
+                from: full,
+                documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd]) else {
+                return .failed("Couldn't rebuild rich text")
+            }
+            return .ok(data: data, text: mutable.string)
+        }
+        switch outcome {
+        case .ok(let data, let text):
+            var out = makeRichItem(fromRTFD: data, plain: text, from: item)
+            out.tags.append(ContextDetector.ocrProvenanceTag)
+            return .preview(out)
+        case .failed(let reason):
+            return .failed(original: item, reason: reason, recovery: nil)
+        }
+    }
 }
 
 // MARK: - QR / barcode decode
 
 struct ImageDecodeQRAction: ClipboardAction {
-    let id = "builtin.image.decode_qr"; let title = "Decode QR / barcode"; let isLocal = true
+    let id = "builtin.image.decode_qr"; let title = "Decode QR"; let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        imageActionApplies(item: item, context: context)
+        // Image clips only — decoding "the QR inside a rich document" is
+        // ambiguous, and the action returns a plain payload, not a rich edit.
+        context.contains(.image)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
         enum QROutcome: Sendable { case ok(String); case failed(String) }
@@ -321,6 +449,12 @@ struct ImageGrayscaleAction: ClipboardAction {
         imageActionApplies(item: item, context: context)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
+        if item.semantic == .richText {
+            if let outcome = await transformRichEmbeddedImages(item, { img in
+                applyFilter(CIFilter.photoEffectMono(), on: img).flatMap { pngData(from: $0).map { ($0, "png") } }
+            }) { return outcome }
+            return .failed(original: item, reason: "No embedded image to convert", recovery: nil)
+        }
         let saved: ClipboardItem? = await runOffMain {
             guard let img = loadImage(item) else { return nil }
             let filter = CIFilter.photoEffectMono()
@@ -340,6 +474,12 @@ struct ImageInvertAction: ClipboardAction {
         imageActionApplies(item: item, context: context)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
+        if item.semantic == .richText {
+            if let outcome = await transformRichEmbeddedImages(item, { img in
+                applyFilter(CIFilter.colorInvert(), on: img).flatMap { pngData(from: $0).map { ($0, "png") } }
+            }) { return outcome }
+            return .failed(original: item, reason: "No embedded image to invert", recovery: nil)
+        }
         let saved: ClipboardItem? = await runOffMain {
             guard let img = loadImage(item) else { return nil }
             let filter = CIFilter.colorInvert()
@@ -358,9 +498,8 @@ struct ImageInvertAction: ClipboardAction {
 /// extent has a non-zero origin; we translate it back to (0, 0) before
 /// rasterizing so the saved PNG has a tight bounding box and no spurious
 /// transparent border.
-private func rotateImage(_ item: ClipboardItem, radians: CGFloat) -> ClipboardItem? {
-    guard let img = loadImage(item),
-          let tiff = img.tiffRepresentation,
+private func rotatedImage(_ img: NSImage, radians: CGFloat) -> NSImage? {
+    guard let tiff = img.tiffRepresentation,
           let bitmap = NSBitmapImageRep(data: tiff),
           let cgImg = bitmap.cgImage else {
         return nil
@@ -371,14 +510,19 @@ private func rotateImage(_ item: ClipboardItem, radians: CGFloat) -> ClipboardIt
         by: CGAffineTransform(translationX: -rotated.extent.origin.x,
                               y: -rotated.extent.origin.y)
     )
-    let context = sharedCIContext
-    guard let outputCG = context.createCGImage(normalized, from: normalized.extent) else {
+    guard let outputCG = sharedCIContext.createCGImage(normalized, from: normalized.extent) else {
         return nil
     }
     let rep = NSBitmapImageRep(cgImage: outputCG)
     let result = NSImage(size: NSSize(width: rep.pixelsWide, height: rep.pixelsHigh))
     result.addRepresentation(rep)
-    return saveImage(result, originalItem: item)
+    return result
+}
+
+private func rotateImage(_ item: ClipboardItem, radians: CGFloat) -> ClipboardItem? {
+    guard let img = loadImage(item),
+          let rotated = rotatedImage(img, radians: radians) else { return nil }
+    return saveImage(rotated, originalItem: item)
 }
 
 /// Rotate 90° clockwise (the existing built-in — keeps its stable id so
@@ -386,12 +530,18 @@ private func rotateImage(_ item: ClipboardItem, radians: CGFloat) -> ClipboardIt
 /// say "right" since "CW" alone isn't intuitive at a glance.
 struct ImageRotateRightAction: ClipboardAction {
     let id = "builtin.image.rotate_right"
-    let title = "Rotate right (90° CW)"
+    let title = "Rotate right"
     let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         imageActionApplies(item: item, context: context)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
+        if item.semantic == .richText {
+            if let outcome = await transformRichEmbeddedImages(item, { img in
+                rotatedImage(img, radians: -.pi / 2).flatMap { pngData(from: $0).map { ($0, "png") } }
+            }) { return outcome }
+            return .failed(original: item, reason: "No embedded image to rotate", recovery: nil)
+        }
         let saved: ClipboardItem? = await runOffMain {
             rotateImage(item, radians: -.pi / 2)
         }
@@ -407,12 +557,18 @@ struct ImageRotateRightAction: ClipboardAction {
 /// direction without thinking about which way it tipped.
 struct ImageRotateLeftAction: ClipboardAction {
     let id = "builtin.image.rotate_left"
-    let title = "Rotate left (90° CCW)"
+    let title = "Rotate left"
     let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         imageActionApplies(item: item, context: context)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
+        if item.semantic == .richText {
+            if let outcome = await transformRichEmbeddedImages(item, { img in
+                rotatedImage(img, radians: .pi / 2).flatMap { pngData(from: $0).map { ($0, "png") } }
+            }) { return outcome }
+            return .failed(original: item, reason: "No embedded image to rotate", recovery: nil)
+        }
         let saved: ClipboardItem? = await runOffMain {
             rotateImage(item, radians: .pi / 2)
         }
@@ -428,7 +584,10 @@ struct ImageRotateLeftAction: ClipboardAction {
 /// per action) so the action structs — which have no config plumbing — can read
 /// it directly in `apply`. The Settings → Edit Action sheet writes it.
 enum ResizeSettings {
-    static let minSide = 16
+    // Floor of 1 px: resizing to a tiny favicon / 10 px thumbnail is a valid
+    // request. The previous 16 px floor silently snapped "10" up to 16 so the
+    // user could never make a genuinely small image.
+    static let minSide = 1
     static let maxSide = 20000
     private static func key(_ id: String) -> String { "drpaste.image.resizeMaxLongSide.\(id)" }
 
@@ -442,11 +601,17 @@ enum ResizeSettings {
 }
 
 struct ImageCompressJPEGAction: ClipboardAction {
-    let id = "builtin.image.compress_jpeg"; let title = "Compress to JPEG 80%"; let isLocal = true
+    let id = "builtin.image.compress_jpeg"; let title = "Compress JPEG"; let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
         imageActionApplies(item: item, context: context)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
+        if item.semantic == .richText {
+            if let outcome = await transformRichEmbeddedImages(item, { img in
+                jpegData(from: img, factor: 0.8).map { ($0, "jpg") }
+            }) { return outcome }
+            return .failed(original: item, reason: "No embedded image to compress", recovery: nil)
+        }
         let copy: ClipboardItem? = await runOffMain {
             guard let img = loadImage(item),
                   let tiff = img.tiffRepresentation,
@@ -607,10 +772,14 @@ enum ImageMetadata {
         if highlights.isEmpty && details.isEmpty && description == nil {
             lines.append("Metadata: none (no EXIF / GPS)")
         } else {
-            lines.append("")
-            lines.append("Metadata:")
-            for h in highlights { lines.append("  • \(h)") }
-            for d in details { lines.append("  • \(d)") }
+            // Only print the "Metadata:" block when there is actual EXIF / GPS /
+            // camera data — an empty header above just a Description looked broken.
+            if !highlights.isEmpty || !details.isEmpty {
+                lines.append("")
+                lines.append("Metadata:")
+                for h in highlights { lines.append("  • \(h)") }
+                for d in details { lines.append("  • \(d)") }
+            }
             if let description {
                 lines.append("")
                 lines.append("Description:")
@@ -659,7 +828,9 @@ struct ImageInfoAction: ClipboardAction {
     let title = "Image info"
     let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        imageActionApplies(item: item, context: context)
+        // Image clips only — reporting EXIF / dimensions / format of "a rich
+        // document" is meaningless (the embedded image has no file metadata).
+        context.contains(.image)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
         let text: String? = await runOffMain { ImageMetadata.report(for: item) }
@@ -671,9 +842,11 @@ struct ImageInfoAction: ClipboardAction {
 }
 
 struct ImageStripMetadataAction: ClipboardAction {
-    let id = "builtin.image.strip_metadata"; let title = "Strip EXIF / metadata"; let isLocal = true
+    let id = "builtin.image.strip_metadata"; let title = "Strip metadata"; let isLocal = true
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        imageActionApplies(item: item, context: context)
+        // Image clips only — RTFD-embedding already drops EXIF, so this is a
+        // no-op on rich, and it would otherwise extract the image and lose text.
+        context.contains(.image)
     }
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
         let copy: ClipboardItem? = await runOffMain {
@@ -758,7 +931,9 @@ struct ImageToASCIIArtAction: ClipboardAction {
     private static let edgeGlyphs: [Character] = ["-", "\\", "|", "/"]
 
     func isApplicable(item: ClipboardItem, context: ContentContext) -> Bool {
-        imageActionApplies(item: item, context: context)
+        // Image clips only — turning an embedded picture into a big ASCII block
+        // inside a rich document is not a sensible in-place edit.
+        context.contains(.image)
     }
 
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {

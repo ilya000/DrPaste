@@ -106,6 +106,12 @@ struct ActionConfig: Codable, Equatable {
     /// Custom titles keyed by action ID — users can rename built-ins. When no
     /// override exists, the action's default title is used.
     var customTitles: [String: String] = [:]
+    /// Custom descriptions keyed by action ID — the one-line blurb shown as the
+    /// second line of the action row in Settings. When no override exists the
+    /// bundled default is used (built-in → `BuiltinActionMetadata.descriptions`,
+    /// transformation → engine description, AI → prompt template). Empty string
+    /// is NOT stored (an empty override would just hide the useful default).
+    var customDescriptions: [String: String] = [:]
     /// Custom action order per content type. Key is SemanticKind.rawValue,
     /// value is the list of action IDs in display order. Actions not present
     /// in the array appear after the listed ones in their default order.
@@ -173,6 +179,7 @@ struct ActionConfig: Codable, Equatable {
         self.enabledFlags = try c.decodeIfPresent([String: Bool].self, forKey: .enabledFlags) ?? [:]
         self.customAI = try c.decodeIfPresent([CustomAIDescriptor].self, forKey: .customAI) ?? []
         self.customTitles = try c.decodeIfPresent([String: String].self, forKey: .customTitles) ?? [:]
+        self.customDescriptions = try c.decodeIfPresent([String: String].self, forKey: .customDescriptions) ?? [:]
         self.actionOrder = try c.decodeIfPresent([String: [String]].self, forKey: .actionOrder) ?? [:]
         self.customTransformations = try c.decodeIfPresent([CustomTransformationDescriptor].self,
                                                             forKey: .customTransformations) ?? []
@@ -193,7 +200,7 @@ struct ActionConfig: Codable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, enabledFlags, customAI, customTitles, actionOrder,
+        case version, enabledFlags, customAI, customTitles, customDescriptions, actionOrder,
              customTransformations, actionHotkeys, seedAIVersion,
              seedTransformationVersion, actionTestSamples,
              actionTestImageBlobs, playgroundSamples, playgroundImageBlobs,
@@ -285,7 +292,9 @@ enum SettingsSamples {
         case .richText:
             text = ""  // unreachable
         case .url:
-            text = "https://example.com/article?utm_source=newsletter&utm_medium=email&fbclid=abc123&id=42"
+            // example.com/ is real and always returns a page with a <title>, so
+            // Preview card works; the tracking params let Clean URL demo too.
+            text = "https://example.com/?utm_source=newsletter&utm_medium=email&fbclid=abc123&id=42"
         case .email:
             text = "hello@example.com"
         case .json:

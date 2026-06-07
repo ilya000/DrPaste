@@ -44,7 +44,7 @@ struct RichTextPreviewView: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
-        let prepared = remapStaticForegroundColors(
+        let prepared = Self.remapStaticForegroundColors(
             scaleAttributedString(attributedString, by: fontScale)
         )
         textView.textStorage?.setAttributedString(prepared)
@@ -99,7 +99,7 @@ struct RichTextPreviewView: NSViewRepresentable {
     /// Ranges with no explicit `.foregroundColor` get `.labelColor` set so the
     /// text is drawn in the adaptive label color rather than NSTextView's
     /// default of `textColor` (which an upstream caller could have overridden).
-    private func remapStaticForegroundColors(_ src: NSAttributedString) -> NSAttributedString {
+    static func remapStaticForegroundColors(_ src: NSAttributedString) -> NSAttributedString {
         guard src.length > 0 else { return src }
         let mutable = NSMutableAttributedString(attributedString: src)
         let fullRange = NSRange(location: 0, length: mutable.length)
@@ -116,6 +116,14 @@ struct RichTextPreviewView: NSViewRepresentable {
                                      range: range)
             }
         }
+        // Strip the source's text / page BACKGROUND colours so the themed HUD
+        // background shows through. Without this, rich text copied from an app
+        // with a white page background renders a solid white box — and since the
+        // foreground was just remapped to the adaptive labelColor (which is
+        // WHITE under the dark-appearance Ocean / Dark / Vivid themes), that
+        // produced unreadable white-on-white. A preview is for identifying a
+        // clip, so dropping highlight / page fills is the right trade-off.
+        mutable.removeAttribute(.backgroundColor, range: fullRange)
         return mutable
     }
 }
@@ -138,11 +146,16 @@ enum RichTextLoader {
         // 1. Flat-RTFD with attachments. `NSAttributedString(rtfd:)`
         //    accepts the flat-package Data form pasteboards use,
         //    rehydrating embedded image FileWrappers into live
-        //    NSTextAttachment instances.
-        if let rel = item.representations["com.apple.flat-rtfd"],
-           let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
-           let attr = NSAttributedString(rtfd: data, documentAttributes: nil) {
-            return attr
+        //    NSTextAttachment instances. Try BOTH RTFD UTIs — most apps
+        //    publish `com.apple.flat-rtfd`, but some use `public.rtfd`; reading
+        //    only the former silently dropped embedded images for those apps
+        //    (the preview fell through to `public.rtf`, which has none).
+        for key in ["com.apple.flat-rtfd", "public.rtfd"] {
+            if let rel = item.representations[key],
+               let data = try? Data(contentsOf: AppStorage.blobsDir.appendingPathComponent(rel)),
+               let attr = NSAttributedString(rtfd: data, documentAttributes: nil) {
+                return attr
+            }
         }
         // 2. Plain RTF (no attachments).
         if let rel = item.representations["public.rtf"],

@@ -19,13 +19,30 @@ final class PasteAsTextApplicabilityTests: XCTestCase {
                       sourceWindowTitle: nil, tags: [])
     }
 
-    func testAppliesToTextRichAndMarkdown() {
+    func testAppliesToRichAndMarkdownAlways() {
+        // #A78 — rich text & markdown always have something to strip.
         let action = PasteAsTextAction()
-        for kind in [SemanticKind.text, .richText, .markdown] {
+        for kind in [SemanticKind.richText, .markdown] {
             let i = item(kind, "some text")
             XCTAssertTrue(action.isApplicable(item: i, context: ContextDetector.detect(i)),
                           "Plain text should apply to \(kind)")
         }
+    }
+
+    func testGatedOnPlainTextWithoutStyling() {
+        // #A78 — on ordinary plain text there's nothing to strip → no chip.
+        let action = PasteAsTextAction()
+        let plain = item(.text, "the meeting is tomorrow afternoon")
+        XCTAssertFalse(action.isApplicable(item: plain, context: ContextDetector.detect(plain)),
+                       "Plain text must NOT surface on already-plain prose")
+    }
+
+    func testAppliesToPlainTextCarryingStyledUnicode() {
+        // … but DOES surface when there's fancy Unicode to fold.
+        let action = PasteAsTextAction()
+        let fancy = item(.text, "𝐇𝐞𝐥𝐥𝐨 there")
+        XCTAssertTrue(action.isApplicable(item: fancy, context: ContextDetector.detect(fancy)),
+                      "Plain text should surface on styled-Unicode plain text")
     }
 
     func testStripsMarkdownMarkupOnMarkdownClip() async {

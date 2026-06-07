@@ -49,7 +49,11 @@ struct ActionTrait: Identifiable, Equatable {
         ActionTrait(key: "layoutWrong",      label: "looks typed in the wrong keyboard layout", flag: .layoutWrong),
         ActionTrait(key: "fromOCR",          label: "came from screenshot / OCR",        flag: .fromOCR),
         ActionTrait(key: "fromMailApp",      label: "came from a mail app / webmail",    flag: .fromMailApp),
-        ActionTrait(key: "containsHTMLMarkup", label: "contains HTML markup",            flag: .containsHTMLMarkup)
+        ActionTrait(key: "containsHTMLMarkup", label: "contains HTML markup",            flag: .containsHTMLMarkup),
+        ActionTrait(key: "fromChat",         label: "came from a chat / social app",     flag: .fromChat),
+        ActionTrait(key: "hasTrackingParams", label: "URL has tracking parameters",       flag: .hasTrackingParams),
+        ActionTrait(key: "multiline",        label: "has multiple lines",                flag: .multiline),
+        ActionTrait(key: "richHasImage",     label: "rich text with an embedded image",  flag: .richHasImage)
         // NOTE: there is intentionally no "emailLike" trait — it mapped to the
         // whole-clip `.email` SemanticKind, which fires only on a bare address,
         // never on a pasted email *body*. Email actions gate on `containsEmails`

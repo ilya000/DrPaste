@@ -532,4 +532,26 @@ final class TransformationRuntimeTests: XCTestCase {
         XCTAssertEqual(a, b)
         XCTAssertFalse(a.isEmpty)
     }
+
+    // Regression: Pretty Code (local) generic branch must PRESERVE leading
+    // indentation — it used to trim both sides of each line, flattening
+    // `    return x` to column 0 and destroying the structure of indented code.
+    func testPrettyCodeLocalPreservesIndentation() throws {
+        let input = "func greet(name: String) -> String {\n    return \"Hello, \" + name   \n}"
+        let out = try TransformationRuntime.apply(engine: .prettyCodeLocal,
+                                                  input: input, params: [:])
+        XCTAssertTrue(out.contains("\n    return \"Hello, \" + name"),
+                      "indentation was flattened: \(out)")
+        // Trailing whitespace on the return line is still stripped.
+        XCTAssertFalse(out.contains("name   "), "trailing whitespace not trimmed: \(out)")
+    }
+
+    // Real CSS still routes to the CSS reformatter — the rule block opens onto
+    // its own line ("a {\n…"), which the generic branch would never do (it
+    // leaves "a{" untouched). This guards the tightened CSS-detection regex.
+    func testPrettyCodeLocalStillRoutesCSS() throws {
+        let out = try TransformationRuntime.apply(engine: .prettyCodeLocal,
+                                                  input: "a{color:red;font-size:12px;}", params: [:])
+        XCTAssertTrue(out.hasPrefix("a {\n"), "CSS not routed to CSS formatter: \(out)")
+    }
 }

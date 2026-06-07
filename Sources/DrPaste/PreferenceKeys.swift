@@ -31,6 +31,10 @@ enum PreferenceKeys {
 
     static let hudFontScale            = "drpaste.hud.fontScale"
     static let cutReplaceCursorOnSecond = "drpaste.hud.cursorOnSecondOnCut"
+    /// When true, holding ⌥⌘ after an action hotkey does NOT open the BigHUD
+    /// preview — the action fires immediately like a tap. Default false
+    /// (hold-preview ON). Lets users who never want the hold-preview turn it off.
+    static let actionHotkeyHoldPreviewDisabled = "drpaste.hotkey.holdPreviewDisabled"
 
     // MARK: Append Copy
 
@@ -81,6 +85,7 @@ enum PreferenceKeys {
     static let allDirectKeys: [String] = [
         hudFontScale,
         cutReplaceCursorOnSecond,
+        actionHotkeyHoldPreviewDisabled,
         appendToastsEnabled,
         cheatSheetDisabled,
         theme,

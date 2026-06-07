@@ -46,6 +46,23 @@ final class MiniHUDState: ObservableObject {
     /// (longer than the success "Done" pill so the reason is
     /// actually readable), or by the X button.
     @Published var failure: MiniHUDFailure? = nil
+    /// #A12 — non-nil while showing a decorative copy/cut/append content
+    /// preview (no spinner, no X). `badge` labels it ("Copied").
+    @Published var preview: MiniHUDPreview? = nil
+    @Published var badge: String = ""
+    /// #A12 — ⌥⌘S append preview: the session-track dot colour (cyan = files,
+    /// red = text / rich) shown in the badge, plus a flag that swaps the footer
+    /// for the dot legend.
+    @Published var badgeDot: Color? = nil
+    @Published var isAppendPreview: Bool = false
+}
+
+/// #A12 — content payload for the decorative copy-hold MiniHUD preview.
+enum MiniHUDPreview {
+    case text(String)
+    case rich(NSAttributedString)   // rich text — formatting + embedded images
+    case image(NSImage)
+    case files([String])    // absolute paths
 }
 
 /// View-model for the MiniHUD failure state. Keeps reason text + a
@@ -120,12 +137,94 @@ final class MiniHUDController {
         if panel.contentView == nil || !(panel.contentView is NSHostingView<MiniHUDView>) {
             panel.contentView = NSHostingView(rootView: MiniHUDView(
                 state: state,
-                onClose: { [weak self] in self?.userDismiss() }
+                onClose: { [weak self] in self?.userDismiss() },
+                onPreviewHeight: { [weak self] h in self?.resizePreviewToContent(h) }
             ))
         }
         positionNearCursor(panel)
         panel.orderFrontRegardless()
         return token
+    }
+
+    /// #A12 — show a DECORATIVE content preview (copy-hold gesture). No
+    /// spinner, no tick timer, no X button, non-draggable: the ⌥⌘ gesture is
+    /// the only commit/cancel surface (release keeps, Esc reverts). Idempotent.
+    @discardableResult
+    func showPreview(badge: String, preview: MiniHUDPreview) -> ShowToken {
+        generation &+= 1
+        let token = generation
+        stopTick()
+        state.label = ""
+        state.inflight = nil
+        state.completed = false
+        state.failure = nil
+        state.badge = badge
+        state.preview = preview
+        onCancelHandler = nil
+        autoDismissTask?.cancel()
+        autoDismissTask = nil
+        if panel == nil { buildPanel() }
+        guard let panel = panel else { return token }
+        if panel.contentView == nil || !(panel.contentView is NSHostingView<MiniHUDView>) {
+            panel.contentView = NSHostingView(rootView: MiniHUDView(
+                state: state,
+                onClose: { [weak self] in self?.userDismiss() },
+                onPreviewHeight: { [weak self] h in self?.resizePreviewToContent(h) }
+            ))
+        }
+        // Decorative: the gesture drives dismissal, so don't let the user drag
+        // it around (and it can't steal focus).
+        panel.isMovableByWindowBackground = false
+        positionNearCursor(panel)
+        panel.orderFrontRegardless()
+        return token
+    }
+
+    /// #A12 — ⌥⌘S append preview: show the accumulating clipboard composite so
+    /// the user watches it GROW with each append, plus the session-track dot and
+    /// a legend explaining cyan vs red. Auto-dismisses after a short window,
+    /// re-armed on every append. Decorative (no X, non-draggable).
+    @discardableResult
+    func showAppendPreview(filesMode: Bool, preview: MiniHUDPreview, badge: String) -> Bool {
+        generation &+= 1
+        stopTick()
+        state.label = ""
+        state.inflight = nil
+        state.completed = false
+        state.failure = nil
+        state.preview = preview
+        state.badge = badge
+        state.badgeDot = filesMode ? Color(nsColor: .systemCyan) : Color(nsColor: .systemRed)
+        state.isAppendPreview = true
+        onCancelHandler = nil
+        if panel == nil { buildPanel() }
+        guard let panel = panel else { return false }
+        if panel.contentView == nil || !(panel.contentView is NSHostingView<MiniHUDView>) {
+            panel.contentView = NSHostingView(rootView: MiniHUDView(
+                state: state,
+                onClose: { [weak self] in self?.userDismiss() },
+                onPreviewHeight: { [weak self] h in self?.resizePreviewToContent(h) }
+            ))
+        }
+        panel.isMovableByWindowBackground = false
+        positionNearCursor(panel)
+        panel.orderFrontRegardless()
+        // Primary dismiss is ⌥⌘ release (hideIfAppendPreview) so it behaves like
+        // the copy preview. This long timer is only a safety net for the rare
+        // race where the async append finishes after ⌥⌘ was already released.
+        autoDismissTask?.cancel()
+        autoDismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.hide()
+        }
+        return true
+    }
+
+    /// #A12 — hide the panel only if it's currently the ⌥⌘S append preview.
+    /// Called on ⌥⌘ release so the append preview disappears like the copy one.
+    func hideIfAppendPreview() {
+        if state.isAppendPreview { hide() }
     }
 
     /// Hide the panel only if `token` matches the latest `show()` call.
@@ -141,11 +240,52 @@ final class MiniHUDController {
     /// Hide HUD immediately and stop the elapsed-tick timer. Used by the
     /// completion path — does NOT invoke `onCancelHandler` because the
     /// underlying action ran to completion (or was cancelled elsewhere).
+    /// #A12 — true while the promotion (copy-hold → BigHUD) dismiss animation
+    /// is in flight; a stray `hide()` during it is ignored so the animation
+    /// finishes and tears the panel down itself.
+    private var isAnimatingPromotion = false
+
+    /// #A12 — animate the MiniHUD into the BigHUD: a quick fade-out + slight
+    /// scale-up so the C→V transition reads as the mini expanding into the big,
+    /// rather than a hard cut. Self-contained — runs on the panel, then tears it
+    /// down and restores it for the next show.
+    func animateDismissForPromotion() {
+        guard let panel = panel, panel.isVisible, !isAnimatingPromotion else { hide(); return }
+        isAnimatingPromotion = true
+        let original = panel.frame
+        let grown = original.insetBy(dx: -original.width * 0.07, dy: -original.height * 0.07)
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.16
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            panel.animator().alphaValue = 0
+            panel.animator().setFrame(grown, display: true)
+        }, completionHandler: { [weak self] in
+            guard let self = self else { return }
+            self.isAnimatingPromotion = false
+            self.tearDown()
+            panel.setFrame(original, display: false)
+            panel.alphaValue = 1
+        })
+    }
+
     func hide() {
+        // Don't interrupt the promotion animation — it tears the panel down on
+        // completion.
+        guard !isAnimatingPromotion else { return }
+        tearDown()
+    }
+
+    private func tearDown() {
         stopTick()
         state.inflight = nil
         state.completed = false
         state.failure = nil           // #A69 — clear failure on hide
+        state.preview = nil           // #A12 — clear preview on hide
+        state.badge = ""
+        state.badgeDot = nil
+        state.isAppendPreview = false
+        // Restore default draggability for the next AI/progress show().
+        panel?.isMovableByWindowBackground = true
         onCancelHandler = nil
         autoDismissTask?.cancel()
         autoDismissTask = nil
@@ -183,7 +323,8 @@ final class MiniHUDController {
         if panel.contentView == nil || !(panel.contentView is NSHostingView<MiniHUDView>) {
             panel.contentView = NSHostingView(rootView: MiniHUDView(
                 state: state,
-                onClose: { [weak self] in self?.userDismiss() }
+                onClose: { [weak self] in self?.userDismiss() },
+                onPreviewHeight: { [weak self] h in self?.resizePreviewToContent(h) }
             ))
         }
         positionNearCursor(panel)
@@ -280,6 +421,21 @@ final class MiniHUDController {
     /// action fired. 30 pt vertical gap so the cursor doesn't sit on top of
     /// the panel; clamped to the active screen's visibleFrame with an 8 pt
     /// margin so it never collides with the menu bar / Dock / display edge.
+    /// #A12 — size the copy-hold preview panel to its content height (reported
+    /// by the SwiftUI view), capped at ~2/3 of the screen so big text / images
+    /// grow to fit and overflow scrolls. Only acts while a preview is showing
+    /// and not mid-promotion-animation.
+    private func resizePreviewToContent(_ contentHeight: CGFloat) {
+        guard let panel = panel, state.preview != nil, !isAnimatingPromotion else { return }
+        let cap = (NSScreen.main?.visibleFrame.height ?? 800) * 0.66
+        let height = max(60, min(contentHeight, cap)).rounded()
+        guard abs(panel.frame.height - height) > 0.5 else { return }
+        var frame = panel.frame
+        frame.size = NSSize(width: 320, height: height)
+        panel.setFrame(frame, display: true)
+        positionNearCursor(panel)
+    }
+
     private func positionNearCursor(_ panel: NSPanel) {
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) })
@@ -303,6 +459,15 @@ final class MiniHUDController {
     }
 }
 
+/// #A12 — carries the copy-hold preview's natural content height up to the
+/// controller so it can size the panel adaptively.
+private struct PreviewHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct MiniHUDView: View {
     @ObservedObject var state: MiniHUDState
     /// Observes Settings → Appearance so picking Vivid/Soft re-tints
@@ -314,8 +479,145 @@ struct MiniHUDView: View {
     /// (network stall, deadlocked URLSession, etc.) the user always has a
     /// one-click escape out of the floating panel.
     var onClose: () -> Void = {}
+    /// #A12 — reports the preview's natural content height so the controller can
+    /// size the panel (adaptive: short content → small window, big content →
+    /// grows up to ~2/3 of the screen, then scrolls).
+    var onPreviewHeight: (CGFloat) -> Void = { _ in }
 
     var body: some View {
+        Group {
+            if let preview = state.preview {
+                previewBody(preview)
+            } else {
+                standardBody
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .frame(width: 320, alignment: .leading)
+            }
+        }
+        .background(
+            ZStack {
+                VisualEffect(material: .hudWindow, blending: .behindWindow)
+                ThemeBackgroundFill(theme: theme.current)
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(theme.current.hudBorderColor,
+                                  lineWidth: theme.current.hudBorderWidth)
+            }
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    /// Max preview content height — about 2/3 of the active screen.
+    private var previewContentCap: CGFloat {
+        max(120, (NSScreen.main?.visibleFrame.height ?? 800) * 0.66 - 96)
+    }
+
+    // #A12 — decorative copy/cut/append content preview. Self-sizing: the inner
+    // VStack lays out at its natural height (reported up via onPreviewHeight);
+    // the ScrollView caps it at ~2/3 screen so overflow scrolls.
+    @ViewBuilder
+    private func previewBody(_ preview: MiniHUDPreview) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    if let dot = state.badgeDot {
+                        Circle().fill(dot).frame(width: 9, height: 9)
+                    } else {
+                        Image(systemName: "doc.on.clipboard.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    Text(state.badge)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                previewContent(preview)
+                if state.isAppendPreview {
+                    appendDotLegend
+                } else {
+                    copyPreviewFooter
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .frame(width: 320, alignment: .leading)
+            .background(GeometryReader { g in
+                Color.clear.preference(key: PreviewHeightKey.self, value: g.size.height)
+            })
+        }
+        .frame(width: 320)
+        .onPreferenceChange(PreviewHeightKey.self) { onPreviewHeight($0) }
+    }
+
+    // ⌥⌘C copy-hold footer — keep / undo / chain into the full HUD.
+    private var copyPreviewFooter: some View {
+        HStack(spacing: 6) {
+            Text("⌥⌘V")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .padding(.horizontal, 4).padding(.vertical, 1)
+                .background(Capsule().fill(Color.accentColor.opacity(0.22)))
+                .foregroundStyle(Color.accentColor)
+            Text("full HUD · release keep · Esc undo")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    // ⌥⌘S append footer. The badge above already shows the CURRENT track's dot
+    // + label (cyan = files, red = text/images), so only ONE label is shown —
+    // a second dimmed legend just confused. This is a plain hint.
+    private var appendDotLegend: some View {
+        HStack(spacing: 6) {
+            Text("⌥⌘S adds more")
+                .font(.system(size: 10)).foregroundStyle(.tertiary)
+            Spacer(minLength: 0)
+        }
+    }
+
+    @ViewBuilder
+    private func previewContent(_ preview: MiniHUDPreview) -> some View {
+        switch preview {
+        case .text(let s):
+            // Grow with the text; the outer ScrollView caps + scrolls overflow.
+            Text(s.isEmpty ? "(empty)" : s)
+                .font(.system(size: 12, design: .monospaced))
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+        case .rich(let attr):
+            // RichTextPreviewView scrolls internally, so give it a bounded
+            // height (it can't report a natural size) and let it grow up to the
+            // screen cap.
+            RichTextPreviewView(attributedString: attr, fontScale: 1.0)
+                .frame(maxWidth: 288)
+                .frame(height: min(previewContentCap, 320))
+        case .image(let img):
+            // Grow up to ~2/3 screen, keeping aspect ratio.
+            Image(nsImage: img)
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: 288, maxHeight: previewContentCap)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        case .files(let paths):
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(Array(paths.prefix(20).enumerated()), id: \.offset) { _, path in
+                    HStack(spacing: 6) {
+                        Image(nsImage: NSWorkspace.shared.icon(forFile: path))
+                            .resizable().frame(width: 14, height: 14)
+                        Text((path as NSString).lastPathComponent)
+                            .font(.system(size: 12))
+                            .lineLimit(1).truncationMode(.middle)
+                    }
+                }
+                if paths.count > 20 {
+                    Text("+\(paths.count - 20) more")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var standardBody: some View {
         VStack(alignment: .leading, spacing: 6) {
             // Top row: spinner / completion check / failure ✕ + action
             // title + close button. The spinner ↔ checkmark swap is the
@@ -402,22 +704,5 @@ struct MiniHUDView: View {
                 }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .frame(width: 320, alignment: .leading)
-        .background(
-            ZStack {
-                VisualEffect(material: .hudWindow, blending: .behindWindow)
-                // Theme gradient overlay — see `ThemeBackgroundFill`.
-                // Vivid drops a deep indigo gradient on top, Soft a
-                // warm cream gradient. Auto/Light/Dark are clear so
-                // the system blur shows through unchanged.
-                ThemeBackgroundFill(theme: theme.current)
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(theme.current.hudBorderColor,
-                                  lineWidth: theme.current.hudBorderWidth)
-            }
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }

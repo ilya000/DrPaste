@@ -105,6 +105,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     private var localKeyMonitor: Any?
     private var savedFrontmostApp: NSRunningApplication?
     private var currentSummonReason: SummonReason = .paste
+    /// The clip that ⌥⌘X cut out of the source field this session. Held so
+    /// that pressing ESC (cancel) can paste it back where it was — undoing
+    /// the cut instead of leaving the source field empty. Captured the moment
+    /// the cut is verified; cleared whenever the BigHUD closes.
+    private var cutRestoreItem: ClipboardItem?
 
     /// Set by `commitBigHUDKeepingOpen()` to suppress the duplicate
     /// paste that `hotkeyEngineDidRelease` (Gesture Mode ⌥⌘ release)
@@ -378,6 +383,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         menu.addItem(header)
         menu.addItem(.separator())
 
+        // #welcome — discoverable shortcut hints. Disabled informational rows
+        // (no keyEquivalent so they never accidentally bind). Only the
+        // strategically-important, REAL hotkeys — progressive discovery, not a
+        // full reference table.
+        for (key, label) in [("⌥⌘V", "Open clipboard HUD"),
+                             ("⌥⌘S", "Merge / append items"),
+                             ("⌥⌘C", "Quick copy"),
+                             ("⌥⌘X", "Cut & replace"),
+                             ("⌥⌘ + drag", "Capture screen region")] {
+            let hint = NSMenuItem(title: "\(key)    \(label)", action: nil, keyEquivalent: "")
+            hint.isEnabled = false
+            menu.addItem(hint)
+        }
+        menu.addItem(.separator())
+
         if engine.bigHUDMode == .summon {
             menu.addItem(withTitle: "Enable advanced gesture mode…",
                          action: #selector(menuOpenAccessibility), keyEquivalent: "")
@@ -394,7 +414,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         menu.addItem(.separator())
         menu.addItem(withTitle: "Settings…", action: #selector(menuOpenSettings), keyEquivalent: ",")
         menu.addItem(withTitle: "About DrPaste…", action: #selector(menuShowAbout), keyEquivalent: "")
-        menu.addItem(withTitle: "Welcome / Hotkeys…", action: #selector(menuShowWelcome), keyEquivalent: "")
+        menu.addItem(withTitle: "Welcome…", action: #selector(menuShowWelcome), keyEquivalent: "")
         // #240 — User Guide is the full HELP.md, surfaced from the status
         // menu so a user who's been "wondering about that colored dot"
         // can read about it without hunting through the repo.
@@ -596,7 +616,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             while Date().timeIntervalSince(start) < deadline {
                 try? await Task.sleep(nanoseconds: 20_000_000)  // 20 ms
                 if NSPasteboard.general.changeCount > changeCountBefore {
+                    // Defensive: a stale `ignoreNextChange` armed by an earlier
+                    // paste would make `forceTick()` swallow this cut without
+                    // ingesting it — then `store.items.first` would be an older
+                    // clip and ESC would restore the WRONG content. Clear it so
+                    // the cut is guaranteed to land at the top of history.
+                    self.watcher.ignoreNextChange = false
                     self.watcher.forceTick()
+                    // Remember what we just cut so ESC can put it back.
+                    self.cutRestoreItem = self.store.items.first
                     self.openHUD()
                     return
                 }
@@ -624,7 +652,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             self.commitBigHUD()
         }
     }
-    nonisolated func hotkeyEngineDidCancel() { Task { @MainActor in self.closeBigHUD() } }
+    nonisolated func hotkeyEngineDidCancel() { Task { @MainActor in self.cancelBigHUD() } }
+
+    /// Unified ESC / cancel handler. For a ⌥⌘X Cut & Replace session the
+    /// selected text was already cut out of the source field, so cancelling
+    /// must put it back (otherwise the user loses their content). Every
+    /// other session just closes.
+    @MainActor
+    func cancelBigHUD() {
+        if currentSummonReason == .cutAndReplace, let restore = cutRestoreItem {
+            restoreCutContentOnCancel(restore)
+        } else {
+            closeBigHUD()
+        }
+    }
+
+    /// ESC during ⌥⌘X: re-insert the just-cut clip at the source caret so the
+    /// cut is undone. Best-effort — mirrors the normal commit paste path
+    /// (write pasteboard → re-front source app → synthesize ⌘V). In Gesture
+    /// Mode the source app never lost focus (nonactivating HUD) so the caret
+    /// is still where the selection was; in Summon Mode the activate() returns
+    /// focus before the paste fires.
+    @MainActor
+    private func restoreCutContentOnCancel(_ item: ClipboardItem) {
+        let savedApp = savedFrontmostApp
+        savedFrontmostApp = nil
+        closeBigHUD()
+        guard AXIsProcessTrusted() else {
+            SoundFeedback.play(.pasteFailure)
+            return
+        }
+        PasteboardWriter.write(item, store: store)
+        watcher.ignoreNextChange = true
+        savedApp?.activate(options: [])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            if AXIsProcessTrusted() { PasteSimulator.simulatePaste() }
+            SoundFeedback.play(.pasteSuccess)
+        }
+    }
     nonisolated func hotkeyEngineDidNavigate(_ direction: NavDirection) {
         Task { @MainActor in
             // Re-arm release-paste: the paste-and-keep latch only
@@ -1751,6 +1816,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
 
     nonisolated func hotkeyEngineDidQuickCopy() {
         Task { @MainActor in
+            // #A12 — remember the top of history BEFORE the copy so the
+            // hold-preview can tell whether a genuinely-new item was added
+            // (Esc must never pop an unrelated item when the copy was a no-op).
+            self.copyHoldPreTopID = self.store.items.first?.id
             self.markOtherDrPasteAction()
             if await PasteSimulator.simulateCopyAndAwaitChange() {
                 SoundFeedback.play(.copySuccess)
@@ -1758,6 +1827,107 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             } else {
                 SoundFeedback.play(.copyFailure)
             }
+        }
+    }
+
+    // MARK: - #A12 copy-hold preview
+
+    /// Top-of-history id captured just before the ⌥⌘C copy ran. The revert
+    /// decision is deferred to Esc time (Codex #3): if the top has changed by
+    /// then, that new top IS the just-copied item and we pop it. Deferring gives
+    /// the pasteboard watcher time to append the item — capturing the revert id
+    /// at preview time (250 ms after copy) could miss a slow append and make
+    /// "Esc to undo" a silent no-op.
+    private var copyHoldPreTopID: UUID?
+
+    /// #A12 — ⌥⌘C held past the grace period: show a decorative MiniHUD preview
+    /// of what was just copied. Built straight from the system pasteboard so it
+    /// doesn't depend on the watcher having appended the history item yet.
+    nonisolated func hotkeyEngineDidHoldCopyPreview() {
+        Task { @MainActor in
+            let pb = NSPasteboard.general
+            let preview: MiniHUDPreview
+            if let urls = pb.readObjects(forClasses: [NSURL.self],
+                                         options: [.urlReadingFileURLsOnly: true]) as? [URL],
+               !urls.isEmpty {
+                preview = .files(urls.map { $0.path })
+            } else if let attr = Self.pasteboardRichAttributed(pb), attr.length > 0 {
+                // Rich text — show the actual formatting / embedded images, not
+                // a flattened excerpt (checked before image: a rich clip can
+                // also carry a rendered image rep we'd otherwise grab).
+                preview = .rich(attr)
+            } else if let img = NSImage(pasteboard: pb) {
+                preview = .image(img)
+            } else if let s = pb.string(forType: .string),
+                      !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                preview = .text(String(s.prefix(600)))
+            } else {
+                return   // nothing meaningful to preview
+            }
+            // The revert decision is made at Esc time, not here (see
+            // copyHoldPreTopID) — so the watcher has the maximum window to
+            // append the just-copied item.
+            MiniHUDController.shared.showPreview(badge: "Copied", preview: preview)
+        }
+    }
+
+    /// #A12 — read rich-text content directly off the pasteboard into an
+    /// attributed string (formatting + embedded images), trying every rich UTI.
+    /// nil when the pasteboard carries no rich text.
+    static func pasteboardRichAttributed(_ pb: NSPasteboard) -> NSAttributedString? {
+        for type in [NSPasteboard.PasteboardType("com.apple.flat-rtfd"),
+                     NSPasteboard.PasteboardType("public.rtfd")] {
+            if let d = pb.data(forType: type),
+               let a = NSAttributedString(rtfd: d, documentAttributes: nil) { return a }
+        }
+        if let d = pb.data(forType: .rtf),
+           let a = try? NSAttributedString(
+               data: d, options: [.documentType: NSAttributedString.DocumentType.rtf],
+               documentAttributes: nil) { return a }
+        if let d = pb.data(forType: .html),
+           let a = try? NSAttributedString(
+               data: d, options: [.documentType: NSAttributedString.DocumentType.html,
+                                  .characterEncoding: String.Encoding.utf8.rawValue],
+               documentAttributes: nil) { return a }
+        return nil
+    }
+
+    /// #A12 — ⌥⌘ released: dismiss the ⌥⌘S append preview so it behaves like the
+    /// copy preview (visible while held, gone on release). No-op otherwise.
+    nonisolated func hotkeyEngineDidReleaseModifiers() {
+        Task { @MainActor in MiniHUDController.shared.hideIfAppendPreview() }
+    }
+
+    /// #A12 — ⌥⌘ released (or the preview was superseded by ⌥⌘V): dismiss the
+    /// MiniHUD; the copied item stays in history.
+    nonisolated func hotkeyEngineDidEndCopyPreview() {
+        Task { @MainActor in
+            self.copyHoldPreTopID = nil
+            MiniHUDController.shared.hide()
+        }
+    }
+
+    /// #A12 — ⌥⌘V promoted the copy-hold preview: animate the MiniHUD into the
+    /// BigHUD (a quick fade + slight scale-up) to emphasize the C→V transition.
+    nonisolated func hotkeyEngineDidPromoteCopyPreview() {
+        Task { @MainActor in
+            self.copyHoldPreTopID = nil
+            MiniHUDController.shared.animateDismissForPromotion()
+        }
+    }
+
+    /// #A12 — Esc during the preview: revert by popping the just-copied item.
+    /// Evaluated NOW (not at preview time): if the current top differs from the
+    /// pre-copy top, that new top is the just-copied item — remove it. If it's
+    /// unchanged (copy was a no-op / failed), Esc is a harmless dismiss.
+    nonisolated func hotkeyEngineDidRevertCopy() {
+        Task { @MainActor in
+            if let top = self.store.items.first?.id, top != self.copyHoldPreTopID {
+                self.store.remove(top)
+                SoundFeedback.play(.delete)
+            }
+            self.copyHoldPreTopID = nil
+            MiniHUDController.shared.hide()
         }
     }
 
@@ -1829,21 +1999,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                                                   repeats: false) { [weak self] _ in
             Task { @MainActor in self?.disarmAppendSessionIndicator() }
         }
-        // Toast after the dot is armed so the message reflects the
-        // new state, not the prior one.
-        if !wasActive {
+        // #A12 — rich append preview: show the accumulating clipboard composite
+        // (the user watches it GROW with each ⌥⌘S) + the session-track dot +
+        // a legend decoding cyan/red. Falls back to the lightweight toast when
+        // no composite can be read.
+        var miniShown = false
+        if let (preview, badge) = appendCompositePreview(filesMode: filesMode) {
+            miniShown = MiniHUDController.shared.showAppendPreview(
+                filesMode: filesMode, preview: preview, badge: badge)
+        }
+        if !miniShown {
             ToastController.shared.show(
-                message: filesMode ? "Append started — files" : "Append started",
-                systemImage: filesMode ? "doc.on.doc" : "rectangle.stack.badge.plus",
-                category: .appendCopy
-            )
-        } else {
-            ToastController.shared.show(
-                message: filesMode ? "Files appended" : "Clip appended",
-                systemImage: filesMode ? "doc.on.doc.fill" : "rectangle.stack.fill.badge.plus",
+                message: wasActive ? (filesMode ? "Files appended" : "Clip appended")
+                                   : (filesMode ? "Append started — files" : "Append started"),
+                systemImage: wasActive ? (filesMode ? "doc.on.doc.fill" : "rectangle.stack.fill.badge.plus")
+                                       : (filesMode ? "doc.on.doc" : "rectangle.stack.badge.plus"),
                 category: .appendCopy
             )
         }
+    }
+
+    /// #A12 — build the MiniHUD preview of the CURRENT append accumulator from
+    /// the pasteboard (which holds the merged composite after each append).
+    private func appendCompositePreview(filesMode: Bool) -> (MiniHUDPreview, String)? {
+        let pb = NSPasteboard.general
+        if filesMode {
+            guard let urls = pb.readObjects(forClasses: [NSURL.self],
+                                            options: [.urlReadingFileURLsOnly: true]) as? [URL],
+                  !urls.isEmpty else { return nil }
+            return (.files(urls.map { $0.path }),
+                    "Append — \(urls.count) file\(urls.count == 1 ? "" : "s")")
+        }
+        // The "rich" track accumulates text, images, links — anything non-files.
+        if let attr = Self.pasteboardRichAttributed(pb), attr.length > 0 {
+            return (.rich(attr), "Append — text, images & more")
+        }
+        if let img = NSImage(pasteboard: pb) {
+            return (.image(img), "Append — text, images & more")
+        }
+        if let s = pb.string(forType: .string),
+           !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return (.text(String(s.prefix(2000))), "Append — text, images & more")
+        }
+        return nil
     }
 
     /// Hide the dot and cancel the auto-hide timer. Called when
@@ -2170,6 +2368,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // another summon stomping this one) before the deferred
         // release fires.
         pasteAndKeepDidFire = false
+        // The cut-restore item belongs to one HUD session; never let it
+        // leak into the next one (where ESC would paste stale content).
+        cutRestoreItem = nil
         removeLocalKeyMonitor()
         stopAITickTimer()
         // Cancel any in-flight AI streaming. Cancellation cascades through
@@ -2644,7 +2845,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                 self.commitBigHUD()
                 return nil
             case kVK_Escape:
-                self.closeBigHUD(); return nil
+                self.cancelBigHUD(); return nil
             case kVK_Delete:                       // Backspace deletes the focused item in Limited Mode
                 self.hotkeyEngineDidDeleteFocused(); return nil
             case kVK_UpArrow:    self.navigate(.up);    return nil

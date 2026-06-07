@@ -75,35 +75,46 @@ enum DefaultTransformationSeed {
             // MARK: text — case
             // UPPER/lower are prose operations — NOT code: case-folding a code
             // snippet (`let x` → `LET X`) breaks identifiers and keywords.
-            descriptor(id: "builtin.text.uppercase",      title: "UPPERCASE",       engine: .caseChange,   params: ["case": "upper"],     types: [.text, .markdown]),
-            descriptor(id: "builtin.text.lowercase",      title: "lowercase",       engine: .caseChange,   params: ["case": "lower"],     types: [.text, .markdown]),
-            descriptor(id: "builtin.text.title_case",     title: "Title Case",      engine: .caseChange,   params: ["case": "title"],     types: [.text, .markdown]),
-            descriptor(id: "builtin.text.sentence_case",  title: "Sentence case",   engine: .caseChange,   params: ["case": "sentence"],  types: [.text, .markdown]),
+            // #A78 — UPPER/lower gated like Title/Sentence case: surface only
+            // when the text is mostly UPPERCASE or all-lowercase, so they don't
+            // clutter the strip on already-normal prose.
+            descriptor(id: "builtin.text.uppercase",      title: "UPPERCASE",       engine: .caseChange,   params: ["case": "upper"],     types: [.text, .markdown], requiredTraits: ["uppercaseHeavy", "lowercaseHeavy"]),
+            descriptor(id: "builtin.text.lowercase",      title: "lowercase",       engine: .caseChange,   params: ["case": "lower"],     types: [.text, .markdown], requiredTraits: ["uppercaseHeavy", "lowercaseHeavy"]),
+            descriptor(id: "builtin.text.title_case",     title: "Title Case",      engine: .caseChange,   params: ["case": "title"],     types: [.text, .markdown], requiredTraits: ["uppercaseHeavy", "lowercaseHeavy"]),
+            descriptor(id: "builtin.text.sentence_case",  title: "Sentence case",   engine: .caseChange,   params: ["case": "sentence"],  types: [.text, .markdown], requiredTraits: ["uppercaseHeavy", "lowercaseHeavy"]),
             descriptor(id: "builtin.text.camel_case",     title: "camelCase",       engine: .camelCase,    params: [:],                   types: [.text, .code]),
             descriptor(id: "builtin.text.snake_case",     title: "snake_case",      engine: .snakeCase,    params: [:],                   types: [.text, .code]),
             descriptor(id: "builtin.text.kebab_case",     title: "kebab-case",      engine: .kebabCase,    params: [:],                   types: [.text, .code]),
 
             // MARK: text — whitespace and lines
-            // NOT code: Tidy text normalises spacing, which destroys code
-            // indentation/alignment. Code uses "Pretty Code (local)" instead.
-            descriptor(id: "builtin.text.trim",           title: "Tidy text",       engine: .trim,         params: [:],                   types: [.text, .markdown]),
-            descriptor(id: "builtin.text.sort_lines",     title: "Sort lines",      engine: .sortLines,    params: ["direction": "asc", "caseInsensitive": "false"], types: [.text, .markdown, .code]),
-            descriptor(id: "builtin.text.unique_lines",   title: "Unique lines",    engine: .uniqueLines,  params: [:],                   types: [.text, .markdown, .code]),
+            // text / markdown / rich text. NOT code / JSON / table — normalising
+            // spacing there destroys indentation, alignment and structure
+            // (code uses "Pretty Code (local)"). On rich text it tidies into
+            // clean plain text — ideal for messy web / PDF pastes.
+            descriptor(id: "builtin.text.trim",           title: "Tidy text",       engine: .trim,         params: [:],                   types: [.text, .markdown, .richText], requiredTraits: ["messySpacing", "wrappedLines"]),
+            descriptor(id: "builtin.text.sort_lines",     title: "Sort lines",      engine: .sortLines,    params: ["direction": "asc", "caseInsensitive": "false"], types: [.text, .markdown, .code], requiredTraits: ["multiline"]),
+            descriptor(id: "builtin.text.unique_lines",   title: "Unique lines",    engine: .uniqueLines,  params: [:],                   types: [.text, .markdown, .code], requiredTraits: ["multiline"]),
             // #A74 (0.56.0) — new: join soft-wrapped lines.
-            descriptor(id: "builtin.text.remove_line_breaks", title: "Remove line breaks", engine: .removeLineBreaks, params: [:], types: [.text, .markdown, .richText], requiredTraits: ["wrappedLines"]),
+            // #A77 — dropped .richText: joining soft-wrapped lines is a
+            // plain-text repair (PDF / email paste); on a rich clip it just
+            // flattens formatting. Also in `richTextDenylist`.
+            descriptor(id: "builtin.text.remove_line_breaks", title: "Remove line breaks", engine: .removeLineBreaks, params: [:], types: [.text, .markdown], requiredTraits: ["wrappedLines"]),
 
             // MARK: text — encoding
             descriptor(id: "builtin.text.base64_encode", title: "Base64 encode",   engine: .base64Encode, params: [:],                   types: [.text, .code]),
             descriptor(id: "builtin.text.base64_decode", title: "Base64 decode",   engine: .base64Decode, params: [:],                   types: [.text, .code]),
-            descriptor(id: "builtin.url.encode",         title: "URL encode",      engine: .urlPercentEncode, params: [:],               types: [.text, .url, .code]),
-            descriptor(id: "builtin.url.decode",         title: "URL decode",      engine: .urlPercentDecode, params: [:],               types: [.text, .url, .code]),
+            // #A78 — dropped .code: percent-encoding/decoding arbitrary source
+            // code is nonsense; keep on plain text + URLs.
+            descriptor(id: "builtin.url.encode",         title: "URL encode",      engine: .urlPercentEncode, params: [:],               types: [.text, .url]),
+            descriptor(id: "builtin.url.decode",         title: "URL decode",      engine: .urlPercentDecode, params: [:],               types: [.text, .url]),
 
             // MARK: text — derived
             descriptor(id: "builtin.text.slugify",       title: "Slugify",         engine: .slugify,      params: [:],                   types: [.text]),
             descriptor(id: "builtin.text.word_count",    title: "Word / char count", engine: .wordCount,  params: [:],                   types: [.text, .markdown, .code]),
 
             // MARK: text — wrap (#A74, 0.56.0 — uses existing wrap engine)
-            descriptor(id: "builtin.text.wrap_quotes",   title: "Wrap in “smart quotes”", engine: .wrap, params: ["prefix": "\u{201C}", "suffix": "\u{201D}"], types: [.text, .code, .markdown]),
+            // #A78 — wrappers dropped from plain text; kept for code / markdown.
+            descriptor(id: "builtin.text.wrap_quotes",   title: "Wrap in “smart quotes”", engine: .wrap, params: ["prefix": "\u{201C}", "suffix": "\u{201D}"], types: [.markdown]),
             descriptor(id: "builtin.text.wrap_parens",   title: "Wrap in (parens)",       engine: .wrap, params: ["prefix": "(", "suffix": ")"], types: [.text, .code, .markdown]),
 
             // MARK: json
@@ -112,12 +123,15 @@ enum DefaultTransformationSeed {
             descriptor(id: "builtin.json.extract_keys",  title: "Extract keys",    engine: .jsonFormat,   params: ["operation": "extractKeysRecursive"], types: [.json]),
 
             // MARK: code
-            descriptor(id: "builtin.code.wrap_block",      title: "Wrap in code block", engine: .wrap,        params: ["prefix": "```\n", "suffix": "\n```"], types: [.text, .code, .markdown]),
+            descriptor(id: "builtin.code.wrap_block",      title: "Wrap in code block", engine: .wrap,        params: ["prefix": "```\n", "suffix": "\n```"], types: [.code]),
             descriptor(id: "builtin.code.tabs_to_spaces",  title: "Tabs → 4 spaces",    engine: .findReplace, params: ["find": "\t", "replace": "    ", "caseInsensitive": "false"], types: [.text, .code]),
             descriptor(id: "builtin.code.spaces_to_tabs",  title: "4 spaces → tabs",    engine: .findReplace, params: ["find": "    ", "replace": "\t", "caseInsensitive": "false"], types: [.text, .code]),
 
             // MARK: md
-            descriptor(id: "builtin.md.to_plain",          title: "Markdown → plain",   engine: .mdToPlain,         params: [:], types: [.markdown]),
+            // "Markdown → plain" retired (#A77) — fully redundant with the
+            // universal "Plain text" action, which already runs the very same
+            // mdToPlain engine on markdown / rich clips (see PasteAsTextAction).
+            // `applyRemoveRetiredStandalonesIfNeeded` prunes it from old configs.
             // Extract headings works on Markdown AND rich text (rich is
             // converted to Markdown first, so its heading-styled lines surface).
             descriptor(id: "builtin.md.extract_headings",  title: "Extract headings",   engine: .mdExtractHeadings, params: [:], types: [.markdown, .richText]),
@@ -126,7 +140,7 @@ enum DefaultTransformationSeed {
             descriptor(id: "builtin.md.extract_links",     title: "Extract links",      engine: .mdExtractLinks,    params: [:], types: [.markdown]),
 
             // MARK: url
-            descriptor(id: "builtin.url.strip_tracking",   title: "Clean URL",          engine: .urlStripTracking,  params: [:], types: [.url]),
+            descriptor(id: "builtin.url.strip_tracking",   title: "Clean URL",          engine: .urlStripTracking,  params: [:], types: [.url], requiredTraits: ["hasTrackingParams"]),
 
             // Unicode pseudo-fonts ("Fancy text"). Each action shows a
             // stylized capital A as the title prefix so the user sees at a
@@ -229,14 +243,18 @@ enum DefaultTransformationSeed {
                 title: "UwU speech",
                 engine: .uwuSpeak,
                 params: ["faces": "true"],
-                types: [.text, .markdown]
+                types: [.text, .markdown],
+                requiredTraits: ["fromChat"]
             ),
             descriptor(
-                id: "builtin.text.zalgo",
+                id: "builtin.text.zalgo",  // intensity: light (minimum) by default
                 title: "Zalgo corruption",
                 engine: .zalgo,
-                params: ["intensity": "medium"],
-                types: [.text]
+                params: ["intensity": "light"],
+                types: [.text],
+                // #A78 — fun/novelty: only surface on chat / social clips, like
+                // the fancy fonts and UwU, so it never clutters serious prose.
+                requiredTraits: ["fromChat"]
             ),
 
             // MARK: html — strip / escape / unescape (operate on HTML markup;
@@ -261,22 +279,18 @@ enum DefaultTransformationSeed {
                        engine: .htmlUnescape,
                        params: [:],
                        types: [.code]),
+            // #A78 — JSON-only: a JSON blob is already classified as .json, and
+            // on non-JSON code "Validate JSON" is noise.
             descriptor(id: "builtin.json.validate",
                        title: "Validate JSON",
                        engine: .jsonValidate,
                        params: [:],
-                       types: [.json, .code]),
-            descriptor(id: "builtin.text.normalize_spaces",
-                       title: "Normalize spaces",
-                       engine: .normalizeSpaces,
-                       params: [:],
-                       types: [.text, .markdown, .code],
-                       requiredTraits: ["messySpacing"]),
-            descriptor(id: "builtin.text.collapse_blank_lines",
-                       title: "Collapse blank lines",
-                       engine: .collapseBlankLines,
-                       params: [:],
-                       types: [.text, .markdown, .code]),
+                       types: [.json]),
+            // Normalize spaces / Collapse blank lines retired (#A77) — both
+            // overlapped "Tidy text", which already normalizes spacing AND
+            // collapses blank lines via the very same engines. Removed from new
+            // installs; `applyRemoveTidyNicheIfNeeded` prunes them from existing
+            // configs. The engine cases stay — Tidy text still calls them.
             descriptor(id: "builtin.text.extract_emails",
                        title: "Extract emails",
                        engine: .extractEmails,
@@ -300,7 +314,10 @@ enum DefaultTransformationSeed {
             title: "\(prefix)  \(style.displayName)",
             engine: .unicodeStyle,
             params: ["style": style.rawValue],
-            types: [.text]
+            types: [.text],
+            // Playful styling belongs to a chat / social context — gate on it so
+            // the fancy fonts don't clutter the HUD on every plain-text clip.
+            requiredTraits: ["fromChat"]
         )
     }
 

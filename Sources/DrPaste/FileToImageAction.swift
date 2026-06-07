@@ -106,20 +106,23 @@ struct FileToImageAction: ClipboardAction {
         var copy = item
         copy.semantic = .image
         let blobName = "extract-\(UUID().uuidString.prefix(8)).png"
-        let url = AppStorage.blobsDir.appendingPathComponent(blobName)
-        try? data.write(to: url)
+        try? data.write(to: AppStorage.blobsDir.appendingPathComponent(blobName))
+        // Codex #5 — also write a preview image. The HUD renders the thumbnail
+        // from previewImageRel; without it the extracted image showed a blank
+        // placeholder. (We also clear any inherited file-icon thumbnail.)
+        let previewName = "extract-preview-\(UUID().uuidString.prefix(8)).png"
+        try? data.write(to: AppStorage.imagesDir.appendingPathComponent(previewName))
         copy.representations = ["public.png": blobName]
         copy.typesOrdered = ["public.png"]
+        copy.previewImageRel = previewName
         copy.imageFormat = format
         copy.originalImageFileSize = data.count
         return copy
     }
 
     private func filesList(_ item: ClipboardItem) -> [String] {
-        guard let s = item.previewText else { return [] }
-        return s.split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+        // Codex sweep — read the real file references via the shared helper.
+        clipFilePaths(item)
     }
 
     private let supportedExtensions: Set<String> = [

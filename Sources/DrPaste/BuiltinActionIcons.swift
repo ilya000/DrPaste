@@ -48,8 +48,6 @@ enum BuiltinActionIcons {
         case "builtin.text.cyrillic_to_latin":         return "character.book.closed"
         case "builtin.text.latin_to_cyrillic":         return "character.book.closed.fill"
         case "builtin.text.unit_conversion":           return "arrow.left.arrow.right"
-        case "builtin.text.normalize_spaces":          return "space"
-        case "builtin.text.collapse_blank_lines":      return "line.3.horizontal.decrease"
         case "builtin.text.remove_line_breaks":        return "text.justify"
         case "builtin.text.wrap_quotes":               return "quote.opening"
         case "builtin.text.wrap_parens":               return "parentheses"
@@ -92,7 +90,6 @@ enum BuiltinActionIcons {
         case "builtin.table.to_html":                  return "chevron.left.forwardslash.chevron.right"
 
         // md.* — Markdown transforms
-        case "builtin.md.to_plain":                    return "text.alignleft"
         case "builtin.md.to_rich":                     return "text.badge.plus"
         case "builtin.md.extract_headings":            return "list.number"
         case "builtin.md.extract_links":               return "link"
@@ -130,6 +127,7 @@ enum BuiltinActionIcons {
         case "builtin.files.copy_shell_safe_paths":    return "terminal"
         case "builtin.files.to_rich_icons":            return "doc.richtext"
         case "builtin.files.extract_image":            return "doc.text.image"
+        case "builtin.text.to_files":                  return "folder.badge.plus"
 
         default:                                       return "gearshape"
         }

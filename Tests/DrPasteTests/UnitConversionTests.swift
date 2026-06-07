@@ -33,6 +33,19 @@ final class UnitConversionTests: XCTestCase {
         XCTAssertTrue(conv("5 miles to go").contains("8.0 km"))
     }
 
+    /// Regression: spelled-out "meters" (not just "m") must convert. The venue
+    /// example "5 meters wide" was left untouched because the regex only had a
+    /// bare `m\b`, which "meters" never matched.
+    func testSpelledOutMetersConvert() {
+        let out = conv("The venue is 5 meters wide")
+        XCTAssertTrue(out.contains("5 meters ("), "meters not recognised: \(out)")
+        XCTAssertTrue(out.contains("ft"), "expected an imperial equivalent: \(out)")
+    }
+
+    func testSpelledOutKilometersConvert() {
+        XCTAssertTrue(conv("a 2 kilometers walk").contains("2 kilometers ("))
+    }
+
     func testFahrenheitToCelsius() {
         XCTAssertTrue(conv("It's 75°F outside").contains("75°F (23.9°C)"))
     }
@@ -74,6 +87,21 @@ final class UnitConversionTests: XCTestCase {
     func testLitersToQuartsThenGallons() {
         XCTAssertTrue(conv("a 2 L jug").contains(" qt)"))
         XCTAssertTrue(conv("a 5 L jug").contains(" gal)"))
+    }
+
+    /// Reported bug: a thousands comma ("1,760 yards") was read as a decimal
+    /// point → 1.76 yd → "1.61 m". It must be 1760 yd = 1609 m → "1.6 km".
+    func testThousandsCommaNotTreatedAsDecimal() {
+        let out = conv("the mile (1,760 yards)")
+        XCTAssertTrue(out.contains("1.6 km"), "thousands comma misparsed: \(out)")
+        XCTAssertFalse(out.contains("1.61 m"), "still reading 1,760 as 1.76: \(out)")
+    }
+
+    /// European decimal comma ("5,5 kg" = 5.5 kg) must stay a decimal — only
+    /// 3-digit groups are thousands separators.
+    func testEuropeanDecimalCommaStillDecimal() {
+        let out = conv("it weighs 5,5 kg")
+        XCTAssertTrue(out.contains("12.1 lb"), "decimal comma broke: \(out)")
     }
 
     func testNoMeasurementLeavesTextUnchanged() {

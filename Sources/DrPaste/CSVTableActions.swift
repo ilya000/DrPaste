@@ -28,15 +28,27 @@ import AppKit
 
 // MARK: - Shared CSV parser
 
-/// Tiny CSV parser sized for the typical clipboard payload. Returns rows
-/// of fields. Standard RFC-4180-ish behaviour:
-///   • Comma separator (no auto-detect — `.csv` is canonical).
-///   • Double-quoted fields preserve commas, newlines, and `""` escapes.
-///   • Unquoted fields stop at the next comma / newline.
+/// Tiny delimited-table parser sized for the typical clipboard payload.
+/// Returns rows of fields. Standard RFC-4180-ish behaviour:
+///   • Configurable separator — comma (CSV) or tab (TSV). `detectDelimiter`
+///     auto-picks based on the first line.
+///   • Double-quoted fields preserve the delimiter, newlines, and `""` escapes.
+///   • Unquoted fields stop at the next delimiter / newline.
 ///   • Empty trailing line is dropped.
+///
+/// Codex sweep — this is now the SINGLE table parser. The naive
+/// `split("\n")` + `components(separatedBy:)` previously used by
+/// CSV → JSON / Markdown table broke on quoted fields with embedded
+/// delimiters or newlines; they now route through here too.
 enum CSVParser {
 
-    static func parse(_ source: String) -> [[String]] {
+    /// Picks the delimiter from the first line: tab if present, else comma.
+    static func detectDelimiter(_ source: String) -> Character {
+        let firstLine = source.split(whereSeparator: { $0 == "\n" || $0 == "\r" }).first.map(String.init) ?? ""
+        return firstLine.contains("\t") ? "\t" : ","
+    }
+
+    static func parse(_ source: String, delimiter: Character = ",") -> [[String]] {
         // Normalise line endings up-front so the state machine only
         // has to deal with `\n`.
         let normalised = source.replacingOccurrences(of: "\r\n", with: "\n")
@@ -66,7 +78,7 @@ enum CSVParser {
                 continue
             }
             switch c {
-            case ",":
+            case delimiter:
                 current.append(field); field = ""
             case "\n":
                 current.append(field); field = ""
@@ -92,17 +104,18 @@ enum CSVParser {
         return rows
     }
 
-    /// True when source looks plausibly CSV-shaped: at least two rows
-    /// and the first row has at least 2 comma-separated fields. Used
-    /// by isApplicable to keep both actions out of the chip list for
-    /// non-CSV text.
+    /// True when source looks plausibly table-shaped: the first row has at
+    /// least one delimiter (comma OR tab). Used by isApplicable to keep the
+    /// actions out of the chip list for non-tabular text.
+    ///
+    /// Codex sweep — must accept TAB too. The parser was unified to support
+    /// TSV, but this gate still required a comma, so a tab-separated table
+    /// pasted as plain text never surfaced CSV → Wiki / Rich.
     static func looksLikeCSV(_ source: String) -> Bool {
         let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         let firstLine = trimmed.components(separatedBy: "\n").first ?? ""
-        // Need at least one comma in the first line — a single column
-        // without commas isn't really a CSV worth tabulating.
-        return firstLine.contains(",")
+        return firstLine.contains(",") || firstLine.contains("\t")
     }
 }
 
@@ -135,7 +148,7 @@ struct CSVToWikiTableAction: ClipboardAction {
                            reason: "CSV → Wiki: empty input.",
                            recovery: nil)
         }
-        let rows = CSVParser.parse(source)
+        let rows = CSVParser.parse(source, delimiter: CSVParser.detectDelimiter(source))
         guard rows.count >= 1, let header = rows.first else {
             return .failed(original: item,
                            reason: "CSV → Wiki: no rows parsed.",
@@ -197,7 +210,7 @@ struct CSVToRichTableAction: ClipboardAction {
                            reason: "CSV → Rich: empty input.",
                            recovery: nil)
         }
-        let rows = CSVParser.parse(source)
+        let rows = CSVParser.parse(source, delimiter: CSVParser.detectDelimiter(source))
         guard rows.count >= 1, let header = rows.first else {
             return .failed(original: item,
                            reason: "CSV → Rich: no rows parsed.",
@@ -285,7 +298,7 @@ struct CSVToHTMLTableAction: ClipboardAction {
                            reason: "CSV → HTML: empty input.",
                            recovery: nil)
         }
-        let rows = CSVParser.parse(source)
+        let rows = CSVParser.parse(source, delimiter: CSVParser.detectDelimiter(source))
         guard rows.count >= 1, let header = rows.first else {
             return .failed(original: item,
                            reason: "CSV → HTML: no rows parsed.",

@@ -218,6 +218,10 @@ struct GeneralTab: View {
                        isOn: releaseToPasteHintAlwaysOnBinding)
                 Text("The single-line reminder above the history strip in Gesture mode. Quiet by default after the gesture becomes routine; turn this on if you want it permanently visible.")
                     .font(.caption).foregroundStyle(.secondary)
+                Toggle("Hold ⌥⌘ after an action hotkey to preview in the HUD",
+                       isOn: actionHotkeyHoldPreviewBinding)
+                Text("When you fire one of your custom action hotkeys (⌥⌘ + a letter) and keep ⌥⌘ held, the BigHUD opens focused on that action so you can review before pasting. Release quickly and it just runs. Turn this off to always run immediately with no hold-preview.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("Sound feedback") {
@@ -399,6 +403,18 @@ struct GeneralTab: View {
         Binding(
             get: { !UserDefaults.standard.bool(forKey: "drpaste.cheatSheet.disabled") },
             set: { UserDefaults.standard.set(!$0, forKey: "drpaste.cheatSheet.disabled") }
+        )
+    }
+
+    /// Default-on toggle for the action-hotkey hold-preview (⌥⌘ + letter
+    /// held → BigHUD focused on that action). Stored inverted (`disabled`
+    /// flag) so the preview keeps working for users who never touch it —
+    /// only an explicit disable persists. `HotkeyEngine` reads the same
+    /// key and fires the action immediately when disabled.
+    private var actionHotkeyHoldPreviewBinding: Binding<Bool> {
+        Binding(
+            get: { !UserDefaults.standard.bool(forKey: PreferenceKeys.actionHotkeyHoldPreviewDisabled) },
+            set: { UserDefaults.standard.set(!$0, forKey: PreferenceKeys.actionHotkeyHoldPreviewDisabled) }
         )
     }
 
@@ -1965,17 +1981,33 @@ struct ContentTypeTab: View {
             // what they overrode. Inline + colour difference is
             // enough — no "default:" prefix needed, the dimmer text
             // already reads as "the original".
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(displayTitle)
-                    .lineLimit(1)
-                if isCustomized {
-                    Text(action.title)
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+            // Title + second-line description. The blurb (resolved per
+            // action type) gives the user a one-line reminder of what the
+            // action does without opening the editor — the list reads like
+            // a captioned menu instead of a column of bare titles.
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(displayTitle)
                         .lineLimit(1)
+                    if isCustomized {
+                        Text(action.title)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                }
+                if let subtitle = actionSubtitle(action) {
+                    Text(subtitle)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
             }
-            Spacer()
+            // Let the title/description column claim all the slack up to the
+            // controls (instead of a Spacer eating it) so the truncated text
+            // gets the empty room on the right.
+            .frame(maxWidth: .infinity, alignment: .leading)
             // Compact read-only badge when a hotkey is assigned — keeps the
             // row legible. Inline recording was tried (and reverted) because a
             // 130pt "Click to record" field crushed long titles. Assigning /
@@ -1989,11 +2021,8 @@ struct ContentTypeTab: View {
                     .padding(.horizontal, 5).padding(.vertical, 1)
                     .background(Capsule().fill(Color.primary.opacity(0.08)))
             }
-            // `square.and.pencil` is the canonical macOS edit /
-            // compose glyph (Mail, Notes, Reminders). Pairing it with
-            // the "Edit" text label gives the button a stronger
-            // affordance than text alone — users skimming the row
-            // recognise the icon family even before reading.
+            // Plain "Edit" — the pencil glyph was identical on every row and
+            // just ate horizontal space, so it's dropped (text label only).
             Button {
                 openEditor(for: action)
                 // Always raise the editor window after setting the
@@ -2009,7 +2038,7 @@ struct ContentTypeTab: View {
                     editorWindow.raise()
                 }
             } label: {
-                Label("Edit", systemImage: "square.and.pencil")
+                Text("Edit")
             }
             .controlSize(.small)
             .help("Edit this action — title, prompt, provider, hotkey, applicable types")
@@ -2028,7 +2057,9 @@ struct ContentTypeTab: View {
         }
         .padding(.horizontal, 4).padding(.vertical, 3)
         .background(RoundedRectangle(cornerRadius: 4).fill(rowBg))
-        .opacity(isEnabled ? 1.0 : 0.45)
+        // Disabled rows are dimmed but must stay legible — 0.45 made the
+        // (already secondary) description unreadable, so 0.6.
+        .opacity(isEnabled ? 1.0 : 0.6)
     }
 
     /// Background tint distinguishes user-defined actions (subtle accent) from
@@ -2086,6 +2117,37 @@ struct ContentTypeTab: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 16)
         }
+    }
+
+    /// One-line description shown as the row's second line in the action list.
+    /// Resolves per action type:
+    /// - Custom AI → the prompt template (a reminder of what it asks the model),
+    /// - Custom transformation → its engine's generic description,
+    /// - Built-in → the bundled `BuiltinActionMetadata` blurb.
+    /// Returns nil when nothing meaningful is available (row stays single-line).
+    private func actionSubtitle(_ action: ClipboardAction) -> String? {
+        // 1. User override wins over any bundled default.
+        if let custom = registry.customDescription(forActionID: action.id) {
+            let t = custom.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { return t }
+        }
+        // 2. Bundled short descriptor (built-in AND default AI / image actions
+        //    are keyed by id here). Beats the raw AI prompt template.
+        if let d = BuiltinActionMetadata.descriptions[action.id]?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !d.isEmpty {
+            return d
+        }
+        // 3. Custom (user-authored) AI action — fall back to its prompt.
+        if let desc = registry.config.customAI.first(where: { $0.id == action.id }) {
+            let p = desc.promptTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
+            return p.isEmpty ? nil : p
+        }
+        // 4. Custom transformation — its engine's description.
+        if let tx = action as? CustomTransformationAction {
+            let d = (tx.descriptor.engine?.description ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return d.isEmpty ? nil : d
+        }
+        return nil
     }
 
     /// Routes the pencil button to the correct editor sheet for the action's type.
@@ -2259,10 +2321,10 @@ struct ContentTypeTab: View {
                 self.runningActionTitle = nil
                 self.stopResultTick()
                 self.resultInflight = nil
-                // Actually perform side-effect actions (e.g. Reveal in Finder)
-                // on Run — otherwise the test only shows a "will do X" notice
-                // and the action never fires.
-                if case .sideEffect(_, let perform) = outcome { perform() }
+                // NB: do NOT auto-perform side effects here. Running the test
+                // should only PREVIEW the result; opening Finder on every Run
+                // is intrusive. The side-effect notice itself is a button the
+                // user clicks to actually fire it.
             }
         }
     }

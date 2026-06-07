@@ -261,8 +261,205 @@ final class ActionRegistry: ObservableObject {
         if applyDeclutterV6IfNeeded(into: &copy) { changed = true }
         if applyAICurationIfNeeded(into: &copy) { changed = true }
         if applyStripTagsGateIfNeeded(into: &copy) { changed = true }
+        if applyZalgoLightDefaultIfNeeded(into: &copy) { changed = true }
+        if applyTidyTextExpansionIfNeeded(into: &copy) { changed = true }
+        if applyContextGatesIfNeeded(into: &copy) { changed = true }
+        if applyRemoveRetiredStandalonesIfNeeded(into: &copy) { changed = true }
+        if applyA78CurationIfNeeded(into: &copy) { changed = true }
+        if applyA78CurationV2IfNeeded(into: &copy) { changed = true }
 
         if changed { config = copy }
+    }
+
+    /// One-shot: sharpen the HUD by context-gating broad utilities — they now
+    /// surface only when relevant. Tidy text → messy/wrapped; case fixers →
+    /// uppercase/lowercase-heavy; Sort/Unique → multiline; Clean URL → has
+    /// tracking params; fancy fonts + UwU → chat/social source. Stamps the
+    /// requiredTraits onto existing descriptors once.
+    /// One-shot (#A77): fully REMOVE retired standalone actions from existing
+    /// configs, so they no longer clutter the Settings list:
+    ///   • Normalize spaces / Collapse blank lines — covered by "Tidy text".
+    ///   • Markdown → plain — covered by "Plain text" (runs mdToPlain itself).
+    /// Their hotkeys (if any) are pruned by `pruneOrphanedActionHotkeys`.
+    private func applyRemoveRetiredStandalonesIfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.removeRetiredStandalones.v1"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        let remove: Set<String> = [
+            "builtin.text.normalize_spaces",
+            "builtin.text.collapse_blank_lines",
+            "builtin.md.to_plain"
+        ]
+        let before = copy.customTransformations.count
+        copy.customTransformations.removeAll { remove.contains($0.id) }
+        var changed = copy.customTransformations.count != before
+
+        // #A77 — strip the now-invalid `richText` "Applies to" from
+        // remove_line_breaks so the editor checkbox matches reality (the
+        // richTextDenylist already blocks it at runtime).
+        for idx in copy.customTransformations.indices
+        where copy.customTransformations[idx].id == "builtin.text.remove_line_breaks"
+            && copy.customTransformations[idx].applicableTypes.contains("richText") {
+            copy.customTransformations[idx].applicableTypes.removeAll { $0 == "richText" }
+            changed = true
+        }
+
+        UserDefaults.standard.set(true, forKey: key)
+        return changed
+    }
+
+    /// One-shot (#A78): curate down the default plain-text action strip on
+    /// EXISTING configs (new installs get these via seeds / CuratedDefaults).
+    ///   • Trait-gate UPPER/lower (uppercaseHeavy/lowercaseHeavy) and Zalgo
+    ///     (fromChat) so they surface only in context.
+    ///   • Drop plain text from Wrap “smart quotes” / Wrap in code block — keep
+    ///     them on code / markdown.
+    ///   • Disable Word/char count and Latin→Cyrillic translit.
+    ///   • Disable the AI rewrites Make shorter / Improve clarity (tight AI core
+    ///     stays: Fix grammar / Translate / Summarize).
+    /// User edits made AFTER this one-shot are never touched (guarded by key).
+    private func applyA78CurationIfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.a78Curation.v1"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        var changed = false
+
+        let gates: [String: [String]] = [
+            "builtin.text.uppercase": ["uppercaseHeavy", "lowercaseHeavy"],
+            "builtin.text.lowercase": ["uppercaseHeavy", "lowercaseHeavy"],
+            "builtin.text.zalgo": ["fromChat"]
+        ]
+        let retypes: [String: [String]] = [
+            "builtin.text.wrap_quotes": ["code", "markdown"],
+            "builtin.code.wrap_block": ["code", "markdown"]
+        ]
+        let disableTransforms: Set<String> = [
+            "builtin.text.word_count",
+            "builtin.text.latin_to_cyrillic"
+        ]
+        for idx in copy.customTransformations.indices {
+            let id = copy.customTransformations[idx].id
+            if let want = gates[id], copy.customTransformations[idx].requiredTraits != want {
+                copy.customTransformations[idx].requiredTraits = want
+                changed = true
+            }
+            if let want = retypes[id], copy.customTransformations[idx].applicableTypes != want {
+                copy.customTransformations[idx].applicableTypes = want
+                changed = true
+            }
+            if disableTransforms.contains(id), copy.customTransformations[idx].enabled {
+                copy.customTransformations[idx].enabled = false
+                changed = true
+            }
+        }
+
+        let disableAI: Set<String> = ["ai.text.make_shorter", "ai.text.improve_clarity"]
+        for idx in copy.customAI.indices
+        where disableAI.contains(copy.customAI[idx].id) && copy.customAI[idx].enabled {
+            copy.customAI[idx].enabled = false
+            changed = true
+        }
+
+        UserDefaults.standard.set(true, forKey: key)
+        return changed
+    }
+
+    /// One-shot (#A78, per-type pass): narrow actions that leaked into content
+    /// types where they're nonsense, on EXISTING configs.
+    ///   • URL encode / decode — drop `.code` (keep text + url).
+    ///   • Validate JSON — `.json` only.
+    ///   • Wrap “smart quotes” — `.markdown` only (curly quotes break code).
+    ///   • Wrap in code block — `.code` only.
+    private func applyA78CurationV2IfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.a78Curation.v2"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        let retypes: [String: [String]] = [
+            "builtin.url.encode": ["text", "url"],
+            "builtin.url.decode": ["text", "url"],
+            "builtin.json.validate": ["json"],
+            "builtin.text.wrap_quotes": ["markdown"],
+            "builtin.code.wrap_block": ["code"]
+        ]
+        var changed = false
+        for idx in copy.customTransformations.indices {
+            if let want = retypes[copy.customTransformations[idx].id],
+               copy.customTransformations[idx].applicableTypes != want {
+                copy.customTransformations[idx].applicableTypes = want
+                changed = true
+            }
+        }
+        UserDefaults.standard.set(true, forKey: key)
+        return changed
+    }
+
+    private func applyContextGatesIfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.contextGates.v1"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        var changed = false
+        let gates: [String: [String]] = [
+            "builtin.text.trim": ["messySpacing", "wrappedLines"],
+            "builtin.text.title_case": ["uppercaseHeavy", "lowercaseHeavy"],
+            "builtin.text.sentence_case": ["uppercaseHeavy", "lowercaseHeavy"],
+            "builtin.text.sort_lines": ["multiline"],
+            "builtin.text.unique_lines": ["multiline"],
+            "builtin.url.strip_tracking": ["hasTrackingParams"],
+            "builtin.text.uwu_speak": ["fromChat"]
+        ]
+        for idx in copy.customTransformations.indices {
+            let id = copy.customTransformations[idx].id
+            let want: [String]?
+            if let g = gates[id] {
+                want = g
+            } else if id.hasPrefix("builtin.text.font_"),
+                      id != "builtin.text.font_markdown", id != "builtin.text.font_plain" {
+                want = ["fromChat"]
+            } else {
+                want = nil
+            }
+            if let want, copy.customTransformations[idx].requiredTraits != want {
+                copy.customTransformations[idx].requiredTraits = want
+                changed = true
+            }
+        }
+        UserDefaults.standard.set(true, forKey: key)
+        return changed
+    }
+
+    /// One-shot: "Tidy text" is a core cleanup — make it apply to text /
+    /// markdown / rich text and turn it ON. (Still off code/JSON/table, where
+    /// normalising spacing would break structure.)
+    private func applyTidyTextExpansionIfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.tidyTextExpansion.v1"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        var changed = false
+        let want = ["text", "markdown", "richText"]
+        for idx in copy.customTransformations.indices
+        where copy.customTransformations[idx].id == "builtin.text.trim" {
+            if copy.customTransformations[idx].applicableTypes != want {
+                copy.customTransformations[idx].applicableTypes = want
+                changed = true
+            }
+            if !copy.customTransformations[idx].enabled {
+                copy.customTransformations[idx].enabled = true
+                changed = true
+            }
+        }
+        UserDefaults.standard.set(true, forKey: key)
+        return changed
+    }
+
+    /// One-shot: lower Zalgo's default intensity from medium → light (minimum).
+    /// Only the un-customised default ("medium") is touched.
+    private func applyZalgoLightDefaultIfNeeded(into copy: inout ActionConfig) -> Bool {
+        let key = "drpaste.migration.zalgoLight.v1"
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        var changed = false
+        for idx in copy.customTransformations.indices
+        where copy.customTransformations[idx].id == "builtin.text.zalgo"
+            && copy.customTransformations[idx].parameters["intensity"] == "medium" {
+            copy.customTransformations[idx].parameters["intensity"] = "light"
+            changed = true
+        }
+        UserDefaults.standard.set(true, forKey: key)
+        return changed
     }
 
     /// One-shot: gate "Strip HTML tags" on the `containsHTMLMarkup` trait so it
@@ -883,6 +1080,26 @@ final class ActionRegistry: ObservableObject {
             copy.customTitles[actionID] = title
         } else {
             copy.customTitles.removeValue(forKey: actionID)
+        }
+        config = copy
+    }
+
+    /// User override for the action's one-line description (second row line
+    /// in Settings). Returns nil when the user hasn't customised it — callers
+    /// fall back to the bundled default.
+    func customDescription(forActionID actionID: String) -> String? {
+        config.customDescriptions[actionID]
+    }
+
+    /// Persist (or clear) a user description override. Pass nil/empty to drop
+    /// the override and restore the bundled default on the next read.
+    func setCustomDescription(_ description: String?, forActionID actionID: String) {
+        var copy = config
+        if let description = description?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !description.isEmpty {
+            copy.customDescriptions[actionID] = description
+        } else {
+            copy.customDescriptions.removeValue(forKey: actionID)
         }
         config = copy
     }

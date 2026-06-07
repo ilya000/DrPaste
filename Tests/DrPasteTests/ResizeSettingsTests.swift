@@ -35,4 +35,13 @@ final class ResizeSettingsTests: XCTestCase {
         XCTAssertEqual(ResizeSettings.maxLongSide(for: id), ResizeSettings.minSide)
         cleanup(id)
     }
+
+    // Regression: a small target like 10 px must be honoured, not snapped up to
+    // a 16 px floor (the user could not make a tiny thumbnail before).
+    func testSmallTargetIsHonoured() {
+        let id = "test.resize.\(UUID().uuidString)"
+        ResizeSettings.setMaxLongSide(10, for: id)
+        XCTAssertEqual(ResizeSettings.maxLongSide(for: id), 10)
+        cleanup(id)
+    }
 }
