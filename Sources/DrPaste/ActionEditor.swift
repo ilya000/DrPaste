@@ -1247,7 +1247,7 @@ struct ActionEditor: View {
             // Tip text adapts to the kind so the user knows what
             // the prompt is actually being applied to.
             if aiKind == .image {
-                Text("Tip: describe how the AI should re-render the image. Examples: \"Convert to oil painting with thick visible brushstrokes\", \"Add a soft vignette and warm sepia tone\", \"Make it look like a 1920s sepia photograph\". The source image is passed as the `image` input to gpt-image-1.")
+                Text("Tip: describe how the AI should re-render the image. Examples: \"Convert to oil painting with thick visible brushstrokes\", \"Add a soft vignette and warm sepia tone\", \"Make it look like a 1920s sepia photograph\". The source image is passed to the configured image provider (for OpenAI, as the `image` input to gpt-image-1).")
                     .font(.caption2).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {

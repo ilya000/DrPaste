@@ -92,7 +92,7 @@ struct URLPreviewCardAction: ClipboardAction {
               let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https" else {
             return .failed(original: item,
-                           reason: "Preview card: not a http(s) URL.",
+                           reason: "Preview card: not an HTTP(S) URL.",
                            recovery: nil)
         }
         // Fetch HEAD section — most servers ignore the Range header and

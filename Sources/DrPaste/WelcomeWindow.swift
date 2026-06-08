@@ -96,6 +96,7 @@ struct WelcomeView: View {
                 VStack(alignment: .leading, spacing: 22) {
                     axWarningSection
                     workflowsSection
+                    philosophySection
                     primaryHotkeySection
                 }
                 .padding(.horizontal, 28)
@@ -172,10 +173,10 @@ struct WelcomeView: View {
                 .resizable()
                 .frame(width: 64, height: 64)
             VStack(alignment: .leading, spacing: 6) {
-                Text("Copy anything.\nDrPaste knows what to do next.")
+                Text("Copy anything.\nKeep your train of thought intact.")
                     .font(.system(size: 21, weight: .semibold))
                     .fixedSize(horizontal: false, vertical: true)
-                Text("Hold ⌥⌘V to open the clipboard HUD. Choose an action. Release to paste.")
+                Text("DrPaste lives in the gap between “copy” and “paste” — so what reaches the cursor arrives already in the right form.")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -190,17 +191,17 @@ struct WelcomeView: View {
     private var workflowsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             workflowRow("keyboard.fill", .blue,
-                        "Paste where paste doesn’t work",
-                        "Clipboard → Type Slowly → password fields, terminals, anywhere")
+                        "Paste without breaking focus",
+                        "Clipboard → Type Slowly → terminals, password fields, remote apps, anywhere")
             workflowRow("text.viewfinder", .teal,
-                        "Copy text from screenshots",
-                        "Screenshot → Extract text (OCR) → Paste")
+                        "Copy text without cleanup",
+                        "Screenshot → Extract Text (OCR) → Paste clean text")
             workflowRow("link", .green,
-                        "Clean links before sharing",
+                        "Share links without garbage",
                         "Tracking URL → Clean URL → Share")
             workflowRow("wand.and.stars", .purple,
-                        "Transform copied content instantly",
-                        "Fix grammar · Translate · Summarize · Make shorter")
+                        "Move meaning, not formatting",
+                        "Rich Text ↔ Markdown · Translate · Fix grammar · Summarize")
             workflowRow("bubble.left.and.bubble.right.fill", .pink,
                         "Stand out in chats & social",
                         "Selected in Discord → 𝐁𝐨𝐥𝐝 · 𝐼𝑡𝑎𝑙𝑖𝑐 · 𝒮𝒸𝓇𝒾𝓅𝓉 — Unicode that pastes anywhere")
@@ -228,21 +229,40 @@ struct WelcomeView: View {
         }
     }
 
+    // Positioning: the clipboard is a pause in thought — DrPaste removes it.
+    private var philosophySection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("The clipboard is where thought breaks")
+                .font(.system(size: 13, weight: .semibold))
+            Text("Wrong formatting, broken layout, tracking links, OCR cleanup, rich text where plain text is needed. DrPaste removes that interruption — instead of stopping to ask “how do I fix this paste?”, you stay in flow.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
+    }
+
     // The ONE hotkey to learn first. Everything else is discovered later
     // (menu-bar hints, the ⌥⌘-hold overlay).
     private var primaryHotkeySection: some View {
-        HStack(spacing: 10) {
-            Text("⌥⌘V")
-                .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                .padding(.horizontal, 9).padding(.vertical, 4)
-                .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.primary.opacity(0.08)))
-                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(Color.primary.opacity(0.12), lineWidth: 0.5))
-            Text("Hold to open DrPaste")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Text("⌥⌘V")
+                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .padding(.horizontal, 9).padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.primary.opacity(0.08)))
+                    .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(Color.primary.opacity(0.12), lineWidth: 0.5))
+                Text("Hold to open DrPaste")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            Text("More gestures and shortcuts appear while holding ⌥⌘.")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
         }
         .padding(.top, 2)
     }

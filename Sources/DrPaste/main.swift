@@ -349,7 +349,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let b = statusItem.button {
             b.image = AppBrand.menuBarIcon
-            b.toolTip = "DrPaste — clipboard history"
+            b.toolTip = "DrPaste — copy to paste, without the pause"
         }
         rebuildStatusMenu()
     }
@@ -371,14 +371,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
                           + "Press ⌥⌘S to add more, ⌥⌘V to paste."
             }
         } else {
-            b.toolTip = "DrPaste — clipboard history"
+            b.toolTip = "DrPaste — copy to paste, without the pause"
         }
     }
 
     private func rebuildStatusMenu() {
         let menu = NSMenu()
-        let modeLabel = engine.bigHUDMode == .gesture ? "Full Gesture Mode" : "Limited Mode"
-        let header = NSMenuItem(title: "DrPaste — \(modeLabel)", action: nil, keyEquivalent: "")
+        // Brand tagline (positioning: continuity of thought). The running mode
+        // (Limited vs Gesture) is still surfaced below via the "Enable advanced
+        // gesture mode…" item, which only appears when not in full Gesture Mode.
+        let header = NSMenuItem(title: "DrPaste — Keep your flow intact", action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
         menu.addItem(.separator())
@@ -387,8 +389,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // (no keyEquivalent so they never accidentally bind). Only the
         // strategically-important, REAL hotkeys — progressive discovery, not a
         // full reference table.
-        for (key, label) in [("⌥⌘V", "Open clipboard HUD"),
-                             ("⌥⌘S", "Merge / append items"),
+        for (key, label) in [("⌥⌘V", "Open DrPaste HUD"),
+                             ("⌥⌘S", "Append Copy / merge items"),
                              ("⌥⌘C", "Quick copy"),
                              ("⌥⌘X", "Cut & replace"),
                              ("⌥⌘ + drag", "Capture screen region")] {

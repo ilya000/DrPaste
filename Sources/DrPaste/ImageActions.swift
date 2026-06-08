@@ -453,7 +453,7 @@ struct ImageGrayscaleAction: ClipboardAction {
             if let outcome = await transformRichEmbeddedImages(item, { img in
                 applyFilter(CIFilter.photoEffectMono(), on: img).flatMap { pngData(from: $0).map { ($0, "png") } }
             }) { return outcome }
-            return .failed(original: item, reason: "No embedded image to convert", recovery: nil)
+            return .failed(original: item, reason: "No embedded image to grayscale", recovery: nil)
         }
         let saved: ClipboardItem? = await runOffMain {
             guard let img = loadImage(item) else { return nil }
@@ -835,7 +835,7 @@ struct ImageInfoAction: ClipboardAction {
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
         let text: String? = await runOffMain { ImageMetadata.report(for: item) }
         guard let text, !text.isEmpty else {
-            return .failed(original: item, reason: "Couldn’t read image info.", recovery: nil)
+            return .failed(original: item, reason: "Couldn't read image info.", recovery: nil)
         }
         return .preview(makeTextItem(text, from: item))
     }

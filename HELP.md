@@ -1,10 +1,10 @@
 # DrPaste — User Guide
 
-DrPaste is a clipboard manager for macOS. Clipboard history, smart actions over content, AI transformations straight from any application — all behind a single gesture: **⌥⌘V**.
+The clipboard is where thought breaks — wrong formatting, broken layout, tracking links, OCR cleanup, rich text where plain text is needed. DrPaste lives in the gap between *copy* and *paste* and removes that interruption: clipboard history, smart context-aware actions over your content, and AI transformations straight from any application — all behind a single gesture, **⌥⌘V**. What reaches the cursor arrives already in the right form, so you stay in flow.
 
-Current version: **0.58.0** (alpha).
+Current version: **0.59.0** (alpha).
 
-This document describes every feature in plain language, with concrete real-world scenarios. If something's unclear, send feedback via the thumbs-down button.
+This document describes every feature in plain language, with concrete real-world scenarios. If something's unclear, try the feature on a sample in Settings → a content-type tab → Actions, where every action has a live playground.
 
 ---
 
@@ -32,6 +32,8 @@ This document describes every feature in plain language, with concrete real-worl
 ---
 
 ## What it is and why
+
+Every copy-paste is a small pause in your thinking: you stop the task to fix what landed — strip formatting, clean a link, retype something paste won't take. DrPaste removes that pause. It's not a clipboard manager you switch to; it's a layer that sits between *copy* and *paste* and keeps copied content usable.
 
 Stock macOS only remembers the last copied fragment. Copy something new — the old one is gone. DrPaste solves three problems with one tool:
 
@@ -123,7 +125,7 @@ That's the whole core gesture. Everything else is optional.
 
 **Limited Mode** — fallback. If Accessibility is off or DrPaste hasn't gotten it, the HUD opens as a regular window: tap ⌥⌘V, the HUD stays on screen, navigate with arrow keys, press **⏎** to paste or **Esc** to cancel.
 
-Default behaviour differences:
+Default behavior differences:
 
 | Action | Gesture | Limited |
 |---|---|---|
@@ -223,7 +225,7 @@ Hard-wired into the code. Not fundamentally editable, but can be renamed and giv
 
 - **Paste as is** — paste the buffer unchanged (always first in the list).
 - **Reveal in Finder** — for file clips, opens Finder at the folder.
-- **Open URL** — for URL clips, opens in the default browser.
+- **Preview card** — for URL clips, builds a rich title/description card.
 - **Image: OCR** — extracts text from an image via Apple Vision.
 - **Image: Grayscale / Invert / Rotate / Strip metadata / Compress JPEG / Decode QR** — local image transformations via CoreImage.
 - **Image: ASCII art** — renders an image as a monospaced ASCII block. The output is **rich text** with a monospaced 11pt font (so columns survive when pasted into Mail/Notes/Pages). Default width is **40 columns** (convenient for chat messages, code comments, Twitter/X posts). Before 0.42.0 the width was 100 and the output was plain text — the upgrade doesn't touch copies already in history, but new runs of the action use the new parameters.
@@ -272,7 +274,7 @@ Settings → Actions → **+New** opens the action-creation dialog.
 
 **Hotkey:** optional, ⌥⌘+letter for direct invocation. The recorder checks for collisions (see the global-hotkey chapter).
 
-**Test panel at the bottom** — Sample Input + Output, "Run test" button. You can verify the action's behaviour on a sample without closing the dialog.
+**Test panel at the bottom** — Sample Input + Output, "Run test" button. You can verify the action's behavior on a sample without closing the dialog.
 
 - For AI image actions there's a drop-image hint: drag your PNG/JPG into Input, or the bundled Mandrill is used.
 - For text actions, each action has a curated sample — Translate sample for AI Translate, JSON sample for JSON Pretty, etc.
@@ -381,7 +383,7 @@ Want pricier and higher-quality? Open Edit Action, change `Quality: low` to `Qua
 
 DrPaste automatically picks the cheapest image-capable provider if none is explicitly chosen:
 
-1. **Gemini** — ~$0.039 / image (cheapest).
+1. **Gemini** — usually the cheapest image-capable provider.
 2. **OpenRouter** — usually cheaper than OpenAI via flux/imagen models.
 3. **OpenAI** — $0.011 (low) → $0.167 (high) for gpt-image-1.
 4. **Custom** — unknown cost, last resort.
@@ -526,7 +528,7 @@ Color tells you at a glance where you stand.
 
 ### ⌥⌘S inside the HUD — different semantics
 
-Inside the HUD, ⌥⌘S (or just **S** in Gesture Mode) works differently: it accumulates clips selected **from history** into a composite preview. The anchor row is marked green; consumed rows (already merged in) are visually hidden. It supports the same rich+image behaviour.
+Inside the HUD, ⌥⌘S (or just **S** in Gesture Mode) works differently: it accumulates clips selected **from history** into a composite preview. The anchor row is marked green; consumed rows (already merged in) are visually hidden. It supports the same rich+image behavior.
 
 On commit (release of ⌥⌘ or ⏎), the entire accumulated composite is pasted, not the single focused clip.
 
@@ -569,7 +571,7 @@ Settings opens via menu bar icon → Settings, or via ⌘, when Settings is alre
 
 ### General
 
-- **HUD font scale** — slider 0.7×–2.0×. Persistent font size in the HUD. Override on the fly via ⌘+/⌘− inside the HUD.
+- **HUD font scale** — slider 0.7×–1.6×. Persistent font size in the HUD. Override on the fly via ⌘+/⌘− inside the HUD.
 - **Cut & Replace: start cursor on second item** — described above.
 - **Show keyboard cheat sheet on ⌥⌘ hold** — toggle for the corner cheat sheet.
 
@@ -625,7 +627,7 @@ Each row:
 
 ### Appearance
 
-- **Theme** picker — Default, Vivid, Soft, Ocean. Changes colors of HUD, MiniHUD, cheat sheet. Live preview in the picker.
+- **Theme** picker — Auto, Light, Dark, Vivid, Soft, Ocean. Changes colors of HUD, MiniHUD, cheat sheet. Live preview in the picker.
 
 ---
 
@@ -633,7 +635,7 @@ Each row:
 
 DrPaste plays tasteful sounds on key events: copy success/failure, paste success/failure, append, type-slowly tick, delete. All toggle-able and previewable in Settings.
 
-Themes: 4 presets. Vivid — saturated gradients, Soft — muted, Ocean — blue palette. Change on the fly, no restart.
+Themes: 6 presets (Auto, Light, Dark, Vivid, Soft, Ocean). Vivid — saturated gradients, Soft — muted, Ocean — blue palette. Change on the fly, no restart.
 
 ---
 
@@ -663,7 +665,7 @@ Assign `⌥⌘T` to "AI: Translate to Spanish". Normal use: select text → ⌥�
 
 ### Region capture in Mail
 
-⌥⌘+drag in any app → PNG in clipboard → quickly in Mail compose → ⌘V → image inline.
+⌥⌘+drag in any app → PNG in clipboard → switch to Mail compose → ⌘V → image inline.
 
 ### Append from multiple apps
 

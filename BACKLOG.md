@@ -4,7 +4,7 @@ Active work, structured roadmap, and a condensed changelog. Historical
 free-form notes were collapsed into this document; the long-form discussion
 that preceded each shipped item lives in git history.
 
-Current version: **0.58.0** (alpha). `AppBrand.version` is the live
+Current version: **0.59.0** (alpha). `AppBrand.version` is the live
 source of truth — bump there per release. The version string in this
 file's header and in `SKILL.md` / `README.md` / `HELP.md` is updated
 alongside. See [SKILL.md](SKILL.md) for
@@ -3754,6 +3754,24 @@ recovered via `git log --follow BACKLOG.md` and inspected with
 `git show <commit>:BACKLOG.md`. The early revisions are bilingual and
 include verbose technical reasoning per "Правка"; this current revision is
 the curated, English-only working document.
+
+### 0.59.0 — Copy pass: positioning consistency & factual fixes
+
+- Full proofread of user-facing copy (code + README + HELP), cross-checked by
+  Codex, against the "continuity of thought" positioning.
+- Menu-bar tooltip and HUD/cheat-sheet hints no longer say "clipboard history /
+  clipboard HUD / merge clipboard items" — replaced with on-brand, feature-named
+  wording ("Open DrPaste HUD", "Append Copy / merge items").
+- Factual corrections: theme list is 6 presets (Auto, Light, Dark, Vivid, Soft,
+  Ocean), HUD font scale is 0.7×–1.6×, HELP is an English guide (not "16-section
+  Russian"), removed the non-existent "Open URL" built-in (it's "Preview card")
+  and the non-existent feedback "thumbs-down button".
+- Copy/grammar: title_case descriptor de-title-cased, "not a http(s) URL" →
+  "not an HTTP(S) URL", Grayscale failure reason names the right action, AI image
+  tip no longer hard-codes gpt-image-1 as the only route, HUD hotkey hint clarifies
+  hold-to-open / release-to-paste, British "behaviour" → US "behavior", straight/
+  curly apostrophe normalized in error reasons, removed a Gemini price that
+  contradicted the Settings copy.
 
 ### 0.58.0 — Local IPA, wrong-layout repair, curated ordering
 

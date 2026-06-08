@@ -200,11 +200,11 @@ struct GeneralTab: View {
                         .font(.system(.body, design: .monospaced))
                         .frame(width: 50)
                 }
-                Text("Hotkey: ⌥⌘V (V to paste, C to copy, X to cut & replace)")
+                Text("Hotkey: hold ⌥⌘V to open, release to paste · ⌥⌘C copies · ⌥⌘X cuts & replaces")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("Cut & Replace: start cursor on second item (skip just-cut)",
                        isOn: cursorOnSecondBinding)
-                Text("When you ⌥⌘X, cursor jumps over the freshly cut content to the previous item in history. Default off matches native cut+paste behavior.")
+                Text("When you ⌥⌘X, cursor skips the freshly cut content and starts on the next-older item in history. Default off matches native cut+paste behavior.")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("Show keyboard cheat sheet on ⌥⌘ hold",
                        isOn: cheatSheetEnabledBinding)

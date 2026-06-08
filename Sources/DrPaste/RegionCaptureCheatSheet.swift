@@ -226,8 +226,8 @@ struct RegionCaptureCheatSheetView: View {
             // their normal flow — see EventTapEngine).
             VStack(alignment: .leading, spacing: 4) {
                 cheatRow(combo: "⌥⌘ + drag", title: "capture screen region", emphasized: true)
-                cheatRow(combo: "⌥⌘V", title: "open clipboard HUD")
-                cheatRow(combo: "⌥⌘S", title: "merge clipboard items")
+                cheatRow(combo: "⌥⌘V", title: "open DrPaste HUD")
+                cheatRow(combo: "⌥⌘S", title: "append copy / merge items")
                 cheatRow(combo: "⌥⌘C", title: "quick copy")
                 cheatRow(combo: "⌥⌘X", title: "cut & replace")
                 cheatRow(combo: "⌥⌘⏎", title: "paste & keep HUD open")

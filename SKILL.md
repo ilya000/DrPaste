@@ -9,7 +9,7 @@ Native macOS clipboard utility built around press-and-hold UX. Goal is not "yet 
 
 Original working name: **ClipMacPoC**. Final product name: **DrPaste** (chosen 25 May 2026). The "Dr" semantic is **PhD / scholar / educated**, not medical. The icon reflects this: clipboard + mortarboard cap, not a medical cross.
 
-Current version: **0.58.0** (alpha, unsigned SwiftPM build).
+Current version: **0.59.0** (alpha, unsigned SwiftPM build).
 
 ## Project location
 

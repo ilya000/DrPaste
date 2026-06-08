@@ -1,10 +1,12 @@
 # DrPaste
 
-A press-and-hold clipboard utility for macOS.
+**Keep your train of thought intact.**
 
-DrPaste extends the system Paste gesture rather than replacing it. Hold `⌥⌘V`, browse your clipboard history and transformations in a HUD, release to paste. There is no separate window to manage, no panel to dismiss — the workflow is keyboard-first and gesture-driven.
+The clipboard is where thought breaks — wrong formatting, broken layout, tracking links, OCR cleanup, rich text where plain text is needed. DrPaste lives in the gap between *copy* and *paste*, so what reaches the cursor arrives already in the right form.
 
-Current version: **0.58.0** (alpha).
+Hold `⌥⌘V`, browse your clipboard history and transformations in a HUD, choose an action, release to paste. There is no separate window to manage, no panel to dismiss — the workflow is keyboard-first and gesture-driven. Instead of stopping to ask "how do I fix this paste?", you stay in flow.
+
+Current version: **0.59.0** (alpha).
 
 ## Features
 
@@ -46,11 +48,11 @@ Current version: **0.58.0** (alpha).
 
 **Two operating modes.** Full Gesture Mode (with Accessibility permission) uses a CGEventTap for the press-and-hold gesture. Limited Mode (without Accessibility) falls back to Carbon hotkeys with a key-window HUD that uses Enter to commit.
 
-**Themes.** Default, Vivid, Soft, Ocean — four bundled palettes that reach BigHUD, MiniHUD, and the region-capture cheat sheet. Switch on the fly without a restart.
+**Themes.** Auto, Light, Dark, Vivid, Soft, Ocean — six bundled palettes that reach BigHUD, MiniHUD, and the region-capture cheat sheet. Switch on the fly without a restart.
 
 **Factory Reset.** One button in Settings → General wipes every customization (actions, hotkeys, AI provider configs, API keys, preferences) and reseeds the bundled defaults. No reinstall required.
 
-**Standard macOS UX.** Menu bar status item with quick access to recent clipboard items, Settings, Welcome / Hotkeys reference, and About. Import / Export of configuration as JSON for backup or migration. iCloud sync placeholder ready for signed releases.
+**Standard macOS UX.** Menu bar status item with quick access to recent clipboard items, Settings, Welcome, User Guide, and About. Import / Export of configuration as JSON for backup or migration. iCloud sync placeholder ready for signed releases.
 
 ## Hotkeys
 
@@ -99,7 +101,7 @@ Open Settings from the menu bar status item. Configure:
 
 - **General** — HUD font size, sound feedback per cue (volume slider + per-cue toggles), Cut & Replace cursor preferences, the ⌥⌘-hold cheat-sheet toggle, configuration import / export, and Factory Reset. iCloud sync and Launch on Login placeholders for future signed releases.
 - **AI** — connect cloud providers, connect local providers (Ollama, LM Studio, llama.cpp), pick a default provider via radio button. Test connection before saving — the editor will only let you Save once the test passes. OpenAI and OpenRouter providers also show today's usage cost inline.
-- **Appearance** — Default / Vivid / Soft / Ocean theme picker, with live preview.
+- **Appearance** — Auto / Light / Dark / Vivid / Soft / Ocean theme picker, with live preview.
 - **Content tabs** (Plain text, Rich text, URL, JSON, Table, Markdown, Code, Image, Files) — per-tab playground: pick a sample, run any action, see the result. All actions — built-in, custom AI, custom transformations — live in one unified list. Reorder via drag, rename anything, assign hotkeys, edit AI prompts, build custom transformations. Disabled actions stay visible (dimmed) so they're easy to re-enable. Type Slowly preview animates at the production typing speed.
 
 ## Architecture notes
@@ -117,7 +119,7 @@ For deeper architectural notes — three-tier action hierarchy, two-surface desi
 
 ## User guide
 
-A 16-section Russian user guide is in [HELP.md](HELP.md), covering each feature with concrete real-world scenarios, settings reference, and a troubleshooting section.
+An English user guide is in [HELP.md](HELP.md), covering each feature with concrete real-world scenarios, a settings reference, and a troubleshooting section.
 
 ## Acknowledgements
 

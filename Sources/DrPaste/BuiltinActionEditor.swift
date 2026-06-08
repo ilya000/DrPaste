@@ -35,7 +35,7 @@ enum BuiltinActionMetadata {
         "builtin.text.trim": "Tidies whitespace and reflows PDF-wrapped lines into paragraphs.",
         "builtin.text.uppercase": "Makes every letter UPPERCASE.",
         "builtin.text.lowercase": "Makes every letter lowercase.",
-        "builtin.text.title_case": "Capitalizes The First Letter Of Each Word.",
+        "builtin.text.title_case": "Capitalizes the first letter of each word.",
         "builtin.text.sentence_case": "Capitalizes the first letter of each sentence.",
         "builtin.text.camel_case": "Joins words into camelCase.",
         "builtin.text.snake_case": "Joins words with underscores → snake_case.",
