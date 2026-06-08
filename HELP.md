@@ -2,7 +2,7 @@
 
 DrPaste is a clipboard manager for macOS. Clipboard history, smart actions over content, AI transformations straight from any application — all behind a single gesture: **⌥⌘V**.
 
-Current version: **0.57.0** (alpha).
+Current version: **0.58.0** (alpha).
 
 This document describes every feature in plain language, with concrete real-world scenarios. If something's unclear, send feedback via the thumbs-down button.
 

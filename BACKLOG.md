@@ -4,7 +4,7 @@ Active work, structured roadmap, and a condensed changelog. Historical
 free-form notes were collapsed into this document; the long-form discussion
 that preceded each shipped item lives in git history.
 
-Current version: **0.57.0** (alpha). `AppBrand.version` is the live
+Current version: **0.58.0** (alpha). `AppBrand.version` is the live
 source of truth — bump there per release. The version string in this
 file's header and in `SKILL.md` / `README.md` / `HELP.md` is updated
 alongside. See [SKILL.md](SKILL.md) for
@@ -3754,6 +3754,23 @@ recovered via `git log --follow BACKLOG.md` and inspected with
 `git show <commit>:BACKLOG.md`. The early revisions are bilingual and
 include verbose technical reasoning per "Правка"; this current revision is
 the curated, English-only working document.
+
+### 0.58.0 — Local IPA, wrong-layout repair, curated ordering
+
+- Local offline English → IPA action (#A18-style local + AI pair) — a
+  frequency-trimmed CMUdict extract (~27k words), annotate / replace modes,
+  loaded on demand.
+- Wrong-keyboard-layout repair rewritten to multi-layout & bidirectional:
+  English ↔ Russian / Ukrainian / Bulgarian / Serbian (Serbian via a bundled
+  frequency wordlist — no system dictionary). Detector is script-agnostic;
+  Greek / Hebrew / Arabic maps recorded, Korean / Hindi need composition (#A87).
+- Curated default action order per content kind (#A85); "wow / first-open" set
+  enabled; Unicode font family raised in fromChat context; trait-gated HUD chips
+  get a yellow accent; retire redundant font_plain; scope font_markdown to MD.
+- UnitConversion: cubic feet, time-boundary, bare-st stone, two-mode parity.
+- Bundled dictionaries replaced with small frequency EXTRACTS to keep the app
+  light (~3.1 MB → ~0.7 MB of resources).
+- Codex-review fixes throughout.
 
 ### 0.57.0 — Architecture hardening, part 2
 
