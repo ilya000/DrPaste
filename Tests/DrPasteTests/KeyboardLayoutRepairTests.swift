@@ -76,4 +76,28 @@ final class KeyboardLayoutRepairTests: XCTestCase {
         XCTAssertFalse(wrong("ds"))
         XCTAssertFalse(wrong("abc"))
     }
+
+    // MARK: Bulgarian (Phonetic Traditional)
+    func testBulgarianTypedOnQwerty() {
+        XCTAssertTrue(wrong("zdrawej swqt"))
+        XCTAssertEqual(repair("zdrawej swqt"), "здравей свят")
+    }
+    func testEnglishTypedOnBulgarianLayout() {
+        XCTAssertEqual(repair("тхе яуицк бровн фоь"), "the quick brown fox")
+    }
+    func testGenuineBulgarianUnchanged() {
+        XCTAssertFalse(wrong("Здравей как си днес приятел"))
+    }
+
+    // MARK: Serbian Cyrillic (bundled wordlist — no system dictionary)
+    func testSerbianTypedOnQwerty() {
+        XCTAssertTrue(wrong("ydravo svete"))
+        XCTAssertEqual(repair("ydravo svete"), "здраво свете")
+    }
+    func testEnglishTypedOnSerbianLayout() {
+        XCTAssertEqual(repair("хелло њорлд фром сербиа тодаз"), "hello world from serbia today")
+    }
+    func testGenuineSerbianUnchanged() {
+        XCTAssertFalse(wrong("Здраво како си данас пријатељу"))
+    }
 }

@@ -67,11 +67,54 @@ enum KeyboardLayoutRepair {
         return m
     }()
 
+    // Bulgarian — "Phonetic Traditional" (KBDBGPH1), the variant ~70–80% of
+    // everyday Bulgarian users type with (БДС is the professional-typist
+    // minority). Cyrillic letters sit on phonetically-similar Latin keys.
+    private static let bulgarianMap = addingUppercase([
+        "q":"я","w":"в","e":"е","r":"р","t":"т","y":"ъ","u":"у","i":"и","o":"о","p":"п",
+        "[":"ш","]":"щ",
+        "a":"а","s":"с","d":"д","f":"ф","g":"г","h":"х","j":"й","k":"к","l":"л",
+        "z":"з","x":"ь","c":"ц","v":"ж","b":"б","n":"н","m":"м",
+        "`":"ч","\\":"ю"
+    ])
+
+    // Serbian Cyrillic (KBDYCC, QWERTZ-based — note y→з). Cross-verified against
+    // Microsoft's KBDYCC codepoint table.
+    private static let serbianMap = addingUppercase([
+        "q":"љ","w":"њ","e":"е","r":"р","t":"т","y":"з","u":"у","i":"и","o":"о","p":"п",
+        "[":"ш","]":"ђ","\\":"ж",
+        "a":"а","s":"с","d":"д","f":"ф","g":"г","h":"х","j":"ј","k":"к","l":"л",
+        ";":"ч","'":"ћ",
+        "z":"ѕ","x":"џ","c":"ц","v":"в","b":"б","n":"н","m":"м"
+    ])
+
+    /// Add uppercase entries (e.g. "a"→"а" ⇒ "A"→"А") to a lowercase key map.
+    private static func addingUppercase(_ m: [Character: Character]) -> [Character: Character] {
+        var r = m
+        for (k, v) in m {
+            guard let ku = k.uppercased().first, ku != k,
+                  let vu = v.uppercased().first else { continue }
+            r[ku] = vu
+        }
+        return r
+    }
+
     private static let russian = Layout(id: "ru", language: "ru", enToLocal: russianMap)
     private static let ukrainian = Layout(id: "uk", language: "uk", enToLocal: ukrainianMap)
+    private static let bulgarian = Layout(id: "bg", language: "bg", enToLocal: bulgarianMap)
+    private static let serbian = Layout(id: "sr", language: "sr", enToLocal: serbianMap)
 
     /// All supported layouts, tried in turn.
-    static let layouts: [Layout] = [russian, ukrainian]
+    static let layouts: [Layout] = [russian, ukrainian, bulgarian, serbian]
+
+    /// Bundled Serbian Cyrillic wordlist (top ~40k by frequency) — Serbian has
+    /// no installed `NSSpellChecker` dictionary, so `scoreInLanguage("sr")`
+    /// scores against this set instead. Loaded once, cached.
+    private static let serbianWords: Set<String> = {
+        guard let url = Bundle.module.url(forResource: "serbian-words", withExtension: "txt"),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        return Set(text.split(separator: "\n").map(String.init))
+    }()
 
     // MARK: - Swapping
 
@@ -143,10 +186,12 @@ enum KeyboardLayoutRepair {
     }
 
     /// How valid the text is AS-IS, in its most plausible language (so genuine
-    /// text is never "repaired"). Latin → English; Cyrillic → best of ru / uk.
+    /// text is never "repaired"). Latin input → English; any non-Latin script →
+    /// the best of every supported layout's language. Script-agnostic, so adding
+    /// a new (non-Latin) layout needs no change here.
     private static func originalScore(_ text: String) -> Double {
-        let languages = isLatinDominant(text) ? ["en"] : ["ru", "uk"]
-        return languages.map { scoreInLanguage(text, language: $0) }.max() ?? 0
+        if isLatinDominant(text) { return scoreInLanguage(text, language: "en") }
+        return layouts.map { scoreInLanguage(text, language: $0.language) }.max() ?? 0
     }
 
     /// Scorable words (≥2 letters) in `text`.
@@ -156,10 +201,15 @@ enum KeyboardLayoutRepair {
             .filter { $0.count >= 2 }
     }
 
-    /// Fraction of words (0…1) the given language's speller accepts.
+    /// Fraction of words (0…1) recognised in the given language. Uses the
+    /// bundled wordlist for Serbian (no system dictionary), else NSSpellChecker.
     private static func scoreInLanguage(_ text: String, language: String) -> Double {
         let ws = words(in: text)
         guard !ws.isEmpty else { return 0 }
+        if language == "sr" {
+            let good = ws.filter { serbianWords.contains($0.lowercased()) }.count
+            return Double(good) / Double(ws.count)
+        }
         let checker = NSSpellChecker.shared
         var good = 0
         for w in ws {
@@ -172,17 +222,16 @@ enum KeyboardLayoutRepair {
 
     // MARK: - Script helpers
 
-    private static func scriptCounts(_ text: String) -> (latin: Int, cyrillic: Int) {
-        var latin = 0, cyrillic = 0
-        for s in text.unicodeScalars {
-            if (0x0400...0x04FF).contains(s.value) { cyrillic += 1 }
-            else if (0x41...0x5A).contains(s.value) || (0x61...0x7A).contains(s.value) { latin += 1 }
-        }
-        return (latin, cyrillic)
-    }
-
+    /// True when the text is mostly Latin (A–Z / a–z) rather than any other
+    /// script — used to decide swap direction. Works for Cyrillic, Greek,
+    /// Hangul, Hebrew, … alike (anything non-Latin counts as "other").
     private static func isLatinDominant(_ text: String) -> Bool {
-        let c = scriptCounts(text)
-        return c.latin >= c.cyrillic
+        var latin = 0, other = 0
+        for s in text.unicodeScalars {
+            let v = s.value
+            if (0x41...0x5A).contains(v) || (0x61...0x7A).contains(v) { latin += 1 }
+            else if CharacterSet.letters.contains(s) { other += 1 }
+        }
+        return latin >= other
     }
 }

@@ -3687,6 +3687,64 @@ mainly needs the map + a Latin-specific detection threshold.
 
 ---
 
+### #A87 — Wrong-layout repair: more non-Latin scripts (Greek, Hebrew, Arabic, Korean, Hindi)
+
+**Status:** partial. **Bulgarian (Phonetic Traditional) and Serbian Cyrillic
+SHIPPED** — Bulgarian via NSSpellChecker `bg`; Serbian via a bundled
+frequency wordlist (`serbian-words.txt`, freq list ∩ Hunspell to drop subtitle
+loanword pollution) since macOS has no `sr` dictionary. Greek / Hebrew / Arabic
+have verified maps below but are deferred (Greek final-sigma scoring; Hebrew /
+Arabic RTL). Korean / Hindi need a composition pass.
+Detector is script-agnostic (`isLatinDominant` + `originalScore` over all layout
+languages); adding a non-Latin layout needs only an accurate key map + a scorer
+(installed spellchecker, or a bundled wordlist like Serbian's).
+
+**Verified maps gathered (qwerty_key → letter), for when these are picked up:**
+- **Greek (standard)**: w→ς e→ε r→ρ t→τ y→υ u→θ i→ι o→ο p→π a→α s→σ d→δ f→φ
+  g→γ h→η j→ξ k→κ l→λ z→ζ x→χ c→ψ v→ω b→β n→ν m→μ (q = ; , not a letter).
+  Caveat: word-final σ should be normalised to ς before scoring `el`.
+- **Hebrew (SI-1452)**: e→ק r→ר t→א y→ט u→ו i→ן o→ם p→פ a→ש s→ד d→ג f→כ g→ע
+  h→י j→ח k→ל l→ך ;→ף z→ז x→ס c→ב v→ה b→נ n→מ m→צ .→ץ (RTL).
+- **Arabic 101**: q→ض w→ص e→ث r→ق t→ف y→غ u→ع i→ه o→خ p→ح [→ج ]→د a→ش s→س
+  d→ي f→ب g→ل h→ا j→ت k→ن l→م ;→ك '→ط z→ئ x→ء c→ؤ v→ر b→لا n→ى m→ة ,→و .→ز /→ظ
+  (RTL; `b`→لا is a 2-char ligature).
+**Touches:** `KeyboardLayoutRepair.layouts` (+ maps), tests.
+**Context:** Non-Latin layouts detect cleanly (no Latin↔Latin ambiguity) — the
+only two blockers per language are (a) an installed `NSSpellChecker` dictionary
+and (b) keyboard-map complexity.
+
+**Dictionary availability (checked via `NSSpellChecker.availableLanguages`):**
+- Cyrillic: ru ✓, uk ✓ (shipped); **bg ✓** (Bulgarian). sr / kk / be / mk ✗
+  (Serbian, Kazakh, Belarusian, Macedonian — no dictionary → can't score → can't
+  detect; map alone is useless).
+- Other scripts: **el ✓** (Greek), **he ✓** (Hebrew), **ar ✓** (Arabic),
+  **ko ✓** (Korean), **hi ✓** (Hindi). ka / hy / th / ja / zh ✗.
+
+**Per-language feasibility:**
+- **Bulgarian (bg)** — feasible, but TWO common layouts (БДС positional vs
+  Phonetic); pick one (Phonetic is common among bilingual typists) or support
+  both. Char-for-char.
+- **Greek (el)** — feasible, single standard layout, char-for-char.
+- **Hebrew (he) / Arabic (ar)** — char-for-char maps exist, but RTL handling
+  (and Arabic contextual letter forms) need care.
+- **Korean (ko)** — HARD: a US-layout swap yields uncomposed jamo; real Hangul
+  needs jamo→syllable-block composition (Unicode Hangul algorithm).
+- **Hindi (hi)** — HARD: Devanagari needs matra / conjunct composition.
+- **Japanese / Chinese** — out of scope: not a layout swap at all (kana→kanji /
+  pinyin→hanzi IME conversion), no dictionary either.
+
+**Critical caveat:** the key maps must match the REAL physical layouts. A
+round-trip test is involutive and therefore CANNOT validate a guessed map
+against the actual keyboard — source maps from macOS `.keylayout` files / CLDR
+(or confirm with a native typist) before shipping each language.
+
+**Requirements:** add accurate `enToLocal` maps for bg + el first (cleanest
+wins); decide Bulgarian layout variant; tests with real phrases in both
+directions; keep the false-positive suite (genuine en / ru / uk / bg / el
+prose untouched). Korean/Hindi tracked separately (need a composition pass).
+
+---
+
 ## Changelog
 
 Shipped versions. Each bullet is one observable change. Implementation-level
