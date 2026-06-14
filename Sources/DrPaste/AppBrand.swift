@@ -20,6 +20,10 @@ enum AppBrand {
 
     static let githubURL = "https://github.com/ilya000/DrPaste"
 
+    /// The ctrl8 collection — every tool by iLya Os in one place. Surfaced at the
+    /// top of the About panel so users of any app can discover the others.
+    static let ctrl8URL = "https://www.ctrl8.com"
+
     /// Color icon for the HUD header, About panel, Dock, and Cmd-Tab.
     ///
     /// Resource lookup order, first match wins:

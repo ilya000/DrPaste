@@ -67,6 +67,15 @@ struct AboutView: View {
                 Spacer(minLength: 0)
             }
 
+            // Part of the ctrl8 collection — discover the other tools
+            HStack(spacing: 6) {
+                Text("Part of")
+                    .foregroundStyle(.secondary)
+                Link("ctrl8 — www.ctrl8.com", destination: URL(string: AppBrand.ctrl8URL)!)
+            }
+            .font(.system(size: 12))
+            .padding(.top, 16)
+
             Divider().padding(.vertical, 24)
 
             // Copyright + license + source link

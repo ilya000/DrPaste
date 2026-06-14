@@ -3745,6 +3745,155 @@ prose untouched). Korean/Hindi tracked separately (need a composition pass).
 
 ---
 
+## AI-authored macro layer (CONDITIONAL — only if we decide to build it)
+
+> **Not committed.** Recorded only in case we go this route. Nothing here is a
+> scheduled feature or an approved architecture; no code exists. Full reasoning
+> (Lua/WASM analysis, match=filter / run=process duality, the flywheel) lives in
+> [docs/llm-macro-engine.md](docs/llm-macro-engine.md). Items #A88 / #A89 below
+> carry the concrete v1 / later scope **if** we commit.
+
+Strategic framing for replacing the complex per-content-kind Actions settings
+UI with a macro layer whose author is an LLM, not the user. The user describes
+the action they want in natural language; the model assembles a macro and says
+"done." The user never writes code. Captured here as the canonical reference;
+no code changes from this section.
+
+**Core distinction — authoring-time AI vs runtime AI.** Today an "AI action"
+calls the LLM on every run (slow, paid per use, online, non-deterministic). The
+new category is an **AI-authored macro**: the LLM authors it once, and the
+result runs locally — fast, free after authoring, offline, deterministic. A
+large share of what users do as runtime-AI actions (reformat, extract by
+pattern, regex-style transforms) does not need an LLM at runtime, only once to
+write the transform. This moves runtime cost/latency toward zero.
+
+**Representation — one declarative IR, primary, for both halves of a macro:**
+- `match` = a laconic declarative predicate over PRE-COMPUTED traits (the
+  existing central trait pass), not arbitrary code. It runs on the hot path
+  (every focused clip × every macro while ⌥⌘V is held), so it must be
+  near-instant and memoised per clip.
+- `run` = a pipeline of typed pure operators from a curated catalog, plus
+  `conditional` (when: predicate → sub-pipeline) and `map-over-items`
+  (per line / element). NO unbounded loops or recursion in the declarative
+  tier — that boundary is what keeps it statically analysable and is the
+  trigger line for the Lua escape hatch (#A89).
+
+**Why declarative is primary (the author is an LLM, so human ergonomics are
+irrelevant; these five are what matter):**
+1. Static verifiability — the IR can be validated (operators exist, args
+   type-check) BEFORE running. Stronger correctness gate than dynamically
+   testing arbitrary code.
+2. Mineable for the flywheel — a normalised operator list clusters and
+   generalises; arbitrary code ASTs do not.
+3. Cost dedup — a structural hash of the IR is stable, so two differently
+   phrased NL requests that yield the same pipeline hit the same cache entry
+   (= zero LLM calls).
+4. Precise self-repair signal — "operator 3 `regex_extract` produced empty on
+   the sample" beats a stack trace when feeding errors back to the model.
+5. Free NL explanation — "extract emails → dedupe → lowercase" renders the
+   trust moment ("done; here's what it does") for nothing.
+
+**Operator catalog is the real design surface**, not the engine. ~50–80
+orthogonal, composable ops. Too few → the escape hatch is overused; too many →
+bloat and the model fumbles selection. Treat it like a well-chosen stdlib.
+
+**Cost control.** (a) Dedup-against-library BEFORE calling the LLM: embed the NL
+request, match it against the accumulated macro library, and serve a ready
+macro when one fits ("looks like you want X — here it is", instant, free). The
+self-tuning library is therefore ALSO a cost-reduction mechanism — the more it
+grows, the fewer novel generations are needed. (b) Two authoring paths:
+BYOK (user's key) = unlimited, user pays; our provider = metered free tier with
+upsell (ties into the monetization section above). (c) Cap self-repair
+iterations (≈3).
+
+**Fallback ladder.** Prefer a local declarative macro; if the intent cannot be
+compiled into the catalog, fall back to a runtime-AI action. The system always
+returns something usable.
+
+**Federated self-tuning flywheel (opt-in).** Telemetry = macro SIGNATURES only
+(normalised IR + match predicate + usage counts) — NEVER clipboard content and
+NEVER the raw NL spec (both can carry PII). Backend clusters similar macros,
+auto-generalises common ones into vetted NATIVE operators / shipped built-ins
+(quality-gated against a test battery, versioned, rollback-able), and ships them
+with updates. Generalised macros arrive as NEW suggested built-ins that coexist
+with the user's local one — never overwrite local edits. Usage drives default
+ordering (data-driven #A85) and demotion/pruning of dead macros, with an
+exploration allowance so cold-start (brand-new, unused) macros still get a
+chance to surface. This accumulated, usage-validated, auto-generalised library +
+ranking signal is the actual moat — wrapping an LLM to emit a transform is
+trivial; the compounding library is not.
+
+### #A88 — Declarative macro IR (v1: match predicate + run pipeline, declarative-only)
+
+**Status:** conditional — near-term IF we commit to the LLM-macro direction
+(see the section banner above). Not scheduled.
+**Touches:** new IR + interpreter types; an operator catalog; `ActionRegistry`
+(new macro action kind alongside built-ins / custom AI / transformations);
+`ContextDetector` / `ActionTraits` (precomputed traits consumed by `match`);
+the per-action playground (reused as the generate→test→repair harness).
+**Context:** The declarative-only first cut of the AI-authored macro layer
+above. Ships the engine + catalog and the authoring loop, WITHOUT the Lua
+escape hatch (#A89) — start declarative-only and learn empirically where the
+catalog falls short before adding code.
+**Requirements:**
+- IR shape: `macro = { spec (NL), version, match (predicate), run (pipeline) }`.
+- `match`: declarative predicate over pre-computed traits; no arbitrary code;
+  memoised per clip; cheap enough for the ⌥⌘V hot path.
+- `run`: linear pipeline of typed pure operators, PLUS `conditional`
+  (when → sub-pipeline) and `map-over-items` (per line / element). No unbounded
+  iteration or recursion (that is #A89's trigger).
+- Operator catalog: ~50–80 orthogonal, composable, statically-typed, versioned
+  ops (case / trim / split-join / regex extract+replace / encode-decode /
+  json / url / sort / dedupe / number / slugify / …). Design this carefully —
+  it is the main surface.
+- Static validation of the IR (operators exist, arg types check) before
+  execution.
+- Structural hash of the IR for the dedup-against-library cache.
+- Authoring loop: NL spec → model emits IR → static-validate → run on the
+  content-kind sample(s) in the playground → show live preview on the user's
+  clip → self-repair on validation/empty/error (cap ≈3). Generation uses the
+  user's configured AI provider (BYOK) or the metered hosted path.
+- Hybrid migration: existing built-ins stay native; re-express a handful as
+  bundled macros to seed the catalog and serve as canonical examples. No
+  big-bang rewrite.
+- Persist spec + IR together so "make it also do X" is a patch-regeneration.
+
+### #A89 — Lua escape-hatch node (later: one sandboxed node type for the algorithmic tail)
+
+**Status:** conditional — long-term, and only IF #A88 is built and its tail
+demands it. Not scheduled.
+**Touches:** macro interpreter (a new `lua` node type within the #A88
+pipeline); a sandboxed Lua runtime; telemetry signature format.
+**Context:** ~10% of transforms are genuinely algorithmic — arithmetic
+(unit conversion), real parsers (quoted-field CSV), state machines (bracket
+balancing), unbounded iteration — and cannot be expressed by a finite operator
+catalog without it becoming a de-facto language. Rather than choose
+declarative XOR Lua, embed Lua as ONE node type inside the declarative
+pipeline: 90% stays pure declarative (safe, mineable, explainable) and the tail
+drops to a sandboxed Lua node without abandoning the structure.
+**Requirements:**
+- `lua` node = one operator type in the pipeline, not a replacement for the IR.
+- Sandbox: strip `os` / `io` / `package`; instruction-count, wall-time, and
+  memory limits (debug-hook timeout). The host API is the only capability
+  surface — the model can only call what is exposed.
+- Frontier signal: frequent Lua nodes are clustered on the backend and the
+  common ones are PROMOTED to vetted native operators (#A88 catalog), so the
+  Lua share decays over time. Lua = frontier; native operators = settled
+  territory. The system trends toward MORE declarative, not bloat.
+- Do not ship in v1. Add when #A88's tail empirically demands it.
+
+---
+
+## tetisk — adjacent project idea (moved out)
+
+This concept graduated into its own project folder: `~/Dropbox/Claude My/Tetisk`
+(sibling of DrPaste/Slipway/Polytype). All knowledge now lives there —
+`Tetisk/README.md`, `Tetisk/BACKLOG.md` (concept, backends, open decisions), and
+`Tetisk/docs/design.md` (full UX spec for a prototyping AI). Not a DrPaste
+feature; kept here only as a breadcrumb.
+
+---
+
 ## Changelog
 
 Shipped versions. Each bullet is one observable change. Implementation-level
