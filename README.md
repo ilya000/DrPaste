@@ -132,3 +132,5 @@ Built on Apple's AppKit, SwiftUI, Core Image, Vision, ScreenCaptureKit, PDFKit, 
 GNU GPL v3.0-or-later with attribution requirement. See [LICENSE](LICENSE).
 
 Copyright © 2026 iLya Os.
+
+DrPaste is provided **"as is", without warranties of any kind**, to the fullest extent permitted by applicable law. By downloading or using it you accept the [terms of use](https://ctrl8.com/legal.html).
