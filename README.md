@@ -6,7 +6,20 @@ The clipboard is where thought breaks — wrong formatting, broken layout, track
 
 Hold `⌥⌘V`, browse your clipboard history and transformations in a HUD, choose an action, release to paste. There is no separate window to manage, no panel to dismiss — the workflow is keyboard-first and gesture-driven. Instead of stopping to ask "how do I fix this paste?", you stay in flow.
 
-Current version: **0.59.0** (alpha).
+Current version: **0.59.0** (alpha, feature-frozen).
+
+## Product status
+
+DrPaste is in finalization mode. The product direction is locked: a native
+macOS clipboard layer with fast, context-aware paste actions. Future work should
+be limited to bug fixes, reliability, action quality, UX polish, documentation,
+tests, packaging, and release hardening. Avoid adding new product surfaces,
+workflow systems, provider categories, or broad feature families unless they
+replace or simplify something that already exists.
+
+The default action strip is intentionally compact. The first actions should be
+the most frequent and useful; impressive or rare actions stay available but sit
+behind content context, Settings, or the action palette.
 
 ## Features
 
@@ -52,7 +65,7 @@ Current version: **0.59.0** (alpha).
 
 **Factory Reset.** One button in Settings → General wipes every customization (actions, hotkeys, AI provider configs, API keys, preferences) and reseeds the bundled defaults. No reinstall required.
 
-**Standard macOS UX.** Menu bar status item with quick access to recent clipboard items, Settings, Welcome, User Guide, and About. Import / Export of configuration as JSON for backup or migration. iCloud sync placeholder ready for signed releases.
+**Standard macOS UX.** Menu bar status item with quick access to recent clipboard items, Settings, Welcome, User Guide, and About. Import / Export of configuration as JSON for backup or migration. Settings and provider keys stay local.
 
 ## Hotkeys
 
@@ -99,7 +112,7 @@ For full Gesture Mode, grant Accessibility permission in System Settings → Pri
 
 Open Settings from the menu bar status item. Configure:
 
-- **General** — HUD font size, sound feedback per cue (volume slider + per-cue toggles), Cut & Replace cursor preferences, the ⌥⌘-hold cheat-sheet toggle, configuration import / export, and Factory Reset. iCloud sync and Launch on Login placeholders for future signed releases.
+- **General** — HUD font size, sound feedback per cue (volume slider + per-cue toggles), Cut & Replace cursor preferences, the ⌥⌘-hold cheat-sheet toggle, configuration import / export, and Factory Reset.
 - **AI** — connect cloud providers, connect local providers (Ollama, LM Studio, llama.cpp), pick a default provider via radio button. Test connection before saving — the editor will only let you Save once the test passes. OpenAI and OpenRouter providers also show today's usage cost inline.
 - **Appearance** — Auto / Light / Dark / Vivid / Soft / Ocean theme picker, with live preview.
 - **Content tabs** (Plain text, Rich text, URL, JSON, Table, Markdown, Code, Image, Files) — per-tab playground: pick a sample, run any action, see the result. All actions — built-in, custom AI, custom transformations — live in one unified list. Reorder via drag, rename anything, assign hotkeys, edit AI prompts, build custom transformations. Disabled actions stay visible (dimmed) so they're easy to re-enable. Type Slowly preview animates at the production typing speed.
@@ -127,10 +140,17 @@ DrPaste's design is inspired by Flycut, Maccy, Paste, and Raycast — open clipb
 
 Built on Apple's AppKit, SwiftUI, Core Image, Vision, ScreenCaptureKit, PDFKit, and Carbon HIToolbox.
 
+## Links
+
+- **Home page** — <https://ctrl8.com/drpaste.html>
+- **Source** — <https://github.com/ilya000/DrPaste>
+- **Author** — iLya Os (Ilya V. Osipov), <https://github.com/ilya000>
+- **More projects** — <https://ctrl8.com>
+
 ## License
 
 GNU GPL v3.0-or-later with attribution requirement. See [LICENSE](LICENSE).
 
-Copyright © 2026 iLya Os.
+Copyright © 2026 iLya Os (Ilya V. Osipov).
 
 DrPaste is provided **"as is", without warranties of any kind**, to the fullest extent permitted by applicable law. By downloading or using it you accept the [terms of use](https://ctrl8.com/legal.html).
