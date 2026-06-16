@@ -33,10 +33,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
     private var recentMenu: NSMenu!
     private var previewToken: Int = 0
     private var axTrustPollTimer: Timer?
-    /// Repeating timer that ticks `bigHUDState.aiElapsed` while an AI request is
-    /// in flight. Owned by AppDelegate so it can be invalidated when the HUD
-    /// closes or the user navigates between actions before the response arrives.
-    private var aiTickTimer: Timer?
+    /// Task-backed ticker that updates `bigHUDState.aiElapsed` while an AI
+    /// request is in flight. Owned by AppDelegate so it can be cancelled when
+    /// the HUD closes or the user navigates before the response arrives.
+    private var aiTickTask: Task<Void, Never>?
     /// Outstanding AI streaming task — kept so we can explicitly cancel it
     /// when the user navigates to a different action mid-stream or closes
     /// the HUD. Cancellation propagates to the underlying URLSession via
@@ -1076,38 +1076,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // show() (rapid-fire same-hotkey case where task N+1 replaced
         // task N's MiniHUD before task N's cancellation point ran).
         actionHotkeyTask = Task { @MainActor in
-            // Watchdog — auto-cancel the whole task after 90 s.
-            // Some providers/models leak the HTTP stream past
-            // `message_stop` (server forgets to FIN; or sends
-            // keep-alive pings forever) and our 15 s idle timeout
-            // never trips because each ping ticks the byte clock.
-            //
-            // MUST be `Task.detached`, NOT `Task { @MainActor ... }`.
-            // The parent task here is @MainActor-isolated; if the
-            // watchdog inherits that isolation, its `Task.sleep`
-            // also runs on the main actor, and if the main actor
-            // is congested (parent task holding it through some
-            // sync work inside applyStreaming, SwiftUI tick updates
-            // from the MiniHUD elapsed counter, etc.) the watchdog
-            // never gets its turn and the 90 s deadline silently
-            // passes. Detached runs on a global executor — its
-            // sleep wakes up regardless of main-actor pressure.
-            // The cancel itself hops back to MainActor since
-            // `actionHotkeyTask` is main-actor-bound state.
-            let watchdog = Task.detached(priority: .background) { [weak self] in
-                try? await Task.sleep(nanoseconds: 90_000_000_000)
-                guard !Task.isCancelled else { return }
-                // Inner `[weak self]` is required (not just inherited
-                // from the outer detached task) because `MainActor.run`
-                // takes a @Sendable closure, and Swift 6 forbids those
-                // from referencing a `var` capture (weak captures are
-                // semantically `var`). The inner re-capture creates a
-                // fresh, Sendable-compatible binding.
-                await MainActor.run { [weak self] in
-                    self?.actionHotkeyTask?.cancel()
-                }
+            // Watchdog — auto-cancel the whole task after 90 s. Uses the
+            // shared detached helper so the timeout is not starved by
+            // MainActor congestion during AI streaming.
+            let watchdog = actionHotkeyTask.map {
+                installWatchdog(seconds: 90, cancelling: $0)
             }
-            defer { watchdog.cancel() }
+            defer { watchdog?.cancel() }
 
             guard await PasteSimulator.simulateCopyAndAwaitChange() else {
                 MiniHUDController.shared.hideIfOwner(hudToken)
@@ -1639,9 +1614,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             guard let pngData = data else {
                 // Capture failed — most likely Screen Recording permission
                 // hasn't been granted yet. macOS will have shown its own
-                // prompt; play the failure sound so the user has audio
-                // confirmation something went wrong.
+                // prompt; play the failure sound and show a short toast so
+                // the user has an explicit recovery hint.
                 SoundFeedback.play(.pasteFailure)
+                ToastController.shared.show(
+                    message: "Screen Recording needed — open System Settings",
+                    systemImage: "lock.shield",
+                    duration: 3.5,
+                    category: .essential
+                )
                 self.regionCaptureSourceApp = nil
                 return
             }
@@ -2530,30 +2511,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
             // against stale chunks landing after the user navigated to
             // a different action.
             aiStreamingTask = Task {
-                // 90 s watchdog — same defense as the direct-trigger
-                // path. Provider keep-alive pings can defeat the
-                // 15 s byte-idle timeout indefinitely; without this,
-                // a leaked stream past message_stop would keep the
-                // BigHUD's "thinking…" spinner ticking forever even
-                // after the response was complete and the user was
-                // just staring at a stale loading state. Cancellation
-                // cascades into applyStreaming's catch block which
-                // returns the accumulated partial as .preview, so the
-                // user still gets whatever arrived.
-                //
-                // Detached (background priority) so the watchdog's
-                // sleep can wake regardless of main-actor pressure
-                // — same reasoning as actionHotkeyDidFire above.
-                let watchdog = Task.detached(priority: .background) { [weak self] in
-                    try? await Task.sleep(nanoseconds: 90_000_000_000)
-                    guard !Task.isCancelled else { return }
-                    // Inner `[weak self]` for Swift 6 Sendable
-                    // capture rules — see actionHotkeyDidFire above.
-                    await MainActor.run { [weak self] in
-                        self?.aiStreamingTask?.cancel()
-                    }
+                // 90 s watchdog — same defense as the direct-trigger path.
+                // Uses the shared detached helper so provider keep-alive
+                // pings cannot leave the BigHUD spinner running forever.
+                let watchdog = aiStreamingTask.map {
+                    installWatchdog(seconds: 90, cancelling: $0)
                 }
-                defer { watchdog.cancel() }
+                defer { watchdog?.cancel() }
 
                 let outcome = await action.applyStreaming(
                     item: item,
@@ -2607,50 +2571,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // reported ("вижу processing и спинер" instead of provider
         // chrome).
         let explicitID: String?
-        let isImageish: Bool
+        let operationKind: AIOperationKind
         if let ai = action as? AIAction {
             explicitID = ai.providerID
-            isImageish = false
+            operationKind = .text
         } else if let ai = action as? AIImageAction {
             explicitID = ai.providerID
-            isImageish = true
+            operationKind = .imageEdit
         } else if let ai = action as? AITextToImageAction {
             explicitID = ai.providerID
-            isImageish = true
+            operationKind = .textToImage
         } else {
             return nil
         }
         let cfg = AIProviderRegistry.shared.config
-        // Mirror the runtime resolveProvider chain so the chrome
-        // doesn't lie about which provider actually runs the
-        // request. For image actions specifically, the chat default
-        // may be non-image-capable (Anthropic etc.) — runtime then
-        // soft-falls back to OpenAI / Gemini / OpenRouter — and the
-        // inflight label has to reflect THAT, not the chat default.
-        let cp: ConfiguredProvider? = {
-            if let id = explicitID, !id.isEmpty,
-               let p = cfg.providers.first(where: { $0.id == id }),
-               p.enabled,
-               (!isImageish || p.kind.supportsImageEdit) {
-                return p
+        let resolved = ProviderResolver.resolve(
+            nominalProviderID: explicitID,
+            operationKind: operationKind,
+            config: cfg,
+            hasKey: { id in
+                ProviderResolver.runtimeHasCredential(providerID: id,
+                                                      operationKind: operationKind,
+                                                      config: cfg)
             }
-            if let defaultID = cfg.defaultProviderID,
-               let p = cfg.providers.first(where: { $0.id == defaultID }),
-               p.enabled,
-               (!isImageish || p.kind.supportsImageEdit) {
-                return p
-            }
-            if isImageish {
-                // Cheapest-first (Gemini → OpenRouter → OpenAI →
-                // Custom). Same ranking the runtime uses, so the
-                // HUD chrome surfaces the worker that's actually
-                // about to fire instead of a stale registry-order
-                // pick.
-                return AIProviderRegistry.shared.cheapestEnabledImageProvider()
-            }
-            return cfg.providers.first { $0.enabled }
-        }()
-        guard let cp = cp else {
+        )
+        guard let resolved else {
             return AIInflight(providerLabel: "AI",
                               modelName: "unknown",
                               actionTitle: action.title,
@@ -2660,34 +2605,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyEngineDelegate, 
         // image endpoint (gpt-image-1 for OpenAI, gemini-2.5-flash-
         // image-preview for Gemini, etc.) — not the configured chat
         // model. Surface the actual model so the chrome doesn't lie.
-        let modelLabel: String = isImageish
-            ? (cp.kind == .gemini ? "gemini-2.5-flash-image-preview" : "gpt-image-1")
-            : cp.model
-        return AIInflight(providerLabel: cp.displayName,
+        let modelLabel: String = operationKind == .text
+            ? resolved.modelLabel
+            : (resolved.providerKind == .gemini ? "gemini-2.5-flash-image-preview" : "gpt-image-1")
+        return AIInflight(providerLabel: resolved.providerLabel,
                           modelName: modelLabel,
                           actionTitle: action.title,
                           startedAt: Date())
     }
 
-    /// Starts a 10 Hz timer that refreshes `bigHUDState.aiElapsed` while an AI
-    /// request is in flight. Stopped via `stopAITickTimer()` when the response
-    /// arrives, the user navigates away, or the HUD closes.
+    /// Starts a 10 Hz Task-backed ticker that refreshes `bigHUDState.aiElapsed`
+    /// while an AI request is in flight. Stopped via `stopAITickTimer()` when
+    /// the response arrives, the user navigates away, or the HUD closes.
     @MainActor
     private func startAITickTimer() {
         stopAITickTimer()
         let started = bigHUDState.aiInflight?.startedAt ?? Date()
-        aiTickTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self = self else { return }
-                self.bigHUDState.aiElapsed = Date().timeIntervalSince(started)
-            }
+        aiTickTask = ElapsedTicker.start(startedAt: started) { [weak self] elapsed in
+            self?.bigHUDState.aiElapsed = elapsed
         }
     }
 
     @MainActor
     private func stopAITickTimer() {
-        aiTickTimer?.invalidate()
-        aiTickTimer = nil
+        aiTickTask?.cancel()
+        aiTickTask = nil
     }
 
     private func showBigHUD() {

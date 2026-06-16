@@ -218,6 +218,12 @@ enum IDMigration056 {
                                         mergePolicy: { first, _ in first })
         rewrites += oldTitles.count - config.customTitles.count
 
+        // customDescriptions : [String: String]
+        let oldDescriptions = config.customDescriptions
+        config.customDescriptions = remapDict(oldDescriptions, table: table,
+                                              mergePolicy: { first, _ in first })
+        rewrites += oldDescriptions.count - config.customDescriptions.count
+
         // actionHotkeys : [String: ActionHotkey]
         let oldHotkeys = config.actionHotkeys
         config.actionHotkeys = remapDict(oldHotkeys, table: table,

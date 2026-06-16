@@ -13,19 +13,20 @@
 //  every non-customized user picks up the change automatically; users who
 //  dragged their own order keep it untouched.
 //
-//  Ordering philosophy (synthesised from a Codex review + owner intent):
+//  Ordering philosophy (feature-frozen final pass):
 //    1. `builtin.identity` ("Paste as is") stays pinned first (also enforced
 //       structurally by `moveIdentityFirst`).
-//    2. The most VALUABLE / high-frequency actions and the most IMPRESSIVE
-//       "wow" actions lead — a new user holding ⌥⌘V should immediately meet
-//       something delightful (matters for marketing / first impressions).
+//    2. The most frequent, useful, and easy-to-predict actions lead. "Wow"
+//       actions still matter, but they follow the core repair / rewrite /
+//       convert actions instead of defining the first impression.
 //    3. Trait-gated ("conditional") actions rank HIGH when they appear: they
 //       already passed a relevance test, so showing them prominently is a
 //       feature, not clutter (e.g. layout repair, clean OCR, strip tracking).
-//    4. AI writing actions come early but after the obvious local cleanup;
-//       destructive / expensive / target-parameter actions sink lower.
+//    4. AI writing actions come early as the high-value text layer; expensive,
+//       target-parameter, destructive, or presentation-only actions sink lower.
 //    5. Novelty + low-frequency actions (Zalgo, leetspeak, UwU, pseudo-font
-//       variants, IPA, wiki conversions, Base64, case-shuffles) sink last.
+//       variants, IPA, wiki conversions, Base64, case-shuffles, text→image)
+//       sink last unless the user explicitly enables or reorders them.
 //
 //  IDs that don't exist for a given build are harmless no-ops: `reorder`
 //  only positions IDs it actually finds in the applicable list, and any
@@ -47,28 +48,18 @@ enum CuratedActionOrder {
 
         "text": [
             "builtin.identity",
-            // Hero / WOW
-            "builtin.text.layout_repair",
-            "ai.text.fix_grammar", "ai.text.translate",
-            "builtin.text.trim",
-            "ai.text.summarize",
-            // Chat / social styling — these are fromChat-gated, so they ONLY
-            // appear for chat clips. High placement therefore costs nothing for
-            // ordinary text: in a chat clip the user sees the "wow" Unicode
-            // styles right after the AI writing core.
-            "builtin.text.font_bold", "builtin.text.font_italic",
-            "builtin.text.font_bold_italic", "builtin.text.font_script",
-            "builtin.text.font_monospace", "builtin.text.font_small_caps",
-            "builtin.text.generate_qr",
-            "builtin.text.to_files",
-            "ai.text.clean_ocr", "ai.text.image_whiteboard",
-            // Everyday
+            // Core writing / repair.
+            "ai.text.fix_grammar", "ai.text.translate", "ai.text.summarize",
+            "builtin.text.trim", "builtin.text.layout_repair", "ai.text.clean_ocr",
             "ai.text.improve_clarity", "ai.text.make_shorter",
             "ai.text.formal_tone", "ai.text.make_friendly",
+            "ai.text.draft_email_reply", "ai.text.generate_email_subject",
+            // Useful extraction / conversion.
             "builtin.text.unit_conversion",
             "builtin.text.extract_links", "builtin.text.extract_emails",
-            "builtin.text.cyrillic_to_latin", "builtin.text.type_slowly",
-            // Useful / specific
+            "builtin.text.cyrillic_to_latin",
+            "builtin.text.generate_qr", "builtin.text.to_files",
+            // Local cleanup / shape changes.
             "builtin.text.remove_line_breaks",
             "builtin.text.sentence_case", "builtin.text.title_case",
             "builtin.text.lowercase", "builtin.text.uppercase",
@@ -76,9 +67,15 @@ enum CuratedActionOrder {
             "builtin.text.word_count", "builtin.text.slugify",
             "builtin.text.wrap_quotes", "builtin.text.wrap_parens",
             "builtin.url.decode", "builtin.url.encode", "builtin.html.strip_tags",
+            "builtin.text.type_slowly",
+            // Chat / social styling.
+            "builtin.text.font_bold", "builtin.text.font_italic",
+            "builtin.text.font_bold_italic", "builtin.text.font_script",
+            "builtin.text.font_monospace", "builtin.text.font_small_caps",
+            // Niche / novelty.
             "builtin.text.latin_to_cyrillic", "ai.text.latin_to_cyrillic",
             "builtin.text.ipa_local", "ai.text.ipa_transcription",
-            // Niche / novelty
+            "ai.text.image_whiteboard",
             "builtin.text.camel_case", "builtin.text.snake_case", "builtin.text.kebab_case",
             "builtin.text.base64_decode", "builtin.text.base64_encode",
             "builtin.code.tabs_to_spaces", "builtin.code.spaces_to_tabs",
@@ -87,26 +84,22 @@ enum CuratedActionOrder {
 
         "richText": [
             "builtin.identity",
-            // Hero / WOW
+            // Core repair / conversion.
             "builtin.rich.strip_formatting", "builtin.rich.to_md",
             "ai.text.fix_grammar", "ai.text.translate", "ai.text.summarize",
             "builtin.image.ocr", "ai.text.clean_ocr",
-            // Everyday
             "ai.text.improve_clarity", "ai.text.make_shorter",
             "ai.text.formal_tone", "ai.text.make_friendly",
+            "ai.text.draft_email_reply", "ai.text.generate_email_subject",
             "builtin.rich.to_html",
-            // Unicode Fancy — fromChat-gated, so only surfaces for chat clips;
-            // placed high so it leads the styling palette when it does appear.
-            "builtin.rich.to_unicode_styled",
             "builtin.text.unit_conversion",
             "builtin.text.extract_links", "builtin.text.extract_emails",
-            "ai.text.draft_email_reply", "ai.text.generate_email_subject",
-            // Useful / specific
             "builtin.text.trim", "builtin.md.extract_headings",
             "builtin.image.resize", "builtin.image.rotate_right", "builtin.image.rotate_left",
             "builtin.image.to_grayscale", "builtin.image.compress_jpeg", "builtin.image.invert_colors",
-            // Niche
-            "builtin.rich.to_wiki", "ai.text.latin_to_cyrillic", "ai.text.ipa_transcription",
+            // Presentation / niche.
+            "builtin.rich.to_unicode_styled", "builtin.rich.to_wiki",
+            "ai.text.latin_to_cyrillic", "ai.text.ipa_transcription",
         ],
 
         "url": [
@@ -123,8 +116,9 @@ enum CuratedActionOrder {
 
         "json": [
             "builtin.identity",
-            "builtin.code.pretty_local", "builtin.json.validate", "builtin.json.minify",
-            "builtin.json.extract_keys", "builtin.json.flatten", "builtin.json.remove_nulls",
+            "builtin.code.pretty_local", "builtin.json.validate",
+            "builtin.json.extract_keys", "builtin.json.minify",
+            "builtin.json.flatten", "builtin.json.remove_nulls",
             "builtin.json.pretty",
         ],
 
@@ -137,12 +131,9 @@ enum CuratedActionOrder {
 
         "markdown": [
             "builtin.identity",
-            // Hero / WOW
+            // Core conversion / writing.
             "builtin.md.to_rich", "builtin.rich.strip_formatting",
             "ai.text.fix_grammar", "ai.text.translate", "ai.text.summarize",
-            // Chat / social styling (fromChat-gated) — lead the styling palette.
-            "builtin.text.font_markdown", "builtin.rich.to_unicode_styled",
-            // Everyday
             "ai.text.improve_clarity", "ai.text.make_shorter",
             "ai.text.formal_tone", "ai.text.make_friendly",
             "builtin.md.extract_headings",
@@ -156,7 +147,8 @@ enum CuratedActionOrder {
             "builtin.text.unique_lines", "builtin.text.sort_lines",
             "builtin.text.word_count", "builtin.text.wrap_quotes", "builtin.text.wrap_parens",
             "builtin.md.extract_links", "builtin.url.decode", "builtin.url.encode",
-            // Niche / novelty
+            // Presentation / niche.
+            "builtin.text.font_markdown", "builtin.rich.to_unicode_styled",
             "ai.text.image_whiteboard", "ai.text.latin_to_cyrillic",
             "ai.text.ipa_transcription", "builtin.text.uwu_speak",
         ],
@@ -182,28 +174,25 @@ enum CuratedActionOrder {
 
         "image": [
             "builtin.identity",
-            // Hero / WOW
+            // Core extraction / inspection.
             "builtin.image.ocr", "builtin.image.decode_qr",
-            "ai.image.cartoon", "ai.image.sketch", "ai.image.watercolor",
-            // Everyday
             "builtin.image.info", "builtin.image.strip_metadata", "builtin.image.resize",
             "builtin.image.rotate_right", "builtin.image.rotate_left",
-            // Useful / specific
             "builtin.image.compress_jpeg", "builtin.image.to_grayscale", "builtin.image.invert_colors",
-            // Novelty
+            // Presentation / novelty.
             "builtin.image.to_ascii_art",
+            "ai.image.cartoon", "ai.image.sketch", "ai.image.watercolor",
         ],
 
         "files": [
             "builtin.identity",
-            // Hero / everyday
-            "builtin.files.reveal_in_finder", "builtin.files.copy_paths",
-            "builtin.files.copy_filenames", "builtin.files.to_rich_icons",
-            // Useful
+            // Core file references.
+            "builtin.files.copy_paths", "builtin.files.copy_filenames",
+            "builtin.files.reveal_in_finder",
             "builtin.files.copy_shell_safe_paths", "builtin.files.extract_image",
             "builtin.image.resize",
-            // Specific
-            "builtin.files.to_md_links",
+            // Presentation / specific.
+            "builtin.files.to_md_links", "builtin.files.to_rich_icons",
         ],
     ]
 }

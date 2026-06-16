@@ -1,16 +1,46 @@
 # DrPaste — Backlog
 
-Active work, structured roadmap, and a condensed changelog. Historical
-free-form notes were collapsed into this document; the long-form discussion
-that preceded each shipped item lives in git history.
+Feature-freeze notes, release-hardening work, and a condensed changelog.
+Historical free-form notes were collapsed into this document; the long-form
+discussion that preceded each shipped item lives in git history.
 
-Current version: **0.59.0** (alpha). `AppBrand.version` is the live
+Current version: **0.59.0** (alpha, feature-frozen). `AppBrand.version` is the live
 source of truth — bump there per release. The version string in this
 file's header and in `SKILL.md` / `README.md` / `HELP.md` is updated
 alongside. See [SKILL.md](SKILL.md) for
 the project's full architectural memory, file-by-file responsibilities,
 and a "resume work from cold start" guide. See [HELP.md](HELP.md) for
 the end-user feature documentation.
+
+## Feature freeze
+
+DrPaste should now be finalized in its current paradigm and not expanded into a
+larger product. The locked paradigm is:
+
+- native macOS clipboard history;
+- fast paste gesture / HUD workflow;
+- context-aware actions over clipboard content;
+- editable built-in actions and provider-backed AI where already implemented;
+- local-first behavior with optional user-configured providers.
+
+Allowed work:
+
+- bug fixes, crash fixes, performance and reliability;
+- action quality, ordering, gating, naming, and duplicate removal;
+- UI polish, empty/error/loading states, accessibility, copy cleanup;
+- tests, packaging, signing/release preparation, documentation.
+
+Avoid:
+
+- new major product surfaces;
+- new broad action families unless they replace existing clutter;
+- new workflow builders, knowledge bases, collaboration layers, or automation
+  systems;
+- speculative monetization/backend work unless it is explicitly part of a
+  release-hardening pass.
+
+When in doubt, remove, hide, gate by context, or document existing behavior
+instead of adding another visible capability.
 
 ## Entry conventions
 
@@ -34,13 +64,13 @@ them.
 
 ---
 
-## Product strategy & monetization (planning — not yet implemented)
+## Product strategy & monetization (cancelled / historical)
 
-Strategic framing for how DrPaste will monetize without compromising the
-free-and-local-first product philosophy. Captured here as the canonical
-reference for future feature work that touches AI providers, plans,
-billing, onboarding copy, or upgrade prompts. NOT a feature spec — no
-code changes from this section.
+Historical strategic framing only. Owner decision after feature freeze:
+hosted backend, subscription tiers, marketplace-style monetization, billing,
+and in-app upgrade flows are not part of DrPaste final. Keep this section only
+as archived rationale so the same architecture does not get re-proposed.
+Do not implement code from this section.
 
 ### Decisions locked-in (revision 2)
 
@@ -405,9 +435,52 @@ as a business — without compromising user freedom.
 Sorted roughly by value-to-effort ratio, not strict priority. Pick whatever
 matches the current session's focus.
 
+### #A90 — External download/adoption stats collector for ctrl8.com
+
+**Status:** ✅ Shipped externally on ctrl8.com. Website-side collector and
+public stats panel live in `/Users/ilya000/Dropbox/Claude My/ctrl8.com`;
+DrPaste itself still has no telemetry or background network call.
+**Touches:** `ctrl8.com` DrPaste page, small scheduled collector, storage
+SQLite/Postgres/CSV, optional Metabase/Grafana/public static dashboard.
+**Context:** We want to know whether DrPaste is being downloaded/adopted
+without adding any network activity or launch tracking to the app itself.
+The measurement layer should live outside the product and aggregate only
+distribution/source metrics.
+**Requirements:**
+- Daily external collector fetches:
+  - GitHub Releases asset `download_count` for `.dmg` / `.zip` downloads.
+  - Homebrew `cask-install` analytics if/when a DrPaste cask exists.
+  - Cloudflare Web Analytics for the DrPaste landing/download page.
+  - App Store Connect Analytics Reports API if/when DrPaste ships through MAS.
+- Store daily snapshots in a simple append-only table/file:
+  `date`, `source`, `metric`, `value`, `version`, `channel`, `notes`.
+- Publish aggregated stats on the DrPaste page at `ctrl8.com`: per-source
+  totals, last 7/30/90 days, latest release downloads, and channel split.
+- Make the public copy explicit: "No in-app telemetry. These numbers come
+  from download pages, package managers, and store dashboards."
+- Do not add app launch pings, unique device IDs, action usage telemetry,
+  or any background network call to DrPaste.
+**Implementation notes:** Prefer the smallest maintainable path: a daily
+GitHub Action or Cloudflare Worker Cron writes JSON/CSV into the website repo
+or object storage; the site renders a static table/chart. Metabase/Grafana is
+optional for private inspection, not required for the public page.
+
+**Implemented path:** `scripts/collect-drpaste-stats.mjs` in the ctrl8.com repo
+fetches GitHub Releases `.dmg` / `.zip` `download_count`, writes
+`data/drpaste-stats.json` with source rows / rollups / history, and
+`.github/workflows/drpaste-stats.yml` runs it daily. `drpaste.html` renders the
+public panel and explicitly says the data is external, not in-app telemetry.
+
 ### #A1 — Ship as a signed `.app` bundle with `.icns` and notarization
 
-**Status:** planned. Structural blocker for several other features.
+**Status:** partial / release tooling shipped. `scripts/build_app.sh` now
+builds a release SwiftPM product, creates `dist/DrPaste.app`, embeds
+`Info.plist`, `PkgInfo`, resources and `AppIcon.icns`, optionally codesigns /
+notarizes via `CODESIGN_IDENTITY` / `NOTARY_PROFILE`, and emits a DMG.
+`.github/workflows/release.yml` builds the DMG on `v*` tag push /
+manual dispatch, uploads it as an artifact, and creates a draft GitHub
+Release. Apple Developer ID credentials plus final signing/notarization remain
+release-ops work.
 **Touches:** new build script, `Info.plist`, code-signing identity, notarization
 pipeline, distribution channel.
 **Context:** DrPaste currently builds as a SwiftPM executable and runs via
@@ -486,7 +559,9 @@ notarizes. Future contributors should not need Xcode.
 
 ### #A2 — Launch on Login (real implementation)
 
-**Status:** planned. Depends on #A1.
+**Status:** ✅ Shipped. Settings → Startup now binds to
+`SMAppService.mainApp`, registers/unregisters the login item, reflects current
+status, and shows an inline message when running outside a bundled `.app`.
 **Touches:** new `LoginItemManager.swift`, `SettingsWindow.swift` General tab.
 **Context:** The Settings → General toggle currently shows a placeholder. With
 a signed `.app` bundle in place, this should switch to using
@@ -502,7 +577,11 @@ login item.
 
 ### #A3 — iCloud Keychain sync for AI provider keys and preferences
 
-**Status:** planned. Depends on #A1.
+**Status:** rejected / not developing. Owner decision: do not add iCloud
+sync for DrPaste final. Keep keys/preferences local unless a future signed
+build needs a narrow storage fix.
+
+**Previous status:** planned. Depends on #A1.
 **Touches:** `APIKeyStorage.swift`, `ActionConfig.save()`/`.load()`,
 `SettingsWindow.swift` General tab toggle.
 **Context:** Keys are currently stored locally (Keychain when signed, plain
@@ -520,7 +599,9 @@ action / transformation / preferences config can sync via ubiquitous
 
 ### #A4 — Unit tests for pure modules
 
-**Status:** in progress (initial cut shipped in 0.12.0).
+**Status:** ✅ Shipped. Initial pure-module coverage shipped in 0.12.0 and
+has since grown into a broad local suite; `.github/workflows/test.yml` now runs
+`swift test` on PRs, pushes to `main`, and manual dispatch.
 **Touches:** `Package.swift` (test target), `Tests/DrPasteTests/*Tests.swift`.
 **Context:** No automated tests existed before 0.12.0. The pure-function
 modules (`RichTextHelpers`, `TransformationRuntime`, `KeyboardLayoutRepair`,
@@ -534,13 +615,18 @@ test: no AppKit, no async, no I/O.
 - Expansion: behavior-change regressions for every ID-stable transformation,
   fuzz-style inputs for the regex engines, golden-output tests for
   `attributedStringToMarkdown` round-trips
-- CI invocation: `swift test` from the repo root passes locally and on Mac CI
+- Local gate: `swift test` from the repo root passes (389 tests as of the
+  #A64 description-model pass).
+- CI gate: `.github/workflows/test.yml` runs `swift test` on macOS.
 
 ---
 
 ### #A5 — Per-app AI provider override
 
-**Status:** planned. Productivity nice-to-have.
+**Status:** rejected / not developing for DrPaste final. Productivity
+nice-to-have, but it adds a new Settings surface and per-app routing policy
+after the feature freeze. Keep AI provider selection global unless a future
+product explicitly needs app-specific routing.
 **Touches:** `AIProvider.swift` (new override map), `ContextDetector` (record
 `sourceBundleID`), Settings UI new section.
 **Context:** Different frontmost apps benefit from different AI providers
@@ -557,7 +643,10 @@ Xcode). Today the active provider is global.
 
 ### #A6 — Bidirectional drag-and-drop in HUD
 
-**Status:** planned. Promotes the HUD from a passive picker to a real
+**Status:** rejected / not doing. Owner decision: this is a new HUD workflow,
+not final polish. It expands DrPaste beyond the locked paste-gesture paradigm.
+
+**Previous status:** planned. Promotes the HUD from a passive picker to a real
 workspace surface — content flows in from Finder / browsers / Mail and
 out to folders / apps without the user ever pressing ⌘C.
 **Touches:** `HudPanel` (drag destination registration), `HUD.swift`
@@ -711,7 +800,11 @@ to the pasteboard.
 
 ### #A7 — HUD search / filter (revisit)
 
-**Status:** planned. Previously reverted because of mode-switch UX.
+**Status:** rejected / not developing. Owner decision: do not add HUD search
+for DrPaste final. The gesture should stay simple; avoid mode-switching inside
+the HUD.
+
+**Previous status:** planned. Previously reverted because of mode-switch UX.
 **Touches:** `HudView`, `HudState`.
 **Context:** A previous attempt added a search field that intercepted `↑↓`
 navigation; the conflict made the gesture less reliable. Revisit with a
@@ -781,7 +874,11 @@ per provider. The Anthropic messages stream uses `event: content_block_delta`
 
 ### #A8 — Skills / Marketplace registry for shareable action packs
 
-**Status:** planned. Larger initiative; revisit once core is stable.
+**Status:** rejected / not doing. Owner decision: marketplace / skills packs
+are outside DrPaste final. Keep actions local and editable, without turning the
+app into an ecosystem surface.
+
+**Previous status:** planned. Larger initiative; revisit once core is stable.
 **Touches:** new `ActionPack` JSON format, `ActionRegistry` import path,
 network fetch / install UI.
 **Context:** Custom AI prompts and transformation descriptors are already
@@ -1202,7 +1299,12 @@ giving up the modifier.
 
 ### #A12 — Unified hotkey contract: tap-vs-hold semantics for ⌥⌘C/S/X with content preview
 
-**Status:** planned. Biggest single UX upgrade after streaming + accumulator
+**Status:** ✅ Shipped. The ⌥⌘C/⌥⌘S/⌥⌘X tap-vs-hold contract is implemented:
+quick tap executes, hold shows MiniHUD preview/append preview, and ⌥⌘V can
+promote the preview into BigHUD. Settings documents the action-hotkey
+hold-preview toggle.
+
+**Previous status:** planned. Biggest single UX upgrade after streaming + accumulator
 landed.
 **Touches:** `HotkeyEngine.swift` (hold-detection for C/S/X, currently only V
 has it), `MiniHUD.swift` (multi-mode content preview: text / image / files),
@@ -1246,7 +1348,10 @@ performed, and Esc cancels.
 
 ### #A13 — Search inside HUD with date / source-app filter
 
-**Status:** planned. Revisits #A7 with a different gesture.
+**Status:** rejected / not developing. Owner decision: do not add HUD search
+or date/source filters for DrPaste final.
+
+**Previous status:** planned. Revisits #A7 with a different gesture.
 **Touches:** `BigHUD.swift` (inline search bar above history strip),
 `ClipboardModel.swift` (search index over previewText + sourceAppName +
 date), `HudState.swift` (filter state).
@@ -1321,7 +1426,11 @@ exists for other transformations. Two outputs:
 
 ### #A16 — Built-in action editor redesign: handler-picker like Transformation
 
-**Status:** planned. UX consistency fix.
+**Status:** reduced-scope shipped / duplicate alias deferred. The unified
+`ActionEditor` now handles built-ins with editable title, grouped handler
+picker, applicable types, hotkey recorder, description, and test panel. The
+remaining "Duplicate a built-in" requirement would need a new alias/handler
+schema in `ActionConfig`; do not add that for DrPaste final.
 **Touches:** `BuiltinActionEditor.swift`, `ActionEditor.swift` (router),
 `Actions.swift` (`upsertBuiltinHandler` symmetric helper).
 **Context:** Today Built-in actions are second-class: no Duplicate, no
@@ -1349,10 +1458,14 @@ sheet.
 
 ### #A17 — Paste-as-is: text sample + file icons rendering
 
-**Status:** planned. Small UX gap.
-**Touches:** `ActionTestSamples.swift` (replace Mandrill bias for non-image
-sample), `BigHUD.swift` row rendering for `.files`, `RichTextHelpers.swift`
-(NSWorkspace icon → NSAttributedString attachment).
+**Status:** ✅ Shipped. Text sample for `builtin.identity` lives in
+`ActionTestSamples.swift`; BigHUD and MiniHUD render Finder-style file
+icons for `.files` clips; `builtin.files.to_rich_icons` emits rich-text
+rows with icon attachments + file links. 0.59.0 also routes BigHUD file
+rows through `clipFilePaths` so representation-backed and newline-backed
+file clips render consistently.
+**Touches:** `ActionTestSamples.swift`, `BigHUD.swift`, `MiniHUD.swift`,
+`FileActions.swift`.
 **Context:** Two issues currently:
 1. The "Paste as is" action's test sample defaults to Mandrill image,
    which is misleading for plain-text use. Show a representative text
@@ -1525,7 +1638,11 @@ small card.
 
 ### #A23 — macOS Services menu integration (right-click context menu)
 
-**Status:** planned. Largest single inflow channel we don't yet support.
+**Status:** transferred to SlipWay / not developing in DrPaste. Owner decision:
+nice feature, but not for DrPaste final. Track it in SlipWay's backlog as the
+successor product.
+
+**Previous status:** planned. Largest single inflow channel we don't yet support.
 **Touches:** `Info.plist` (NSServices array), new
 `DrPasteServicesProvider.swift` (NSServices handler class),
 `main.swift` (`NSApp.servicesProvider`).
@@ -1609,16 +1726,12 @@ corresponding unicode pseudo-font, then strips the markup characters.
 
 ### #A26 — ASCII art transformation: rich text + monospaced + maxWidth param
 
-**Status:** partially shipped in 0.42.0 — rich-text output + monospaced
-NSFont + 40-column default landed (`ImageToASCIIArtAction.swift`).
-`render(image:outWidth:)` exposes the width parameter at the API
-level. **Remaining work** before this can fully close: surface the
-`maxWidth` slider in the Settings UI so users can dial it without
-editing code. Needs to wait for **#A16** (Built-in editor redesign with
-handler picker) — descriptor-based parameter editing infrastructure
-isn't ready for hardcoded ClipboardAction subclasses yet.
-**Touches (remaining):** `ImageActions.swift` exposes a `maxWidth`
-input through #A16's parameter editor scaffolding.
+**Status:** ✅ Shipped. Rich-text output + monospaced NSFont +
+40-column default landed earlier; 0.59.0 adds `ASCIIArtSettings` and a
+Settings → Edit Action “Maximum columns” field for
+`builtin.image.to_ascii_art`, so users can dial width without touching
+code. `ASCIIArtTests` covers renderer width and settings clamp /
+round-trip.
 
 ---
 
@@ -1635,10 +1748,12 @@ the 0.42.1 changelog entry. Entry kept for historical context.
 
 ### #A28 — Engine consolidation: merge prepend / append / wrap, trim / collapse
 
-**Status:** planned. Reduces user-pickable engine count without losing
-function.
+**Status:** rejected / not developing for DrPaste final. It would reduce
+engine count, but requires schema migration for existing custom
+transformations and retuning editor semantics. Under the feature freeze, keep
+the existing engines stable rather than rewriting saved user actions.
 **Touches:** `CustomTransformation.swift` (engine enum + handler),
-`TransformationEditor.swift` (engine picker), `DefaultTransformationSeed.swift`
+`ActionEditor.swift` (engine picker), `DefaultTransformationSeed.swift`
 (seed migrations).
 **Context:** Today the engine picker has separate entries for prepend,
 append, wrap, trim, collapse. Logically these are subsets of more
@@ -1662,7 +1777,11 @@ prepend/append/wrap by setting one side empty), and normalize-whitespace
 
 ### #A29 — Color, Email, PDF, Wiki, HTML semantic kinds + applicable types
 
-**Status:** planned. Expands the semantic-type grid for action targeting.
+**Status:** rejected / not doing. Owner decision: no new semantic kinds for
+DrPaste final. Use the current semantic grid plus contextual traits; avoid
+expanding the action targeting model.
+
+**Previous status:** planned. Expands the semantic-type grid for action targeting.
 **Touches:** `SemanticClassifier.swift`, `ClipboardModel.swift` (`SemanticKind`
 enum), `ActionEditor.swift` (applicable-types grid expansion).
 **Context:** Today the applicable-types grid covers text / url / email /
@@ -1702,7 +1821,10 @@ disables the auto-close on commit for the duration of the session.
 
 ### #A31 — Clickable legend items
 
-**Status:** planned. Discoverability nudge.
+**Status:** rejected / not developing for DrPaste final. The keyboard legend
+already documents the gesture, and making it clickable requires a mouse command
+dispatch surface parallel to the hotkey paths. Avoid adding another interaction
+mode late in the product.
 **Touches:** `BigHUD.swift` footer legend, `MiniHUD.swift` footer legend.
 **Context:** The single-word footer legend ("↑↓ hist · ←→ act · ⌫ del ·
 S merge · C copy · ⏎ paste/keep · esc close") is currently text-only.
@@ -1784,7 +1906,8 @@ text input.
 ### #A36 — Bug / audit: engine visibility inconsistency in pickers
 
 **Status:** ✅ Resolved. Engine pickers consolidated into the single `ActionEditor`; the separate `TransformationEditor` surface no longer exists.
-**Touches:** `TransformationEditor.swift` engine picker, registry pass.
+**Touches:** `ActionEditor.swift` engine picker, registry pass. Historical
+placeholder `TransformationEditor.swift` was deleted during finalization.
 **Context:** Markdown → Plain text and Extract headings engines are
 visible in one engine picker dropdown but not another. Same engine,
 inconsistent visibility based on which surface invokes the picker.
@@ -1798,7 +1921,10 @@ inconsistent visibility based on which surface invokes the picker.
 
 ### #A37 — AX text operations for full-document context
 
-**Status:** planned. Power feature, large scope. Deferred but recorded.
+**Status:** rejected / not developing. Owner decision: too broad and too
+privacy-sensitive for DrPaste final.
+
+**Previous status:** planned. Power feature, large scope. Deferred but recorded.
 **Touches:** new `AXTextOperations.swift`, ContextDetector enhancements.
 **Context:** Today AI actions see only the clipboard content. For
 translation / summarization the model would do dramatically better
@@ -1819,12 +1945,11 @@ content.
 
 ### #A63 — Visual distinction: selected clip vs selected action + failure / side-effect outcome clarity
 
-**Status:** partial. Outcome-clarity half landed organically in earlier
-versions — BigHUD already shows notice blocks for `.failed`,
+**Status:** ✅ Shipped. BigHUD shows notice blocks for `.failed`,
 `.sideEffect`, and `.alternativeCommit` (Type Slowly / Type Fast).
-**Remaining work** is scoped to the clip-vs-action *selection style*:
-both currently use the same solid accent fill, which conflates
-"object" (the clip) with "command" (the action).
+Clip rows keep the solid accent fill; action chips use a thinner
+accent outline + faint tint, while trait-gated chips carry the yellow
+conditional border.
 **Touches:** `BigHUD.swift` action-chip styling only.
 **Context:** Today the focused clip in the history strip and the
 focused action in the action bar both use the same accent-color
@@ -1856,9 +1981,13 @@ their visual treatment costs scanability.
 
 ### #A64 — Title / description model split (data + UI)
 
-**Status:** planned. P0 per UX review — biggest single architecture
-win for action discoverability. **Depends on #A41 (import/export merge
-audit + ImportReport)** for the conflict-resolution policy below.
+**Status:** ✅ Shipped. Settings rows are now title + one-line description,
+`ActionEditor` exposes the description field, custom AI / transformation
+descriptions live directly on their descriptors, and built-in description
+overrides use `DescriptionOverride { text, baseDefaultHash, editedAt }`.
+Legacy `[String:String]` overrides still decode. **Depends on #A41
+(import/export merge audit + ImportReport)** for the conflict-reporting policy
+below; the current merge keeps local text and records conflicts.
 
 **Adversarial-pass refinements (must follow):**
 
@@ -1884,10 +2013,9 @@ audit + ImportReport)** for the conflict-resolution policy below.
   config. This forecloses the trap where a later Russian-UI ship
   would find user configs holding English defaults that pre-date
   localisation.
-- **Import merge policy required.** For the same action ID with a
+- **Import merge policy.** For the same action ID with a
   non-empty `customDescriptions[id]` on both sides:
-  default = keep current, log as conflict in ImportReport with
-  "Replace / Keep / Duplicate as new action" options. Same policy
+  default = keep current and log as conflict in ImportReport. Same policy
   surface as the `customTitles` merge work in #A41.
 
 **Touches:** `CustomTransformationDescriptor.swift` +
@@ -1988,7 +2116,10 @@ explicit confirmation of what just happened.
 
 ### #A66 — Region Capture: "Captured X×Y" toast + permission hint
 
-**Status:** planned. UX from review.
+**Status:** ✅ Shipped. Success shows a "Captured \(w)×\(h)" toast; capture
+failure now shows "Screen Recording needed — open System Settings" as an
+essential toast alongside the failure sound. No separate button was added,
+keeping the toast non-interactive and flow-preserving.
 **Touches:** `ScreenRegionCapture.swift` post-capture path,
 permission-denied path.
 **Context:** Today the only post-capture feedback is the captured
@@ -2045,7 +2176,11 @@ fresh narrower entry.
 
 ### #A69 — MiniHUD explicit failure state
 
-**Status:** planned. UX from review. Currently MiniHUD plays the
+**Status:** ✅ Shipped. `MiniHUDState.failure` / `MiniHUDController.showFailure`
+render a red failure surface with reason text and optional recovery action;
+direct-trigger failures use it instead of disappearing after the sound.
+
+**Previous status:** planned. UX from review. Currently MiniHUD plays the
 `pasteFailure` sound and closes without showing *what* went wrong.
 **Touches:** `MiniHUD.swift` view, `main.swift` failure-completion
 path in `actionHotkeyDidFire`.
@@ -2073,7 +2208,11 @@ the failure reason.
 
 ### #A59 — Discoverability hint: "hold to browse · release to paste"
 
-**Status:** planned. UX. The central gesture of the product
+**Status:** ✅ Shipped. `ReleaseToPasteHint` stores the auto-fade/staleness
+state and BigHUD renders "hold ⌥⌘V to browse · release to paste · esc to
+cancel" in Gesture Mode, with a Settings override.
+
+**Previous status:** planned. UX. The central gesture of the product
 (release-to-paste in Gesture Mode) is not surfaced anywhere visible
 inside the BigHUD itself. Welcome window covers first-launch, but
 after a few days the user is relying on memory. New users who
@@ -2130,7 +2269,9 @@ gesture is undocumented in-HUD.
 
 ### #A60 — Append session indicator tooltip + Settings explanation
 
-**Status:** planned. Small UX gap.
+**Status:** ✅ Shipped. Dynamic status-item tooltip lives in
+`main.swift:updateStatusTooltip`; Settings → General includes the Append Copy
+red/cyan dot explainer. Entry kept for historical context.
 **Touches:** `main.swift` (status item NSView + tooltip),
 `SettingsWindow.swift` (Sound feedback section already exists; add
 indicator explanation row).
@@ -2158,7 +2299,10 @@ row in Settings would close this loop.
 
 ### #A61 — Empty-history HUD onboarding
 
-**Status:** planned. UX polish.
+**Status:** ✅ Shipped. BigHUD now shows an empty-history onboarding panel with
+the concrete next step (`⌘C`, re-open, Esc) instead of a bare placeholder.
+
+**Previous status:** planned. UX polish.
 **Touches:** `BigHUD.swift` history strip empty state.
 
 **Context:** Pressing ⌥⌘V on first launch (or after Factory Reset)
@@ -2181,7 +2325,10 @@ link to Welcome / HELP.md.
 
 ### #A62 — Assign-hotkey shortcut from HUD action chip
 
-**Status:** planned. Discoverability. Power-user feature, but it has
+**Status:** rejected / not developing. Owner decision: keep hotkey assignment
+inside Settings; do not add another editable surface inside the HUD.
+
+**Previous status:** planned. Discoverability. Power-user feature, but it has
 no current discovery path inside the HUD.
 **Touches:** `BigHUD.swift` action chip context menu / long-press,
 `ActionHotkeyManager.swift`.
@@ -2215,7 +2362,11 @@ this:
 
 ### #A46 — Persistence I/O: debounce + off-main + image cache
 
-**Status:** planned. Performance. Targets perceivable HUD/Settings
+**Status:** ✅ Shipped. `PersistenceDebouncer.swift` coalesces config/history
+writes; quit/reset paths flush pending writes. Image preview/cache and
+off-main blob work landed with the related storage/rendering passes.
+
+**Previous status:** planned. Performance. Targets perceivable HUD/Settings
 lag on large clips and on slow disks (Dropbox-resident
 Application Support, iCloud-hydrated files).
 **Touches:** `ActionConfig` didSet save, `ClipboardStore.save`,
@@ -2239,7 +2390,11 @@ Application Support, iCloud-hydrated files).
 
 ### #A47 — Image rendering: drop `lockFocus`, prefer CGContext / CIImage
 
-**Status:** planned. Reliability + perf.
+**Status:** ✅ Shipped. `ImageRenderer.swift` provides CGContext-backed
+render/downscale helpers; production call sites no longer use `lockFocus`
+(remaining `lockFocus` calls are test image fixtures only).
+
+**Previous status:** planned. Reliability + perf.
 **Touches:** `ImageActions.swift`, `AppendAccumulator.swift`,
 `ClipboardModel.swift`, `ActionTestSamples.swift`.
 **Context:** `NSImage.lockFocus()` is the old AppKit path: main-thread,
@@ -2260,7 +2415,11 @@ output + thread-safety.
 
 ### #A48 — Image actions: load *original* representation, not preview
 
-**Status:** planned. Correctness. Image transformations (Grayscale,
+**Status:** ✅ Shipped. Local image actions and AI image actions load raw
+`public.png` / `.tiff` / `.jpeg` / `.heic` representations first, then rich
+attachments, and only fall back to preview thumbnails as a last resort.
+
+**Previous status:** planned. Correctness. Image transformations (Grayscale,
 Rotate, AI Watercolor) may currently operate on the cached preview
 thumbnail rather than the raw `public.png` / `public.jpeg` /
 `public.tiff` / `public.heic` representation when both are stored.
@@ -2283,7 +2442,11 @@ loading helpers, `ClipboardModel.swift` representation lookup.
 
 ### #A49 — `withWatchdog(timeout:)` helper
 
-**Status:** planned. Refactor. The 90 s detached-task watchdog pattern
+**Status:** ✅ Shipped. `ConcurrencyUtil.installWatchdog(seconds:cancelling:)`
+is the shared detached-background watchdog; direct action-hotkey streaming and
+BigHUD AI streaming now use it.
+
+**Previous status:** planned. Refactor. The 90 s detached-task watchdog pattern
 exists in two places (BigHUD AI streaming, direct-trigger AI). Code
 + comments are duplicated.
 **Touches:** new helper in `Concurrency+Util.swift` (or similar);
@@ -2307,7 +2470,13 @@ exists in two places (BigHUD AI streaming, direct-trigger AI). Code
 
 ### #A50 — Central elapsed-time ticker (replace scattered Timers)
 
-**Status:** planned. Refactor.
+**Status:** ✅ Shipped. `ElapsedClock.swift` / `ElapsedTicker` provide the
+shared Task-backed elapsed loop. BigHUD AI elapsed, MiniHUD elapsed, Settings
+result elapsed, and ActionEditor playground elapsed now use the shared ticker
+instead of 0.1 s `Timer.scheduledTimer` instances. Remaining timers are
+non-elapsed behaviours (polling, toast dismiss, append-session timeout).
+
+**Previous status:** planned. Refactor.
 **Touches:** `BigHUD.swift` AI elapsed, `MiniHUD.swift`,
 `SettingsWindow.swift` test result, `ActionEditor.swift` playground.
 
@@ -2328,7 +2497,11 @@ task loop) per surface lifecycle would auto-cancel via SwiftUI's
 
 ### #A51 — AI HTTP session with explicit timeouts
 
-**Status:** planned. Reliability.
+**Status:** ✅ Shipped. `AIHTTP.session` sets explicit request/resource
+timeouts and all non-streaming provider, image, usage-probe, URL-preview and
+sample-download network paths now avoid `URLSession.shared`.
+
+**Previous status:** planned. Reliability.
 **Touches:** `AIProvider.swift` non-streaming `run` paths,
 `AIImageActions.swift` image HTTP, `UsageProbe.swift`,
 `ActionTestSamples.swift` Mandrill download.
@@ -2349,7 +2522,11 @@ image-fetch can therefore hang longer than the user expects.
 
 ### #A52 — ClipboardStore image dedup via content hash
 
-**Status:** planned. Correctness.
+**Status:** ✅ Shipped. `ClipboardItem.contentHash` is computed for captured
+items and `ClipboardStore.sameContent` uses it to deduplicate repeated image /
+large-content copies.
+
+**Previous status:** planned. Correctness.
 **Touches:** `ClipboardModel.swift` `ClipboardStore.sameContent`,
 `ClipboardItem` (new `contentHash` field, optional, lazy-computed).
 
@@ -2372,7 +2549,10 @@ up as two separate history rows. Hash-based dedup catches this.
 
 ### #A53 — Orphan blob garbage collection
 
-**Status:** planned. Hygiene.
+**Status:** ✅ Shipped. `BlobGC.runIfDue()` runs after launch, walks stored
+blob/image directories, preserves referenced assets, and deletes old orphans.
+
+**Previous status:** planned. Hygiene.
 **Touches:** `ClipboardModel.swift`, `ActionConfig.swift`,
 `AppStorage` paths.
 
@@ -2395,7 +2575,10 @@ clean up their blobs. Application Support grows monotonically.
 
 ### #A54 — Snapshot pasteboard size caps + Settings preference
 
-**Status:** planned. Reliability + UX preference.
+**Status:** ✅ Shipped. `ClipboardSizeCap` enforces a default 16 MB
+per-representation soft cap and Settings → General exposes the 1–256 MB slider.
+
+**Previous status:** planned. Reliability + UX preference.
 **Touches:** `ClipboardModel.swift` `snapshotPasteboard`,
 `SettingsWindow.swift` General tab.
 
@@ -2415,7 +2598,10 @@ that's painful.
 
 ### #A55 — AI image preflight: auto-resize 4 MB cap
 
-**Status:** planned. UX.
+**Status:** ✅ Shipped. `AIImageActions` auto-downscales source PNGs over
+4 MB to a 2048 px long side before upload and reports the resized path inline.
+
+**Previous status:** planned. UX.
 **Touches:** `AIImageActions.swift` size-check path.
 
 **Context:** OpenAI gpt-image-1 caps source PNG at ~4 MB. Today the
@@ -2436,7 +2622,11 @@ hotkey just fails.
 
 ### #A56 — OpenRouter anchor → Codable per-provider struct
 
-**Status:** planned. Reliability.
+**Status:** ✅ Shipped. `UsageProbe.OpenRouterAnchor` is Codable, keyed per
+provider, stores key fingerprint / machine UUID, and migrates the old split
+UserDefaults layout.
+
+**Previous status:** planned. Reliability.
 **Touches:** `UsageProbe.swift` anchor storage.
 
 **Context:** Per-provider OpenRouter anchor (date / credits /
@@ -2456,7 +2646,10 @@ Re-key detection works but is fragile (string compare on prefixes).
 
 ### #A57 — Playground / Settings test-task cancellation hygiene
 
-**Status:** planned. Bug prevention.
+**Status:** ✅ Shipped. `ActionEditor` stores and cancels playground test
+tasks on rerun/disappear/action changes and guards stale result painting.
+
+**Previous status:** planned. Bug prevention.
 **Touches:** `ActionEditor.swift`, `SettingsWindow.swift` playground.
 
 **Context:** Playground "Run test" spawns a Task. If the user closes
@@ -2476,7 +2669,10 @@ this also burns tokens unnecessarily.
 
 ### #A58 — Diagnostics snapshot + Settings → "Copy diagnostics"
 
-**Status:** planned. Support / debugging.
+**Status:** ✅ Shipped. `Diagnostics.swift` produces a Markdown runtime
+snapshot and Settings → Configuration exposes "Copy diagnostics".
+
+**Previous status:** planned. Support / debugging.
 **Touches:** new `Diagnostics.swift`, Settings General tab.
 
 **Context:** When a user reports "Type Slowly didn't work" or "the
@@ -2500,7 +2696,12 @@ state. NSLog goes to Console.app, which is opaque to most users.
 
 ### #A39 — Unified action execution pipeline + PasteCommitter
 
-**Status:** planned. Architectural cleanup with a real bug-prevention
+**Status:** ✅ Shipped. `PasteCommitter.swift` centralizes the outcome × mode
+side-effect policy and `PasteCommitterTests` lock the Type Slowly / previewOnly
+contracts. A fuller `ActionExecutionPipeline` type remains optional, but the
+bug-prevention commit layer is in production use.
+
+**Previous status:** planned. Architectural cleanup with a real bug-prevention
 payoff. Surfaced by an external code-review pass; the same review
 found a confirmed bug (Type Slowly via per-action hotkey was pasting
 as plain ⌘V — fixed in 0.42.x as a one-off patch), which is the
@@ -2586,7 +2787,10 @@ surfaces (Services menu, drag-out) would inherit the same risk.
 
 ### #A40 — SelectionCaptureService extraction
 
-**Status:** planned. Refactor; no user-visible change beyond fewer
+**Status:** ✅ Shipped. `SelectionCaptureService.swift` provides typed
+selection-first capture errors and is covered by `SelectionCaptureServiceTests`.
+
+**Previous status:** planned. Refactor; no user-visible change beyond fewer
 regressions in the selection-first paths.
 **Touches:** new `SelectionCaptureService.swift`, `main.swift`
 selection-first sites (per-action hotkey, Cut & Replace, hold-preview),
@@ -2627,7 +2831,11 @@ Services menu, #A23) inherits the same correctness.
 
 ### #A41 — Import / export merge audit + ImportReport
 
-**Status:** planned. Real correctness gap. Currently `Import…` and
+**Status:** ✅ Shipped. `ImportReport.swift` documents and implements the merge
+audit policy; `ActionRegistry.importJSONWithReport` returns structured results
+and `ImportMergeTests` cover the field-level merge behavior.
+
+**Previous status:** planned. Real correctness gap. Currently `Import…` and
 `Replace from file…` claim to handle "configuration" wholesale, but
 the merge implementation may skip `customTransformations`, `customTitles`,
 `actionOrder`, `actionHotkeys`, `testSamples`. Aborting on first
@@ -2670,8 +2878,10 @@ new `ImportReport` struct, `SettingsWindow.swift` General tab UI.
 
 ### #A42 — State machines (lite) for surfaces + action lifecycle
 
-**Status:** planned. Refactor; reduces a class of "this flag must be
-nil before that one is set" defensive code.
+**Status:** rejected / not developing for DrPaste final. Valuable refactor,
+but too invasive for a frozen release: it touches surface coordination,
+gesture lifecycle, MiniHUD/BigHUD state, and cancellation behavior. Keep the
+tested flag/task structure and watchdogs.
 **Touches:** `AppDelegate` flag fields, `MiniHUDController.swift`,
 `BigHUD.swift`.
 **Context:** Today main.swift carries many implicit-state flags
@@ -2739,10 +2949,13 @@ catches all three at compile time.
 
 ### #A44 — ProviderResolver tighten-up + ResolvedProvider struct
 
-**Status:** planned. Builds on the partial work already shipped in
-0.35.x (resolveExecutorProvider helper, cheapestEnabledImageProvider
-cache). Promotes a scattered helper into an explicit type so consumers
-can't accidentally use the wrong field.
+**Status:** ✅ Shipped. `ProviderResolver.swift` + `ResolvedAIProvider`
+exist with tests; BigHUD, Settings action-row badges, Settings result
+spinner, ActionEditor provider picker/hints, live HUD inflight chrome, and
+the image runtime wrapper all resolve through the shared resolver. The image
+runtime still has an internal `AIImageAction.ResolvedProvider` payload, but
+only as the secret-bearing HTTP dispatch envelope (`apiKey`, `baseURL`) after
+the public provider identity has been resolved.
 **Touches:** new `ProviderResolver.swift`, `ResolvedProvider.swift`,
 call sites in `AIProvider.swift` runtime, `ActionEditor.swift`
 provider picker, `BigHUD.swift` / `MiniHUD.swift` chrome,
@@ -2763,14 +2976,19 @@ provider picker, `BigHUD.swift` / `MiniHUD.swift` chrome,
   config: ProvidersConfig) -> ResolvedProvider }` — pure function.
 - Every UI consumer reads from a `ResolvedProvider` instance; no more
   per-surface "look up provider then check if rerouted" recipes.
-- Existing `resolveExecutorProvider` collapses into a thin wrapper.
+- Existing `resolveExecutorProvider` wrappers are thin adapters around
+  `ProviderResolver.resolve`.
+- Runtime image dispatch resolves public provider identity through
+  `ProviderResolver`, then attaches `apiKey` / `baseURL` in its private
+  payload.
 
 ---
 
 ### #A45 — Contract tests: registry, migrations, provider resolution, commits
 
-**Status:** partial — initial pass shipped. Test suite currently
-passes 101/101.
+**Status:** ✅ Shipped. Broad contract-test baseline is in place. Current full
+suite passes 389/389; future tests should be added only alongside future risk,
+not as a blocking backlog item.
 **Touches:** `Tests/DrPasteTests/*.swift`. Some tests can use a fake
 `AIProvider`, fake `NSPasteboard`, fake `URLSession`; others can
 run against real ActionRegistry with a temp Application Support dir.
@@ -2783,36 +3001,50 @@ run against real ActionRegistry with a temp Application Support dir.
   `BuiltinActionMetadata.descriptions` (current + legacy alias
   coverage post-0.50.0).
 - `HotkeyPolicyTests` — reserved DrPaste chord rejection, system
-  chord rejection with feature-name hint, auto-steal flow.
+  chord rejection with feature-name hint, auto-steal flow, orphan
+  action-hotkey pruning.
 - `ProviderKindTests` — capability flags, image-edit support per
   kind, cheapest-image-provider cost ranking.
+- `ProviderResolverTests` — explicit provider, default provider,
+  capability mismatch reroute, disabled provider, missing-key fallback,
+  runtime credential adapter.
+- `IDMigration056Tests` — legacy → current ID remap across
+  enabledFlags / customTitles / customDescriptions / hotkeys /
+  test samples / image blobs / action order / descriptor IDs; caught
+  and fixed the missing `customDescriptions` remap.
 - `ActionConfigCodableTests` — Codable round-trip across schema
   evolution (custom AI / transformation / hotkey arrays).
+- `ActionDescriptionOverrideTests` — built-in description overrides
+  round-trip as `DescriptionOverride`, keep a base-default hash, and
+  decode legacy `[String:String]` configs.
+- `ImportMergeTests` — documented field-level merge policy from
+  `ImportReport`.
+- `PasteCommitterTests` — mode × outcome dispatch table, including
+  `.previewOnly` rejection of side effects / alternative commits.
+- `PasteboardWriterTests` — readable representations keep original
+  priority order and skip missing blobs before pasteboard declaration.
+- `SelectionCaptureServiceTests` — typed capture errors and recovery text.
 - `UnicodeStylizerTests` — every style table round-trips ASCII
   (#A32 regression baseline + denormalize-then-restyle).
+- Curated-defaults metadata coverage — every default-enabled action has
+  a specific icon (not generic `gearshape`) and a Settings description or
+  seeded descriptor title.
+- Test-host safety: `ActionRegistry.config` hotkey reload now guards
+  `NSApp` before asking `AppDelegate` to reload hold-preview routes.
 
-**Remaining (next maturity bump):**
+**Future hardening (not blocking DrPaste final):**
 
-- `remapLegacyActionIDs` migration tests — enabledFlags /
-  customTitles / actionHotkeys / actionOrder / actionTestSamples
-  remap from legacy → current; current-wins conflict policy.
 - `runFirstLaunchSeeds` idempotence — running twice doesn't
   duplicate descriptors; absence of legacy descriptors in
   `customTransformations` post-seed.
-- Import/export merge tests — once #A41 lands.
-- `PasteCommitter` mode × outcome — once #A39 lands.
-- `SelectionCaptureService` typed errors — once #A40 lands.
 - Fake-stream AI cancellation tests (cancel + final-chunk race,
   90 s watchdog).
-- `PasteboardWriter` representation-order tests (skip-missing
-  blobs, fallback to preview path).
+- `PasteboardWriter` fallback-to-preview-path test when every blob is
+  missing.
 - `AppendAccumulator` — rich-text + image bridge, files-strict
   rejection of non-image non-files.
 - `ScreenRegionCapture` — captured item carries source-app
   metadata.
-- Curated-defaults icon coverage: for every ID in
-  `CuratedDefaults.enabledByDefault`, `BuiltinActionIcons.iconName`
-  ≠ `"gearshape"`.
 
 **Test-writing principle (reaffirmed from #A4):**
 
@@ -2844,12 +3076,10 @@ run against real ActionRegistry with a temp Application Support dir.
 - `HotkeyRecorder.conflicts`: reserved DrPaste chords are rejected;
   system chords (Force Quit etc.) are rejected with the right hint;
   conflicts auto-steal.
-- `ActionRegistry.pruneOrphanHotkeys`: hotkeys for deleted actions
-  are removed on launch.
 - **#A39 regression test:** triggering Type Slowly via a per-action
   hotkey produces character-by-character typing, not a single paste.
-- `PasteboardWriter.write`: representations land in correct order;
-  `watcher.ignoreNextChange` is set before the write completes.
+- `PasteboardWriter.write`: preview fallback when every stored blob is
+  missing; `watcher.ignoreNextChange` is set before the write completes.
 - `APIKeyStorage` fallback path: round-trip with Keychain off
   goes through JSON file with correct permissions.
 - Fake-stream AI: partial chunks accumulate; finish marker breaks
@@ -2870,7 +3100,10 @@ run against real ActionRegistry with a temp Application Support dir.
 
 ### #A38 — Investigate transparent in-place MiniHUD → BigHUD promotion
 
-**Status:** planned. Follow-up to #A12.
+**Status:** rejected / not developing. Owner decision: avoid animation/morph
+work that risks HUD reliability. Keep MiniHUD and BigHUD as separate surfaces.
+
+**Previous status:** planned. Follow-up to #A12.
 **Touches:** `MiniHUD.swift`, `BigHUD.swift`, transition coordinator.
 **Context:** Once #A12 is in users' hands with the conservative
 "close MiniHUD first, then open BigHUD" transition, evaluate whether
@@ -2884,7 +3117,10 @@ and could regress reliability.
 
 ### #A70 — Fun / Internet Slang action group (Leetspeak, LOLspeak, UwU, Hacker Terminal, Zalgo)
 
-**Status:** planned.
+**Status:** closed by feature freeze. Do not expand this group further for
+DrPaste final. The local novelty actions that already exist (Leetspeak, UwU,
+Zalgo) remain palette-only / context-gated; LOLspeak and Hacker Terminal are
+not worth adding.
 **Touches:** new local transform engines under the Transformation handler;
 CuratedDefaults action registrations + icons; two AI action definitions
 reusing the existing AI pipeline; action category grouping in the picker.
@@ -2948,7 +3184,12 @@ scattered novelties.
 
 ### #A71 — Icon placement: Menu Bar vs Notch tray (multi-phase)
 
-**Status:** planned. Multi-phase feature; phase boundaries deliberately
+**Status:** rejected / not doing. Owner decision: not needed for DrPaste final.
+This is a new product surface, not release hardening, and it conflicts with
+the feature-freeze rule. Keep the canonical surface as the normal menu-bar
+status item.
+
+**Previous status:** planned. Multi-phase feature; phase boundaries deliberately
 sharp because phase 2 is what *justifies* phase 1 — without the
 hover-reveal value layer, this collapses into "the same icon in a
 slightly different spot" and the build cost (new window class,
@@ -3098,7 +3339,11 @@ in user feedback as more visible than the 6 pt dot was.
 
 ### #A73 — Rich-text AI roundtrip preserving formatting
 
-**Status:** planned.
+**Status:** rejected / not developing. Owner decision: too complex and fragile
+for DrPaste final; keep the already-shipped simple rich-text preservation paths
+only.
+
+**Previous status:** planned.
 **Touches:** `AIProvider.swift` (AI runtime for `.richText` inputs),
 `AIAction.swift` (alternate result decoder), `RichTextHelpers.swift`
 (markdown ↔ NSAttributedString bridge), `DefaultAISeed.swift` (new
@@ -3310,7 +3555,9 @@ doc + code-side review + owner discussion on editor UX.
 
 ### #A76 — Content-trait lifecycle: store vs recompute (owner decision before release)
 
-**Status:** planned. Requires owner write-up + decision before first release.
+**Status:** ✅ Shipped / decided. DrPaste uses the hybrid lifecycle:
+provenance traits are stored on the clip, cheap content traits are recomputed
+live via `ContextDetector.detect(_:)`.
 **Touches:** `ClipboardModel`, `ContextDetector`, HUD filter.
 **Context:** Provenance traits (#A75) are clearly stored at creation. Content
 traits (containsEmails, uppercaseHeavy, …) are ambiguous: storing them on the
@@ -3318,17 +3565,24 @@ clip risks staleness when detection logic changes (persisted history carries
 old verdicts); recomputing live on HUD-open avoids staleness at a small
 per-open CPU cost. The model is therefore hybrid, not uniform.
 
-**Owner action required before release:** write up the tradeoff in detail and
-decide. Points to weigh:
+**Decision:** keep the schema small and avoid detector-version migrations.
+`ClipboardItem` may store durable provenance (`fromOCR` via tags, source app,
+source window), but it does not persist derived content traits such as
+`containsEmails`, `uppercaseHeavy`, `messySpacing`, `wrappedLines`,
+`containsHTMLMarkup`, or `richHasImage`. HUD/action filtering computes a fresh
+`ContentContext` when evaluating the visible clip/action pair.
+
+**Tradeoff recorded:**
 - Recompute-on-HUD-open: always fresh, no migration on logic change, no schema
   growth; cost = O(visible clips × cheap detectors) per HUD open (likely
   negligible for cheap regex traits).
 - Store-on-clip: O(1) at HUD open, but needs a detector-version field +
   re-detection migration when logic changes, and grows index.json.
-- Hybrid is likely correct: provenance stored, content recomputed.
+- Hybrid is the final contract: provenance stored, content recomputed.
 
-**Requirements:** decision recorded; ClipboardItem schema reflects it; if
-recompute, define the detector entry point and its per-open budget.
+**Detector entry point / budget:** call `ContextDetector.detect(_:)` at the
+point of use. Do not add persistent trait fields unless a future detector is
+expensive enough to need caching and comes with a detector-version migration.
 
 ---
 
@@ -3389,7 +3643,12 @@ rejected.
 
 ### #A78 — Curate down the default text-clip action set
 
-**Status:** planned. Discussion required (do not change defaults yet).
+**Status:** ✅ Shipped. The finalization pass tightened the default action
+philosophy, updated `CuratedActionOrder`, documented the compact/contextual
+model in `actions-tree.md`, and locked the invariant with
+`CuratedActionOrderTests`.
+
+**Previous status:** planned. Discussion required (do not change defaults yet).
 **Touches:** `CuratedDefaults`.
 **Context:** Even with trait gating, a plain text clip with no special traits
 surfaces ~17 ungated chips (Type Slowly, Normalize spaces, Remove line breaks,
@@ -3437,7 +3696,10 @@ preview / result should present a problem-framed onboarding affordance:
 
 ### #A80 — Frequency-based action ranking
 
-**Status:** planned (low confidence — value unproven).
+**Status:** rejected / not developing. Owner decision: keep ordering curated
+and context-driven, not usage-telemetry-driven.
+
+**Previous status:** planned (low confidence — value unproven).
 **Touches:** local usage store, action ordering.
 **Context:** Ranking surfaced actions partly by how often the user actually
 runs each would personalise the strip, but requires a local per-action usage
@@ -3451,7 +3713,12 @@ curated priority; never the sole ranking signal.
 
 ### #A81 — Swift 6 language-mode readiness (NSFont/AttributedString warnings)
 
-**Status:** planned (deferred — tie to an eventual Swift 6 language-mode
+**Status:** ✅ Shipped. Markdown renderers now apply `NSFont` / `NSColor`
+through `NSMutableAttributedString` instead of writing non-Sendable AppKit
+objects into Swift `AttributedString`; the MiniHUD animation completion also
+hops back to MainActor.
+
+**Previous status:** planned (deferred — tie to an eventual Swift 6 language-mode
 migration).
 **Touches:** `UserGuideWindowController` (markdown → AttributedString
 renderer), any other `NSFont`/`NSColor`-in-`AttributedString` sites.
@@ -3477,7 +3744,10 @@ constraint), which is a deliberate rewrite, not a quick patch.
 
 ### #A82 — AI auto-configuration of action traits
 
-**Status:** planned (future enhancement of the #A75 trait-assignment UX).
+**Status:** rejected / not developing. Owner decision: do not add AI-assisted
+configuration for DrPaste final.
+
+**Previous status:** planned (future enhancement of the #A75 trait-assignment UX).
 **Touches:** ActionEditor (trait-assignment block), AIProvider, the cheap-trait
 vocabulary.
 **Context:** The #A75 editor pre-fills "Show this action when…" conditions
@@ -3514,7 +3784,11 @@ constrained-vocabulary prompt; cache result on the descriptor.
 
 ### #A83 — Unit conversion: remaining edge cases
 
-**Status:** planned (deferred from the 0.57.x converter hardening pass).
+**Status:** rejected / not developing. Owner decision: do not keep chasing
+long-tail unit-conversion edge cases for DrPaste final. Fix only concrete
+regressions if they appear.
+
+**Previous status:** planned (deferred from the 0.57.x converter hardening pass).
 **Touches:** `UnitConversion.swift` (regex, `parseChunk`, `parseUnit`,
 `convertMeasurement`), `UnitConversionFixesTests`.
 **Context:** The inline measurement converter was substantially hardened —
@@ -3580,7 +3854,14 @@ false-positive suite green (`1st` / `2x4` / `1 c` / `a ton` / `9 in 10` /
 
 ### #A84 — Reconsider trait-gated actions that ship disabled by default
 
-**Status:** planned (owner review — decide per action; do NOT blanket-flip).
+**Status:** ✅ Shipped. Conservative per-action review completed. 0.59.0
+enables the obvious inconsistent pair — `builtin.text.title_case` and
+`builtin.text.sentence_case` — for new installs / Factory Reset because
+they share the same uppercase/lowercase-heavy trait gate as UPPER/lower.
+Everything else in the reviewed list stays disabled by default: either
+structural/destructive, locale-sensitive, AI-cost-bearing, or novelty.
+Existing user configs are not force-migrated, so manual off choices stay
+respected. `ApplicabilityScopingTests` covers the enabled pair.
 **Touches:** `CuratedDefaults.enabledByDefault`, `DefaultTransformationSeed` /
 `DefaultAISeed` `requiredTraits`, an optional one-shot migration.
 **Context:** A Settings row toggle renders YELLOW when
@@ -3592,21 +3873,22 @@ the trait already hides the action for non-matching clips, so enabling it would
 not pollute the everyday HUD — it would appear exactly when relevant. Worth
 reconsidering each one. Observed by the owner directly in the Settings list.
 
-Concrete candidates — trait-gated AND disabled today:
-- `builtin.text.title_case` — traits `[uppercaseHeavy, lowercaseHeavy]`
-- `builtin.text.sentence_case` — `[uppercaseHeavy, lowercaseHeavy]`
-- `builtin.text.sort_lines` — `[multiline]`
-- `builtin.text.unique_lines` — `[multiline]`
-- `builtin.text.remove_line_breaks` — `[wrappedLines]`
-- `builtin.text.latin_to_cyrillic` — `[containsLatin]`
-- `ai.text.clean_ocr` — `[fromOCR]` (AI — needs a provider)
-- `ai.text.generate_email_subject` — `[containsEmails, fromMailApp]` (AI)
-- `builtin.text.zalgo` — `[fromChat]` (novelty)
+Concrete candidates reviewed:
+- `builtin.text.title_case` — traits `[uppercaseHeavy, lowercaseHeavy]` → ON by default.
+- `builtin.text.sentence_case` — `[uppercaseHeavy, lowercaseHeavy]` → ON by default.
+- `builtin.text.sort_lines` — `[multiline]` → stays OFF (structural / order-changing).
+- `builtin.text.unique_lines` — `[multiline]` → stays OFF (can delete intentional repetition).
+- `builtin.text.remove_line_breaks` — `[wrappedLines]` → stays OFF (`Tidy text` covers the safe path).
+- `builtin.text.latin_to_cyrillic` — `[containsLatin]` → stays OFF except locale-aware default path (#A77).
+- `ai.text.clean_ocr` — `[fromOCR]` → stays OFF by curated default because it spends AI tokens.
+- `ai.text.generate_email_subject` — `[containsEmails, fromMailApp]` → stays OFF by curated default; niche/mail workflow.
+- `builtin.text.zalgo` — `[fromChat]` → stays OFF; deliberate novelty.
 
-**Notable inconsistency to resolve:** `builtin.text.uppercase` and
+**Resolved inconsistency:** `builtin.text.uppercase` and
 `builtin.text.lowercase` ship ENABLED with the SAME traits
 (`[uppercaseHeavy, lowercaseHeavy]`), while `title_case` / `sentence_case` ship
-DISABLED — there is no principled reason for the split.
+DISABLED — there was no principled reason for the split; title/sentence now
+join the curated default set.
 
 **Requirements:**
 - Decide per action: enable (trait gating is sufficient to avoid clutter) vs
@@ -3615,7 +3897,7 @@ DISABLED — there is no principled reason for the split.
 - AI actions (`clean_ocr`, `generate_email_subject`) remain gated on a
   configured provider regardless; flipping the curated flag does not change the
   no-provider behavior.
-- `zalgo` is a deliberate novelty — likely stays off even when `fromChat` holds.
+- `zalgo` is a deliberate novelty — stays off even when `fromChat` holds.
 - If flipping any default, add a one-shot migration guarded by a UserDefaults
   key, and do NOT stomp users who already customized those flags
   (#A41 / #A76 invariant).
@@ -3626,12 +3908,12 @@ lists live in `DefaultTransformationSeed` / `DefaultAISeed` `requiredTraits`.
 The yellow toggle style is `EnabledCheckboxToggleStyle`, driven by
 `registry.hasActiveTraits`.
 
-**Partial progress:** the "wow / first-open" marketing set —
+**Review notes:** the "wow / first-open" marketing set —
 `builtin.url.preview_card`, `builtin.text.generate_qr`, `builtin.image.ocr`,
 `builtin.files.to_rich_icons`, `ai.text.image_whiteboard` — was force-enabled
 on existing configs (one-shot `applyWowSetEnableIfNeeded`, all already in
-`enabledByDefault`). The remaining trait-gated-but-disabled candidates above
-(title/sentence case, sort/unique lines, etc.) still need a per-action call.
+`enabledByDefault`). 0.59.0 also enables title/sentence case by default for
+new installs only. No additional flip is planned under the feature freeze.
 
 ---
 
@@ -3649,8 +3931,9 @@ user; bump the version when re-tuning. Ordering synthesised from a Codex review
 
 ### #A86 — Wrong-layout repair: Latin↔Latin layouts (AZERTY, QWERTZ, …)
 
-**Status:** planned. Cyrillic layouts (Russian, Ukrainian) shipped; Latin ones
-deferred.
+**Status:** rejected / not developing for DrPaste final. Cyrillic layouts
+(Russian, Ukrainian, Bulgarian, Serbian) shipped. Latin↔Latin repair is much
+more false-positive-prone and should not be added under the freeze.
 **Touches:** `KeyboardLayoutRepair` (per-layout maps + detector), tests.
 **Context:** `Fix layout` now handles English ↔ Russian / Ukrainian in both
 directions (local text typed on QWERTY → local script; English typed on the
@@ -3689,7 +3972,11 @@ mainly needs the map + a Latin-specific detection threshold.
 
 ### #A87 — Wrong-layout repair: more non-Latin scripts (Greek, Hebrew, Arabic, Korean, Hindi)
 
-**Status:** partial. **Bulgarian (Phonetic Traditional) and Serbian Cyrillic
+**Status:** rejected / not developing further. Owner decision: keep the
+already-shipped layout repair coverage; do not expand into additional scripts
+for DrPaste final.
+
+**Previous status:** partial. **Bulgarian (Phonetic Traditional) and Serbian Cyrillic
 SHIPPED** — Bulgarian via NSSpellChecker `bg`; Serbian via a bundled
 frequency wordlist (`serbian-words.txt`, freq list ∩ Hunspell to drop subtitle
 loanword pollution) since macOS has no `sr` dictionary. Greek / Hebrew / Arabic
@@ -3825,7 +4112,10 @@ trivial; the compounding library is not.
 
 ### #A88 — Declarative macro IR (v1: match predicate + run pipeline, declarative-only)
 
-**Status:** conditional — near-term IF we commit to the LLM-macro direction
+**Status:** rejected / not doing for DrPaste final. This is a new product
+direction and should not be implemented under the feature freeze.
+
+**Previous status:** conditional — near-term IF we commit to the LLM-macro direction
 (see the section banner above). Not scheduled.
 **Touches:** new IR + interpreter types; an operator catalog; `ActionRegistry`
 (new macro action kind alongside built-ins / custom AI / transformations);
@@ -3860,7 +4150,10 @@ catalog falls short before adding code.
 
 ### #A89 — Lua escape-hatch node (later: one sandboxed node type for the algorithmic tail)
 
-**Status:** conditional — long-term, and only IF #A88 is built and its tail
+**Status:** rejected / not doing for DrPaste final. Since #A88 is rejected,
+there is no macro pipeline that needs a Lua escape hatch.
+
+**Previous status:** conditional — long-term, and only IF #A88 is built and its tail
 demands it. Not scheduled.
 **Touches:** macro interpreter (a new `lua` node type within the #A88
 pipeline); a sandboxed Lua runtime; telemetry signature format.

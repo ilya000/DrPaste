@@ -165,6 +165,15 @@ final class ApplicabilityScopingTests: XCTestCase {
         }
     }
 
+    func testA84TraitGatedCaseActionsAreCuratedOn() {
+        // These share the same uppercase/lowercase-heavy gate as UPPER/lower,
+        // so they stay hidden until relevant and do not clutter everyday text.
+        for id in ["builtin.text.uppercase", "builtin.text.lowercase",
+                   "builtin.text.title_case", "builtin.text.sentence_case"] {
+            XCTAssertTrue(CuratedDefaults.isEnabledByDefault(id), "\(id) should be ON")
+        }
+    }
+
     private func makeAction(_ id: String) -> CustomTransformationAction? {
         guard let d = transformByID[id] else { return nil }
         let kinds = Set(d.applicableTypes.compactMap { SemanticKind(rawValue: $0) })

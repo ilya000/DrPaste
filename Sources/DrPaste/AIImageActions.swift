@@ -193,56 +193,32 @@ struct AIImageAction: ClipboardAction {
         let baseURL: String?
     }
 
-    /// Pick the provider this action should use. Priority:
-    /// 1. `providerID` is set → use that provider explicitly.
-    /// 2. `providerID == nil` → use the registry's defaultProvider.
-    /// The resolved provider must support image edits — see
-    /// `ProviderKind.supportsImageEdit`. If the default doesn't,
-    /// we look for any enabled image-capable provider as a soft
-    /// fallback so a Claude-default user with OpenAI ALSO configured
-    /// still gets working image actions.
+    /// Runtime wrapper around the pure `ProviderResolver`: resolve the public
+    /// provider identity there, then attach the secret API key / baseURL needed
+    /// by the image HTTP dispatch. The UI consumes `ResolvedAIProvider`
+    /// directly; this nested payload is intentionally runtime-only.
     @MainActor
     func resolveProvider() -> ResolvedProvider? {
-        let registry = AIProviderRegistry.shared
-        let cfg = registry.config
-        // Explicit per-action providerID wins outright.
-        if let id = providerID, !id.isEmpty,
-           let cp = cfg.providers.first(where: { $0.id == id }),
-           cp.enabled, cp.kind.supportsImageEdit,
-           let apiKey = APIKeyStorage.load(for: cp.id), !apiKey.isEmpty {
-            return ResolvedProvider(kind: cp.kind, apiKey: apiKey,
-                                    providerLabel: cp.displayName,
-                                    model: cp.model, baseURL: cp.baseURL)
-        }
-        // Try default provider next.
-        if let defaultID = cfg.defaultProviderID, !defaultID.isEmpty,
-           let cp = cfg.providers.first(where: { $0.id == defaultID }),
-           cp.enabled, cp.kind.supportsImageEdit,
-           let apiKey = APIKeyStorage.load(for: cp.id), !apiKey.isEmpty {
-            return ResolvedProvider(kind: cp.kind, apiKey: apiKey,
-                                    providerLabel: cp.displayName,
-                                    model: cp.model, baseURL: cp.baseURL)
-        }
-        // Soft fallback — cheapest enabled image-capable provider
-        // with a key. Beats failing when the user has e.g. Claude as
-        // default chat but ALSO has OpenAI configured for occasional
-        // image work. We walk providers in cost-rank order (Gemini →
-        // OpenRouter → OpenAI → Custom) instead of registry order so
-        // a Plus/Free user with multiple keys gets the cheap path
-        // by default, and so this matches the UI auto-select
-        // exactly (the picker chip in Edit Action surfaces the
-        // same provider as runtime).
-        let ranked = cfg.providers
-            .filter { $0.enabled && $0.kind.supportsImageEdit }
-            .sorted { $0.kind.imageEditCostRank < $1.kind.imageEditCostRank }
-        for cp in ranked {
-            if let apiKey = APIKeyStorage.load(for: cp.id), !apiKey.isEmpty {
-                return ResolvedProvider(kind: cp.kind, apiKey: apiKey,
-                                        providerLabel: cp.displayName,
-                                        model: cp.model, baseURL: cp.baseURL)
+        let cfg = AIProviderRegistry.shared.config
+        guard let resolved = ProviderResolver.resolve(
+            nominalProviderID: providerID,
+            operationKind: .imageEdit,
+            config: cfg,
+            hasKey: { id in
+                ProviderResolver.runtimeHasCredential(providerID: id,
+                                                      operationKind: .imageEdit,
+                                                      config: cfg)
             }
-        }
-        return nil
+        ),
+              let cp = cfg.providers.first(where: { $0.id == resolved.providerID }),
+              let apiKey = APIKeyStorage.load(for: cp.id),
+              !apiKey.isEmpty else { return nil }
+
+        return ResolvedProvider(kind: resolved.providerKind,
+                                apiKey: apiKey,
+                                providerLabel: resolved.providerLabel,
+                                model: resolved.modelLabel,
+                                baseURL: cp.baseURL)
     }
 }
 
@@ -677,7 +653,7 @@ enum AIImageHTTP {
             return bytes
         }
         if let urlStr = first.url, let imgURL = URL(string: urlStr) {
-            let (imgData, imgResp) = try await URLSession.shared.data(from: imgURL)
+            let (imgData, imgResp) = try await AIHTTP.session.data(from: imgURL)
             guard let http = imgResp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 throw AIProviderError.decode("Couldn't fetch generated image from URL")
             }
@@ -909,7 +885,7 @@ enum AIImageHTTP {
             return bytes
         }
         if let urlStr = first.url, let imgURL = URL(string: urlStr) {
-            let (imgData, imgResp) = try await URLSession.shared.data(from: imgURL)
+            let (imgData, imgResp) = try await AIHTTP.session.data(from: imgURL)
             guard let http = imgResp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 throw AIProviderError.decode("Couldn't fetch generated image from URL")
             }
@@ -1120,7 +1096,7 @@ enum AIImageHTTP {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.data(for: req)
+            (data, response) = try await AIHTTP.session.data(for: req)
         } catch let urlErr as URLError where urlErr.code == .notConnectedToInternet
             || urlErr.code == .networkConnectionLost
             || urlErr.code == .dnsLookupFailed {

@@ -262,8 +262,8 @@ extension ActionConfig {
                 report.conflicts.append(.init(
                     actionID: k,
                     field: "customDescriptions",
-                    currentValue: current,
-                    incomingValue: v
+                    currentValue: current.text,
+                    incomingValue: v.text
                 ))
                 // current wins → don't overwrite
             } else if merged.customDescriptions[k] == nil {

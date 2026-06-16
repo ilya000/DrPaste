@@ -372,6 +372,8 @@ struct CustomTransformationDescriptor: Codable, Identifiable, Equatable {
     // applicable types).
     var requiredTraits: [String] = []        // ActionTrait keys; OR — any present
     var forbiddenTraits: [String] = []       // ActionTrait keys; none may be present
+    /// Optional one-line blurb shown under the title in Settings.
+    var description: String? = nil
 
     init(id: String,
          title: String,
@@ -380,7 +382,8 @@ struct CustomTransformationDescriptor: Codable, Identifiable, Equatable {
          applicableTypes: [String],
          enabled: Bool = true,
          requiredTraits: [String] = [],
-         forbiddenTraits: [String] = []) {
+         forbiddenTraits: [String] = [],
+         description: String? = nil) {
         self.id = id
         self.title = title
         self.engineID = engineID
@@ -389,6 +392,7 @@ struct CustomTransformationDescriptor: Codable, Identifiable, Equatable {
         self.enabled = enabled
         self.requiredTraits = requiredTraits
         self.forbiddenTraits = forbiddenTraits
+        self.description = description
     }
 
     /// Custom decoder so `enabled` / `requiredTraits` / `forbiddenTraits`
@@ -407,11 +411,12 @@ struct CustomTransformationDescriptor: Codable, Identifiable, Equatable {
         self.enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         self.requiredTraits = try c.decodeIfPresent([String].self, forKey: .requiredTraits) ?? []
         self.forbiddenTraits = try c.decodeIfPresent([String].self, forKey: .forbiddenTraits) ?? []
+        self.description = try c.decodeIfPresent(String.self, forKey: .description)
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, title, engineID, parameters, applicableTypes
-        case enabled, requiredTraits, forbiddenTraits
+        case enabled, requiredTraits, forbiddenTraits, description
     }
 
     var engine: TransformationEngine? {

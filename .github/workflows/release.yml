@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build DrPaste DMG
+    runs-on: macos-14
+
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Build app and DMG
+        run: scripts/build_app.sh
+
+      - name: Read version
+        id: version
+        run: |
+          version="$(grep -E 'static let version' Sources/DrPaste/AppBrand.swift | sed -E 's/.*"([^"]+)".*/\1/')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DrPaste-${{ steps.version.outputs.version }}-dmg
+          path: dist/DrPaste-${{ steps.version.outputs.version }}.dmg
+          if-no-files-found: error
+
+      - name: Create draft GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${{ steps.version.outputs.version }}"
+          gh release create "$tag" \
+            "dist/DrPaste-$version.dmg" \
+            --title "DrPaste $version" \
+            --notes "Automated DrPaste build from tag $tag. Local app telemetry remains absent; adoption metrics are tracked externally per #A90." \
+            --draft

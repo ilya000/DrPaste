@@ -29,6 +29,13 @@ final class MetadataIntegrityTests: XCTestCase {
         XCTAssertNotNil(BuiltinActionMetadata.descriptions["builtin.text.type_slowly"])
     }
 
+    func testCuratedDefaultsHaveSpecificIcons() {
+        let missing = CuratedDefaults.enabledByDefault.filter { id in
+            BuiltinActionIcons.iconName(for: id) == "gearshape"
+        }
+        XCTAssertTrue(missing.isEmpty, "Curated default actions using generic gearshape icon: \(missing.sorted())")
+    }
+
     func testDescriptionsAreHumanReadableSentences() {
         for (id, description) in BuiltinActionMetadata.descriptions {
             XCTAssertFalse(description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "\(id) has empty description")

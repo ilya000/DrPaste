@@ -207,16 +207,7 @@ final class UserGuideWindowController: NSWindowController, NSTextViewDelegate {
                 failurePolicy: .returnPartiallyParsedIfPossible,
                 languageCode: nil
             )
-            var attr = try AttributedString(markdown: source, options: options)
-            // Apply default font + colour across the whole document.
-            // The Markdown parser produces no inline font attribute by
-            // default, leaving NSTextView to pick a system font at
-            // whatever size it likes. Setting an explicit base font
-            // makes the document feel like a real reading surface and
-            // gives headings something predictable to scale from.
-            applyBaseStyling(to: &attr)
-            applyHeadingStyling(to: &attr)
-            applyCodeStyling(to: &attr)
+            let attr = try AttributedString(markdown: source, options: options)
             // CRITICAL: `AttributedString(markdown:)` parses block structure
             // into `presentationIntent` but inserts NO newlines between blocks,
             // so headings/paragraphs/list-items render as one continuous run
@@ -251,7 +242,10 @@ final class UserGuideWindowController: NSWindowController, NSTextViewDelegate {
             if !isFirst && lastIntent != intent {
                 let sep = (isListItem(intent) && isListItem(lastIntent)) ? "\n" : "\n\n"
                 result.append(NSAttributedString(string: sep,
-                                                 attributes: [.font: NSFont.systemFont(ofSize: 13)]))
+                                                 attributes: [
+                                                    .font: NSFont.systemFont(ofSize: 13),
+                                                    .foregroundColor: NSColor.textColor
+                                                 ]))
             }
             // Record the scroll target for each heading so TOC anchors work.
             if isHeader(intent), intent != lastIntent {
@@ -260,7 +254,10 @@ final class UserGuideWindowController: NSWindowController, NSTextViewDelegate {
                     anchorLocations[slug] = result.length
                 }
             }
+            let start = result.length
             result.append(NSAttributedString(AttributedString(attr[run.range])))
+            let range = NSRange(location: start, length: result.length - start)
+            applyStyling(for: run, in: result, range: range)
             lastIntent = intent
             isFirst = false
         }
@@ -283,21 +280,16 @@ final class UserGuideWindowController: NSWindowController, NSTextViewDelegate {
         }
     }
 
-    private func applyBaseStyling(to attr: inout AttributedString) {
-        let body = NSFont.systemFont(ofSize: 13)
-        attr.font = body
-        attr.foregroundColor = NSColor.textColor
-    }
+    private func applyStyling(for run: AttributedString.Runs.Run,
+                              in result: NSMutableAttributedString,
+                              range: NSRange) {
+        var font = NSFont.systemFont(ofSize: 13)
+        var background: NSColor?
 
-    /// Walk the document looking for heading intent runs and scale
-    /// their font + add weight. AttributedString carries Markdown
-    /// intents in `presentationIntent` — we recognise the
-    /// header(level:) variant and pick a font size per level.
-    private func applyHeadingStyling(to attr: inout AttributedString) {
-        for run in attr.runs {
-            guard let intent = run.presentationIntent else { continue }
+        if let intent = run.presentationIntent {
             for component in intent.components {
-                if case .header(let level) = component.kind {
+                switch component.kind {
+                case .header(let level):
                     let size: CGFloat = {
                         switch level {
                         case 1: return 24
@@ -307,34 +299,27 @@ final class UserGuideWindowController: NSWindowController, NSTextViewDelegate {
                         default: return 14
                         }
                     }()
-                    attr[run.range].font = NSFont.boldSystemFont(ofSize: size)
+                    font = NSFont.boldSystemFont(ofSize: size)
+                case .codeBlock:
+                    font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+                    background = NSColor.secondaryLabelColor.withAlphaComponent(0.10)
+                default:
+                    break
                 }
             }
         }
-    }
 
-    /// Inline `code` and fenced code blocks get a monospaced font
-    /// + faint background so they stand out from prose.
-    private func applyCodeStyling(to attr: inout AttributedString) {
-        for run in attr.runs {
-            // Inline code carries the `inlineHTML` intent or appears
-            // wrapped via `inlinePresentationIntent.code`. Test both.
-            if let inline = run.inlinePresentationIntent, inline.contains(.code) {
-                attr[run.range].font = NSFont.monospacedSystemFont(
-                    ofSize: 12, weight: .regular
-                )
-                attr[run.range].backgroundColor =
-                    NSColor.secondaryLabelColor.withAlphaComponent(0.10)
-            }
-            if let block = run.presentationIntent {
-                for component in block.components {
-                    if case .codeBlock = component.kind {
-                        attr[run.range].font = NSFont.monospacedSystemFont(
-                            ofSize: 12, weight: .regular
-                        )
-                    }
-                }
-            }
+        if let inline = run.inlinePresentationIntent, inline.contains(.code) {
+            font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+            background = NSColor.secondaryLabelColor.withAlphaComponent(0.10)
+        }
+
+        result.addAttributes([
+            .font: font,
+            .foregroundColor: NSColor.textColor
+        ], range: range)
+        if let background {
+            result.addAttribute(.backgroundColor, value: background, range: range)
         }
     }
 }

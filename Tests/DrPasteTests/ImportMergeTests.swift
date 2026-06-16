@@ -58,7 +58,7 @@ final class ImportMergeTests: XCTestCase {
     }
 
     func testCustomAINewEntriesAdded() {
-        var current = ActionConfig()
+        let current = ActionConfig()
         var incoming = ActionConfig()
         incoming.customAI = [CustomAIDescriptor(
             id: "ai.text.summarize",
@@ -175,7 +175,7 @@ final class ImportMergeTests: XCTestCase {
     // MARK: preferences
 
     func testPreferencesNonDefaultIncomingWinsOverDefaultLocal() {
-        var current = ActionConfig()
+        let current = ActionConfig()
         XCTAssertEqual(current.preferences.fontScale, 1.0)
         var incoming = ActionConfig()
         incoming.preferences.fontScale = 1.4
@@ -208,7 +208,7 @@ final class ImportMergeTests: XCTestCase {
     }
 
     func testNonTrivialMergeProducesHeadline() {
-        var current = ActionConfig()
+        let current = ActionConfig()
         var incoming = ActionConfig()
         incoming.customAI = [CustomAIDescriptor(
             id: "ai.text.summarize", title: "Summarize",

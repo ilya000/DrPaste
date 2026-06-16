@@ -15,10 +15,28 @@ final class ActionDescriptionOverrideTests: XCTestCase {
 
     func testConfigEncodesAndDecodesCustomDescriptions() throws {
         var cfg = ActionConfig()
-        cfg.customDescriptions["builtin.text.uppercase"] = "Shout it."
+        cfg.customDescriptions["builtin.text.uppercase"] = DescriptionOverride(
+            text: "Shout it.",
+            baseDefaultHash: "abc",
+            editedAt: Date(timeIntervalSince1970: 10)
+        )
         let data = try JSONEncoder().encode(cfg)
         let back = try JSONDecoder().decode(ActionConfig.self, from: data)
-        XCTAssertEqual(back.customDescriptions["builtin.text.uppercase"], "Shout it.")
+        XCTAssertEqual(back.customDescriptions["builtin.text.uppercase"]?.text, "Shout it.")
+        XCTAssertEqual(back.customDescriptions["builtin.text.uppercase"]?.baseDefaultHash, "abc")
+    }
+
+    func testLegacyStringCustomDescriptionsStillDecode() throws {
+        let json = """
+        {
+          "version": 4,
+          "customDescriptions": {
+            "builtin.text.uppercase": "Shout it."
+          }
+        }
+        """.data(using: .utf8)!
+        let cfg = try JSONDecoder().decode(ActionConfig.self, from: json)
+        XCTAssertEqual(cfg.customDescriptions["builtin.text.uppercase"]?.text, "Shout it.")
     }
 
     func testDecodeMissingKeyDefaultsEmpty() throws {
@@ -37,6 +55,10 @@ final class ActionDescriptionOverrideTests: XCTestCase {
 
         reg.setCustomDescription("My custom blurb", forActionID: id)
         XCTAssertEqual(reg.customDescription(forActionID: id), "My custom blurb")
+        XCTAssertEqual(
+            reg.config.customDescriptions[id]?.baseDefaultHash,
+            ActionConfig.descriptionHash(for: BuiltinActionMetadata.descriptions[id] ?? "")
+        )
 
         // Blank / whitespace clears the override.
         reg.setCustomDescription("   ", forActionID: id)

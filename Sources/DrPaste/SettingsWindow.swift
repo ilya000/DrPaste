@@ -160,31 +160,16 @@ struct GeneralTab: View {
     @State private var configStatus: String? = nil
     @State private var confirmReplace = false
     @State private var confirmFactoryReset = false
+    @State private var launchOnLoginEnabled = LoginItemManager.isEnabled
+    @State private var launchOnLoginStatus = LoginItemManager.statusMessage
 
     var body: some View {
         Form {
             Section("Startup") {
-                HStack {
-                    Toggle("Launch DrPaste on login", isOn: .constant(false))
-                        .disabled(true)
-                        .help("Coming soon — will be available once DrPaste ships signed.")
-                    Text("(coming soon)")
-                        .font(.caption).foregroundStyle(.tertiary)
-                }
-            }
-
-            Section("iCloud sync") {
-                HStack {
-                    Toggle("Sync settings via iCloud", isOn: .constant(false))
-                        .disabled(true)
-                    Text("(coming soon)")
-                        .font(.caption).foregroundStyle(.tertiary)
-                }
-                Text("When enabled, your action presets, AI provider configs, API keys, and preferences sync across all Macs signed in to the same Apple ID. Clipboard history stays local.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Toggle("Include API keys (via iCloud Keychain)", isOn: .constant(true))
-                    .disabled(true)
-                Text("API keys are end-to-end encrypted by Apple. Requires iCloud Keychain to be enabled in System Settings.")
+                Toggle("Launch DrPaste on login", isOn: launchOnLoginBinding)
+                    .disabled(!LoginItemManager.isSupportedBuild)
+                    .help(LoginItemManager.statusMessage)
+                Text(launchOnLoginStatus)
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -221,6 +206,10 @@ struct GeneralTab: View {
                 Toggle("Hold ⌥⌘ after an action hotkey to preview in the HUD",
                        isOn: actionHotkeyHoldPreviewBinding)
                 Text("When you fire one of your custom action hotkeys (⌥⌘ + a letter) and keep ⌥⌘ held, the BigHUD opens focused on that action so you can review before pasting. Release quickly and it just runs. Turn this off to always run immediately with no hold-preview.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Show detected traits in BigHUD",
+                       isOn: traitDebugBinding)
+                Text("Developer aid for tuning conditional actions. Shows the ContentContext flags detected on the focused clip; off by default so the HUD stays clean.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -348,7 +337,10 @@ struct GeneralTab: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { reload() }
+        .onAppear {
+            reload()
+            refreshLaunchOnLogin()
+        }
         .onChange(of: fontScale) { v in
             UserDefaults.standard.set(v, forKey: "drpaste.hud.fontScale")
         }
@@ -387,6 +379,29 @@ struct GeneralTab: View {
         soundVolume = Double(SoundFeedback.currentVolume())
     }
 
+    private var launchOnLoginBinding: Binding<Bool> {
+        Binding(
+            get: { launchOnLoginEnabled },
+            set: { desired in
+                do {
+                    let result = try LoginItemManager.setEnabled(desired)
+                    launchOnLoginEnabled = result.enabled
+                    launchOnLoginStatus = result.message
+                } catch {
+                    let result = LoginItemManager.refresh()
+                    launchOnLoginEnabled = result.enabled
+                    launchOnLoginStatus = error.localizedDescription
+                }
+            }
+        )
+    }
+
+    private func refreshLaunchOnLogin() {
+        let result = LoginItemManager.refresh()
+        launchOnLoginEnabled = result.enabled
+        launchOnLoginStatus = result.message
+    }
+
     private var cursorOnSecondBinding: Binding<Bool> {
         Binding(
             get: { UserDefaults.standard.bool(forKey: "drpaste.hud.cursorOnSecondOnCut") },
@@ -415,6 +430,13 @@ struct GeneralTab: View {
         Binding(
             get: { !UserDefaults.standard.bool(forKey: PreferenceKeys.actionHotkeyHoldPreviewDisabled) },
             set: { UserDefaults.standard.set(!$0, forKey: PreferenceKeys.actionHotkeyHoldPreviewDisabled) }
+        )
+    }
+
+    private var traitDebugBinding: Binding<Bool> {
+        Binding(
+            get: { UserDefaults.standard.bool(forKey: PreferenceKeys.hudShowTraitDebug) },
+            set: { UserDefaults.standard.set($0, forKey: PreferenceKeys.hudShowTraitDebug) }
         )
     }
 
@@ -1529,7 +1551,7 @@ struct ContentTypeTab: View {
     /// transformations (the action-title path covers those instead).
     @State private var resultInflight: AIInflight? = nil
     @State private var resultElapsed: TimeInterval = 0
-    @State private var resultTickTimer: Timer? = nil
+    @State private var resultTickTask: Task<Void, Never>? = nil
     @State private var editorContext: ActionEditorContext? = nil
 
     /// Standalone NSWindow that hosts ActionEditor. Replaces the previous
@@ -2139,11 +2161,19 @@ struct ContentTypeTab: View {
         }
         // 3. Custom (user-authored) AI action — fall back to its prompt.
         if let desc = registry.config.customAI.first(where: { $0.id == action.id }) {
+            if let d = desc.description?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !d.isEmpty {
+                return d
+            }
             let p = desc.promptTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
             return p.isEmpty ? nil : p
         }
         // 4. Custom transformation — its engine's description.
         if let tx = action as? CustomTransformationAction {
+            if let d = tx.descriptor.description?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !d.isEmpty {
+                return d
+            }
             let d = (tx.descriptor.engine?.description ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             return d.isEmpty ? nil : d
         }
@@ -2188,58 +2218,42 @@ struct ContentTypeTab: View {
     /// disabled (greyscale + slash) when nothing in the registry
     /// can handle the action's capability requirement.
     private func imageProviderAvailable(forID providerID: String?) -> Bool {
-        resolveExecutorProvider(explicitID: providerID, needsImage: true) != nil
+        resolveExecutorProvider(explicitID: providerID, operationKind: .imageEdit) != nil
     }
 
-    /// Single source of truth for "which provider is actually going
-    /// to run this AI action". All Settings-side surfaces (action
-    /// row badge brand + color + icon, leading-icon availability
-    /// slash, future tooltips) route through here so the row never
-    /// disagrees with itself or with the BigHUD / Edit Action chip
-    /// about who's about to fire. Mirrors
-    /// `AIImageAction.resolveProvider` (per-action explicit →
-    /// chat default → cheapest image-capable fallback).
-    private func resolveExecutorProvider(explicitID: String?, needsImage: Bool)
-        -> ConfiguredProvider?
+    /// Settings-side adapter around `ProviderResolver`: action row badges and
+    /// availability slashes now use the same resolved provider struct as BigHUD.
+    private func resolveExecutorProvider(explicitID: String?, operationKind: AIOperationKind)
+        -> ResolvedAIProvider?
     {
         let cfg = AIProviderRegistry.shared.config
-        // 1. Explicit override — only if usable.
-        if let id = explicitID, !id.isEmpty,
-           let cp = cfg.providers.first(where: { $0.id == id }),
-           cp.enabled,
-           (!needsImage || cp.kind.supportsImageEdit) {
-            return cp
-        }
-        // 2. Chat default — only if usable for this operation.
-        if let defaultID = cfg.defaultProviderID,
-           let cp = cfg.providers.first(where: { $0.id == defaultID }),
-           cp.enabled,
-           (!needsImage || cp.kind.supportsImageEdit) {
-            return cp
-        }
-        // 3. Image soft-fallback — cheapest enabled image-capable
-        //    by `imageEditCostRank` (Gemini → OpenRouter → OpenAI →
-        //    Custom). Same ordering as the runtime resolver, so
-        //    badge brand matches worker brand.
-        if needsImage {
-            return AIProviderRegistry.shared.cheapestEnabledImageProvider()
-        }
-        // 4. Text fallback — any enabled provider.
-        return cfg.providers.first { $0.enabled }
+        return ProviderResolver.resolve(
+            nominalProviderID: explicitID,
+            operationKind: operationKind,
+            config: cfg,
+            hasKey: { id in
+                ProviderResolver.runtimeHasCredential(providerID: id,
+                                                      operationKind: operationKind,
+                                                      config: cfg)
+            }
+        )
     }
 
     private func providerBadge(providerID: String?, isImage: Bool)
         -> (label: String, color: Color, icon: String)
     {
-        guard let cp = resolveExecutorProvider(explicitID: providerID,
-                                               needsImage: isImage) else {
+        let operationKind: AIOperationKind = isImage ? .imageEdit : .text
+        guard let resolved = resolveExecutorProvider(explicitID: providerID,
+                                                     operationKind: operationKind) else {
             return ("AI", .gray, "sparkle")
         }
         // Single source of truth for the brand palette — see
         // `ProviderKind.brandColor`. Used here in the Settings actions
         // list, in HUD chip badges, and in the Settings provider list,
         // so the same brand always paints the same hue.
-        return (cp.kind.badgeLabel, cp.kind.brandColor, cp.kind.iconName)
+        return (resolved.providerKind.badgeLabel,
+                resolved.providerKind.brandColor,
+                resolved.providerKind.iconName)
     }
 
     private func enabledBinding(_ actionID: String) -> Binding<Bool> {
@@ -2300,8 +2314,8 @@ struct ContentTypeTab: View {
                                                     defaultTitle: action.title)
         result = nil
         resultElapsed = 0
-        resultTickTimer?.invalidate()
-        resultTickTimer = nil
+        resultTickTask?.cancel()
+        resultTickTask = nil
         // Populate AI chrome for the Result pane spinner when the
         // action talks to a provider — text AIAction, AIImageAction,
         // and AITextToImageAction all route through here. Reach into
@@ -2341,63 +2355,40 @@ struct ContentTypeTab: View {
     /// `AIImageAction.resolveProvider`.
     private func inflight(for action: ClipboardAction) -> AIInflight? {
         let explicitID: String?
-        let isImageish: Bool
+        let operationKind: AIOperationKind
         if let ai = action as? AIAction {
             explicitID = ai.providerID
-            isImageish = false
+            operationKind = .text
         } else if let ai = action as? AIImageAction {
             explicitID = ai.providerID
-            isImageish = true
+            operationKind = .imageEdit
         } else if let ai = action as? AITextToImageAction {
             explicitID = ai.providerID
-            isImageish = true
+            operationKind = .textToImage
         } else {
             return nil
         }
         let cfg = AIProviderRegistry.shared.config
-        // Walk runtime's resolution chain so the label matches what
-        // actually runs.
-        let resolved: ConfiguredProvider? = {
-            // 1. Per-action override if usable.
-            if let id = explicitID, !id.isEmpty,
-               let cp = cfg.providers.first(where: { $0.id == id }),
-               cp.enabled,
-               (!isImageish || cp.kind.supportsImageEdit) {
-                return cp
+        let resolved = ProviderResolver.resolve(
+            nominalProviderID: explicitID,
+            operationKind: operationKind,
+            config: cfg,
+            hasKey: { id in
+                ProviderResolver.runtimeHasCredential(providerID: id,
+                                                      operationKind: operationKind,
+                                                      config: cfg)
             }
-            // 2. Configured default if usable.
-            if let defaultID = cfg.defaultProviderID,
-               let cp = cfg.providers.first(where: { $0.id == defaultID }),
-               cp.enabled,
-               (!isImageish || cp.kind.supportsImageEdit) {
-                return cp
-            }
-            // 3. Image-soft-fallback for image actions only.
-            //    Walk by `imageEditCostRank` (Gemini → OpenRouter →
-            //    OpenAI → Custom) so this stays in sync with both
-            //    `AIImageAction.resolveProvider` and the Edit Action
-            //    provider picker auto-select.
-            if isImageish {
-                return AIProviderRegistry.shared.cheapestEnabledImageProvider()
-            }
-            // 4. Any enabled provider for text actions.
-            return cfg.providers.first { $0.enabled }
-        }()
-        guard let cp = resolved else {
+        )
+        guard let resolved else {
             return AIInflight(providerLabel: "AI",
                               modelName: "unknown",
                               actionTitle: action.title,
                               startedAt: Date())
         }
-        let modelLabel: String
-        if isImageish {
-            modelLabel = (cp.kind == .gemini)
-                ? "gemini-2.5-flash-image-preview"
-                : "gpt-image-1"
-        } else {
-            modelLabel = cp.model
-        }
-        return AIInflight(providerLabel: cp.displayName,
+        let modelLabel = operationKind == .text
+            ? resolved.modelLabel
+            : (resolved.providerKind == .gemini ? "gemini-2.5-flash-image-preview" : "gpt-image-1")
+        return AIInflight(providerLabel: resolved.providerLabel,
                           modelName: modelLabel,
                           actionTitle: action.title,
                           startedAt: Date())
@@ -2407,17 +2398,15 @@ struct ContentTypeTab: View {
     private func startResultTick() {
         stopResultTick()
         let started = resultInflight?.startedAt ?? Date()
-        resultTickTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
-            Task { @MainActor in
-                self.resultElapsed = Date().timeIntervalSince(started)
-            }
+        resultTickTask = ElapsedTicker.start(startedAt: started) { elapsed in
+            self.resultElapsed = elapsed
         }
     }
 
     @MainActor
     private func stopResultTick() {
-        resultTickTimer?.invalidate()
-        resultTickTimer = nil
+        resultTickTask?.cancel()
+        resultTickTask = nil
     }
 
 }

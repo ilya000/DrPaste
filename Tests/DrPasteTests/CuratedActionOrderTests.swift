@@ -3,7 +3,7 @@
 //  DrPasteTests
 //
 //  Locks the curated default action ordering invariants: identity pinned
-//  first, valuable/wow actions ahead of novelty, no duplicate IDs.
+//  first, frequent/useful actions ahead of showcase/novelty, no duplicate IDs.
 //
 
 import XCTest
@@ -28,22 +28,26 @@ final class CuratedActionOrderTests: XCTestCase {
         }
     }
 
-    func testValuableBeforeNovelty_text() {
+    func testCoreTextActionsLeadNoveltyAndFormatting() {
         let o = CuratedActionOrder.order(for: .text)
-        // Hero/everyday clearly ahead of novelty.
-        XCTAssertLessThan(idx(o, "builtin.text.layout_repair")!, idx(o, "builtin.text.uppercase")!)
+        // Writing / cleanup leads case toggles, decorative styling, and novelty.
         XCTAssertLessThan(idx(o, "ai.text.fix_grammar")!, idx(o, "builtin.text.uppercase")!)
+        XCTAssertLessThan(idx(o, "ai.text.summarize")!, idx(o, "builtin.text.font_bold")!)
+        XCTAssertLessThan(idx(o, "builtin.text.trim")!, idx(o, "builtin.text.font_bold")!)
         XCTAssertLessThan(idx(o, "builtin.text.uppercase")!, idx(o, "builtin.text.zalgo")!)
         XCTAssertLessThan(idx(o, "builtin.text.trim")!, idx(o, "builtin.text.base64_encode")!)
+        XCTAssertLessThan(idx(o, "builtin.text.extract_links")!, idx(o, "ai.text.image_whiteboard")!)
     }
 
-    func testWowLeadsPerKind() {
+    func testCoreActionsLeadPerKind() {
         let url = CuratedActionOrder.order(for: .url)
         XCTAssertLessThan(idx(url, "builtin.url.strip_tracking")!, idx(url, "builtin.url.extract_domain")!)
         let img = CuratedActionOrder.order(for: .image)
         XCTAssertLessThan(idx(img, "builtin.image.ocr")!, idx(img, "builtin.image.to_ascii_art")!)
+        XCTAssertLessThan(idx(img, "builtin.image.resize")!, idx(img, "ai.image.cartoon")!)
         let rich = CuratedActionOrder.order(for: .richText)
         XCTAssertLessThan(idx(rich, "builtin.rich.strip_formatting")!, idx(rich, "builtin.rich.to_wiki")!)
+        XCTAssertLessThan(idx(rich, "ai.text.summarize")!, idx(rich, "builtin.rich.to_unicode_styled")!)
     }
 
     /// The curated lists reference real IDs (modulo a known stale-font tail).

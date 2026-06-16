@@ -44,6 +44,10 @@ struct CustomAIDescriptor: Codable, Identifiable, Equatable {
     // #A75 trait gating — "Show this action when…". Empty = always.
     var requiredTraits: [String] = []
     var forbiddenTraits: [String] = []
+    /// Optional one-line blurb shown under the title in Settings.
+    /// Built-in defaults live in `BuiltinActionMetadata`; user AI actions
+    /// carry their own description directly on the descriptor.
+    var description: String? = nil
     /// When true and the input is rich text / Markdown, the action round-trips
     /// through Markdown (rich → md → AI, instructed to keep markup → md → rich)
     /// so formatting survives. Suits 1:1 transforms (translate, fix grammar);
@@ -60,6 +64,7 @@ struct CustomAIDescriptor: Codable, Identifiable, Equatable {
          kind: Kind = .text,
          requiredTraits: [String] = [],
          forbiddenTraits: [String] = [],
+         description: String? = nil,
          preserveRichFormatting: Bool = false) {
         self.id = id
         self.title = title
@@ -70,6 +75,7 @@ struct CustomAIDescriptor: Codable, Identifiable, Equatable {
         self.kind = kind
         self.requiredTraits = requiredTraits
         self.forbiddenTraits = forbiddenTraits
+        self.description = description
         self.preserveRichFormatting = preserveRichFormatting
     }
 
@@ -87,12 +93,46 @@ struct CustomAIDescriptor: Codable, Identifiable, Equatable {
         self.kind = try c.decodeIfPresent(Kind.self, forKey: .kind) ?? .text
         self.requiredTraits = try c.decodeIfPresent([String].self, forKey: .requiredTraits) ?? []
         self.forbiddenTraits = try c.decodeIfPresent([String].self, forKey: .forbiddenTraits) ?? []
+        self.description = try c.decodeIfPresent(String.self, forKey: .description)
         self.preserveRichFormatting = try c.decodeIfPresent(Bool.self, forKey: .preserveRichFormatting) ?? false
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, title, promptTemplate, providerID, applicableTypes, enabled, kind
-        case requiredTraits, forbiddenTraits, preserveRichFormatting
+        case requiredTraits, forbiddenTraits, description, preserveRichFormatting
+    }
+}
+
+/// User override for a bundled action description. `baseDefaultHash` records
+/// the bundled text the user edited from, so a future default-description
+/// change can be detected without copying bundle text into config.
+struct DescriptionOverride: Codable, Equatable {
+    var text: String
+    var baseDefaultHash: String
+    var editedAt: Date
+
+    init(text: String,
+         baseDefaultHash: String,
+         editedAt: Date = Date()) {
+        self.text = text
+        self.baseDefaultHash = baseDefaultHash
+        self.editedAt = editedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        if let legacy = try? decoder.singleValueContainer().decode(String.self) {
+            self.text = legacy
+            self.baseDefaultHash = ActionConfig.descriptionHash(for: "")
+            self.editedAt = Date(timeIntervalSince1970: 0)
+            return
+        }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.text = try c.decode(String.self, forKey: .text)
+        self.baseDefaultHash = try c.decodeIfPresent(String.self,
+                                                     forKey: .baseDefaultHash)
+            ?? ActionConfig.descriptionHash(for: "")
+        self.editedAt = try c.decodeIfPresent(Date.self, forKey: .editedAt)
+            ?? Date(timeIntervalSince1970: 0)
     }
 }
 
@@ -106,12 +146,10 @@ struct ActionConfig: Codable, Equatable {
     /// Custom titles keyed by action ID — users can rename built-ins. When no
     /// override exists, the action's default title is used.
     var customTitles: [String: String] = [:]
-    /// Custom descriptions keyed by action ID — the one-line blurb shown as the
-    /// second line of the action row in Settings. When no override exists the
-    /// bundled default is used (built-in → `BuiltinActionMetadata.descriptions`,
-    /// transformation → engine description, AI → prompt template). Empty string
-    /// is NOT stored (an empty override would just hide the useful default).
-    var customDescriptions: [String: String] = [:]
+    /// Built-in description overrides keyed by action ID. User-authored AI and
+    /// transformation descriptions live directly on their descriptors; this map
+    /// is for overriding bundled defaults without backfilling bundle text.
+    var customDescriptions: [String: DescriptionOverride] = [:]
     /// Custom action order per content type. Key is SemanticKind.rawValue,
     /// value is the list of action IDs in display order. Actions not present
     /// in the array appear after the listed ones in their default order.
@@ -179,7 +217,7 @@ struct ActionConfig: Codable, Equatable {
         self.enabledFlags = try c.decodeIfPresent([String: Bool].self, forKey: .enabledFlags) ?? [:]
         self.customAI = try c.decodeIfPresent([CustomAIDescriptor].self, forKey: .customAI) ?? []
         self.customTitles = try c.decodeIfPresent([String: String].self, forKey: .customTitles) ?? [:]
-        self.customDescriptions = try c.decodeIfPresent([String: String].self, forKey: .customDescriptions) ?? [:]
+        self.customDescriptions = try c.decodeIfPresent([String: DescriptionOverride].self, forKey: .customDescriptions) ?? [:]
         self.actionOrder = try c.decodeIfPresent([String: [String]].self, forKey: .actionOrder) ?? [:]
         self.customTransformations = try c.decodeIfPresent([CustomTransformationDescriptor].self,
                                                             forKey: .customTransformations) ?? []
@@ -205,6 +243,15 @@ struct ActionConfig: Codable, Equatable {
              seedTransformationVersion, actionTestSamples,
              actionTestImageBlobs, playgroundSamples, playgroundImageBlobs,
              preferences
+    }
+
+    static func descriptionHash(for text: String) -> String {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in text.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 0x100000001b3
+        }
+        return String(hash, radix: 16)
     }
 
     static func load() -> ActionConfig {

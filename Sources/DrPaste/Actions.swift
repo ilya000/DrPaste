@@ -185,7 +185,9 @@ final class ActionRegistry: ObservableObject {
                         // #A10: re-push the ⌥⌘<letter> map to the EventTap
                         // engine so hold-preview routes the same hotkey set
                         // that the Carbon side just re-registered.
-                        (NSApp.delegate as? AppDelegate)?.reloadHoldPreviewMap()
+                        if let app = NSApp {
+                            (app.delegate as? AppDelegate)?.reloadHoldPreviewMap()
+                        }
                     }
                 }
             }
@@ -1185,7 +1187,7 @@ final class ActionRegistry: ObservableObject {
     /// in Settings). Returns nil when the user hasn't customised it — callers
     /// fall back to the bundled default.
     func customDescription(forActionID actionID: String) -> String? {
-        config.customDescriptions[actionID]
+        config.customDescriptions[actionID]?.text
     }
 
     /// Persist (or clear) a user description override. Pass nil/empty to drop
@@ -1194,7 +1196,11 @@ final class ActionRegistry: ObservableObject {
         var copy = config
         if let description = description?.trimmingCharacters(in: .whitespacesAndNewlines),
            !description.isEmpty {
-            copy.customDescriptions[actionID] = description
+            let base = BuiltinActionMetadata.descriptions[actionID] ?? ""
+            copy.customDescriptions[actionID] = DescriptionOverride(
+                text: description,
+                baseDefaultHash: ActionConfig.descriptionHash(for: base)
+            )
         } else {
             copy.customDescriptions.removeValue(forKey: actionID)
         }

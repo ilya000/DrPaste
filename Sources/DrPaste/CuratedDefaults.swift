@@ -30,6 +30,10 @@ enum CuratedDefaults {
         // Text — case (core 2).
         "builtin.text.uppercase",
         "builtin.text.lowercase",
+        // Trait-gated by the same uppercase/lowercase-heavy signals as
+        // UPPER/lower, so enabling them does not add everyday HUD clutter.
+        "builtin.text.title_case",
+        "builtin.text.sentence_case",
 
         // Text — whitespace / lines. "Tidy text" (builtin.text.trim) is now
         // the one universal cleanup: it trims, normalises spacing, collapses

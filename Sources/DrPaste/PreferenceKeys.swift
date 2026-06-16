@@ -31,6 +31,9 @@ enum PreferenceKeys {
 
     static let hudFontScale            = "drpaste.hud.fontScale"
     static let cutReplaceCursorOnSecond = "drpaste.hud.cursorOnSecondOnCut"
+    /// Developer-facing diagnostic row in BigHUD that shows the detected
+    /// ContentContext trait flags for the focused clip. Default false.
+    static let hudShowTraitDebug       = "drpaste.hud.showTraitDebug"
     /// When true, holding ⌥⌘ after an action hotkey does NOT open the BigHUD
     /// preview — the action fires immediately like a tap. Default false
     /// (hold-preview ON). Lets users who never want the hold-preview turn it off.
@@ -85,6 +88,7 @@ enum PreferenceKeys {
     static let allDirectKeys: [String] = [
         hudFontScale,
         cutReplaceCursorOnSecond,
+        hudShowTraitDebug,
         actionHotkeyHoldPreviewDisabled,
         appendToastsEnabled,
         cheatSheetDisabled,

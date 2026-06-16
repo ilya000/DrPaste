@@ -85,7 +85,7 @@ final class MiniHUDController {
 
     private var panel: NSPanel?
     private let state = MiniHUDState()
-    private var tickTimer: Timer?
+    private var tickTask: Task<Void, Never>?
     /// Closure fired ONLY when the user dismisses the HUD via the X button.
     /// Programmatic `hide()` (e.g. after the action completes) does NOT call
     /// it. Used by the deferred-paste path in AppDelegate to cancel an
@@ -260,11 +260,13 @@ final class MiniHUDController {
             panel.animator().alphaValue = 0
             panel.animator().setFrame(grown, display: true)
         }, completionHandler: { [weak self] in
-            guard let self = self else { return }
-            self.isAnimatingPromotion = false
-            self.tearDown()
-            panel.setFrame(original, display: false)
-            panel.alphaValue = 1
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                self.isAnimatingPromotion = false
+                self.tearDown()
+                panel.setFrame(original, display: false)
+                panel.alphaValue = 1
+            }
         })
     }
 
@@ -371,18 +373,14 @@ final class MiniHUDController {
     private func startTickIfNeeded(inflight: AIInflight?) {
         stopTick()
         guard let inflight = inflight else { return }
-        let startedAt = inflight.startedAt
-        tickTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self = self else { return }
-                self.state.elapsed = Date().timeIntervalSince(startedAt)
-            }
+        tickTask = ElapsedTicker.start(startedAt: inflight.startedAt) { [weak self] elapsed in
+            self?.state.elapsed = elapsed
         }
     }
 
     private func stopTick() {
-        tickTimer?.invalidate()
-        tickTimer = nil
+        tickTask?.cancel()
+        tickTask = nil
     }
 
     private func buildPanel() {

@@ -1,6 +1,6 @@
 ---
 name: drpaste
-description: Project memory and working context for DrPaste — a native macOS clipboard extension built around a press-and-hold philosophy ("an extension of the Paste gesture itself"). The "Dr" in DrPaste reads as "scholarly / educated" (PhD), not "doctor / medical". Load this skill whenever the conversation mentions DrPaste, Dr Paste, paste manager, paste extension, macOS clipboard manager, clipboard HUD, press-and-hold paste, ⌥⌘V HUD, intelligent paste, Flycut / Jumpcut / Maccy / Paste alternatives, or BYO-AI paste tools. The earlier working name was ClipMacPoC (also a trigger). Covers the full design brief, architectural decisions, file-by-file responsibilities, implementation subtleties (CGEventTap vs Carbon vs NSEvent.addGlobalMonitor, NSPanel non-activating vs key-window, simulated paste, keyboard layout repair, Full Gesture vs Limited Mode auto-detect), current status, and roadmap.
+description: Project memory and working context for DrPaste — a feature-frozen native macOS clipboard extension built around a press-and-hold philosophy ("an extension of the Paste gesture itself"). The "Dr" in DrPaste reads as "scholarly / educated" (PhD), not "doctor / medical". Load this skill whenever the conversation mentions DrPaste, Dr Paste, paste manager, paste extension, macOS clipboard manager, clipboard HUD, press-and-hold paste, ⌥⌘V HUD, intelligent paste, Flycut / Jumpcut / Maccy / Paste alternatives, or BYO-AI paste tools. The earlier working name was ClipMacPoC (also a trigger). Covers the locked design brief, architectural decisions, file-by-file responsibilities, implementation subtleties (CGEventTap vs Carbon vs NSEvent.addGlobalMonitor, NSPanel non-activating vs key-window, simulated paste, keyboard layout repair, Full Gesture vs Limited Mode auto-detect), current status, and finalization constraints.
 ---
 
 # DrPaste
@@ -9,7 +9,12 @@ Native macOS clipboard utility built around press-and-hold UX. Goal is not "yet 
 
 Original working name: **ClipMacPoC**. Final product name: **DrPaste** (chosen 25 May 2026). The "Dr" semantic is **PhD / scholar / educated**, not medical. The icon reflects this: clipboard + mortarboard cap, not a medical cross.
 
-Current version: **0.59.0** (alpha, unsigned SwiftPM build).
+Current version: **0.59.0** (alpha, unsigned SwiftPM build, feature-frozen).
+
+Finalization rule: do not expand DrPaste into a broader product. Work should
+polish the existing clipboard/HUD/action paradigm: bugs, reliability, ordering,
+context gates, naming, docs, tests, packaging, and release hardening. Prefer
+removing, hiding, or context-gating clutter over adding a visible capability.
 
 ## Project location
 
@@ -19,7 +24,7 @@ Current version: **0.59.0** (alpha, unsigned SwiftPM build).
   README.md                         English, publishable
   LICENSE                           GPL-3.0-or-later + attribution §7(d)
   SKILL.md                          this file
-  BACKLOG.md                        active items + condensed changelog
+  BACKLOG.md                        feature-freeze notes + release hardening + changelog
   HELP.md                           Russian end-user guide (16 sections)
   .gitattributes                    LF for all text files
   Sources/DrPaste/
@@ -476,33 +481,26 @@ used in copyright headers.
 
 ## Roadmap
 
-The active backlog lives in `BACKLOG.md`. Highlights of **planned** work
-(items already shipped have been moved to the Changelog section):
+The active backlog lives in `BACKLOG.md`. DrPaste is now feature-frozen:
+prefer finishing, pruning, packaging, tests, and documentation over expanding
+the product. Highlights of **remaining** work:
 
-1. **#A1** — Ship as a signed `.app` bundle with `.icns` and notarization.
-2. **#A2** — Real Launch on Login (`SMAppService.mainApp`). Depends on #A1.
-3. **#A3** — iCloud Keychain sync for provider keys. Depends on #A1.
-4. **#A5** — Per-app AI provider override.
-5. **#A6** — Bidirectional drag-and-drop in HUD.
-6. **#A7** — HUD search / filter (re-attempt with cleaner mode separation).
-   See also **#A13**, the flight-test variant.
-7. **#A8** — Skills / Marketplace registry for shareable action packs.
-8. **#A12** — Unified hotkey contract: tap-vs-hold semantics for
-   ⌥⌘C/S/X with content preview in MiniHUD.
-9. **#A14–#A23** — flight-test backlog: Resize universal, CSV tables,
-   Built-in editor redesign, Paste-as-is icons, Latin → Cyrillic,
-   Pretty Code (local + AI), Unit conversion, File → Image, URL
-   preview cards, macOS Services context menu.
-10. **#A28–#A38** — engine consolidation, semantic kind expansion
-    (Color / Email / PDF / Wiki / HTML), HUD Pin button, clickable
-    legend, AX text-operations for full-document context, etc.
-11. **#A39–#A45** — architectural maturity pass from the external
-    code-review session: unified action pipeline + PasteCommitter
-    (#A39), SelectionCaptureService (#A40), import/export merge
-    audit + ImportReport (#A41), surface state machines (#A42),
-    PreferencesKeys enum (#A43), ProviderResolver tighten-up (#A44),
-    contract tests (#A45). #A39 is the prevention layer for the class
-    of bug exemplified by the Type Slowly direct-trigger fix in 0.42.1.
+1. **#A1** — release ops still open: sign/notarize the `.app` bundle once
+   Apple Developer ID credentials are available. Local `scripts/build_app.sh`
+   creates `dist/DrPaste.app` and a DMG; `.github/workflows/release.yml`
+   builds/uploads a draft release on tag push.
+2. **#A45 shipped** — contract-test coverage covers registry seeds, provider
+   resolution, import merge, PasteCommitter, SelectionCaptureService, and
+   many transformation engines.
+3. **#A90 shipped externally** — ctrl8.com owns download/adoption stats via a
+   daily site-side collector and public static JSON; no telemetry inside
+   DrPaste.
+4. **Rejected / transferred directions** — iCloud sync, HUD search,
+   marketplace/skills packs, notch tray, Services menu in DrPaste, AX
+   full-document context, macro/Lua, hosted backend/monetization, and new
+   semantic-kind expansion are explicitly not part of DrPaste final. The last
+   optional DrPaste-internal candidates (#A5, #A16 duplicate aliases, #A28,
+   #A31, #A42, #A86) are also not part of the final freeze.
 
 **Recently shipped** (highlight set):
 - **0.14.0** — AI streaming (#A9): token-by-token preview, SSE finishers.

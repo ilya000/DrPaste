@@ -287,6 +287,9 @@ struct BigHUDView: View {
                 content
                 Divider().opacity(0.3)
                 actionsBar
+                if showTraitDebug {
+                    traitDebugRow
+                }
                 footer
                 if state.mode == .summon { limitedModeBanner }
             }
@@ -424,23 +427,6 @@ struct BigHUDView: View {
         .frame(height: sz(14))
     }
 
-    /// TEMPORARY debug overlay (#A75 testing) — shows the ContentContext
-    /// flags detected for the focused clip, so it's obvious which signals are
-    /// present and therefore which trait-gated actions should appear. NOT for
-    /// end users; candidate to move behind a Settings → General toggle, or to
-    /// remove once trait gating is trusted.
-    @ViewBuilder private var debugTraitsRow: some View {
-        if let item = state.currentItem {
-            let names = ContextDetector.detect(item).activeNames
-            Text("🐞 traits: " + (names.isEmpty ? "—" : names.joined(separator: " ")))
-                .font(.system(size: sz(9), design: .monospaced))
-                .foregroundStyle(Color.orange.opacity(0.85))
-                .lineLimit(2)
-                .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
     // MARK: content
 
     @ViewBuilder private var content: some View {
@@ -463,7 +449,6 @@ struct BigHUDView: View {
                     Divider().opacity(0.2)
                     VStack(alignment: .leading, spacing: 4) {
                         contentMetaRow                  // meta row above the preview pane
-                        debugTraitsRow                  // TEMP debug — detected traits
                         previewPane
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     }
@@ -847,11 +832,9 @@ struct BigHUDView: View {
     }
 
     private func filesList(_ item: ClipboardItem) -> [String]? {
-        // Parse from representations or previewText.
-        if item.semantic == .files, let s = item.previewText {
-            return s.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-        }
-        return nil
+        guard item.semantic == .files else { return nil }
+        let paths = clipFilePaths(item)
+        return paths.isEmpty ? nil : paths
     }
 
     /// #A17 — Resolve the system icon for a file row in the HUD.
@@ -1127,64 +1110,49 @@ struct BigHUDView: View {
     private func providerBadge(for action: ClipboardAction)
         -> (label: String, color: Color, icon: String)?
     {
-        guard let cp = resolveExecutorProvider(for: action) else {
+        guard let resolved = resolveExecutorProvider(for: action) else {
             // Fallback chip when no provider qualifies — surfaces
             // "AI" generically so the row still parses as AI.
             return action is AIAction || action is AIImageAction || action is AITextToImageAction
                 ? ("AI", Color.gray, "sparkle")
                 : nil
         }
-        return (cp.kind.badgeLabel, badgeColor(for: cp.kind), cp.kind.iconName)
+        return (resolved.providerKind.badgeLabel,
+                badgeColor(for: resolved.providerKind),
+                resolved.providerKind.iconName)
     }
 
-    /// Single source of truth for "which provider is actually going
-    /// to run this action". Mirrors `AIImageAction.resolveProvider`
-    /// for image actions and the analogous chain for text actions.
-    /// All HUD-side surfaces (badge brand icon, badge color,
-    /// availability slash overlay, future tooltips) go through here
-    /// so the HUD never disagrees with itself or with the Edit
-    /// Action picker about who's about to fire.
+    /// HUD-side adapter around `ProviderResolver`: every AI badge /
+    /// availability indicator consumes the same resolved provider struct as
+    /// Settings and the editor hints.
     private func resolveExecutorProvider(for action: ClipboardAction)
-        -> ConfiguredProvider?
+        -> ResolvedAIProvider?
     {
         let providerID: String?
-        let needsImage: Bool
+        let operationKind: AIOperationKind
         if let ai = action as? AIAction {
             providerID = ai.providerID
-            needsImage = false
+            operationKind = .text
         } else if let ai = action as? AIImageAction {
             providerID = ai.providerID
-            needsImage = true
+            operationKind = .imageEdit
         } else if let ai = action as? AITextToImageAction {
             providerID = ai.providerID
-            needsImage = true
+            operationKind = .textToImage
         } else {
             return nil
         }
         let cfg = AIProviderRegistry.shared.config
-        // 1. Explicit override — only if usable.
-        if let id = providerID, !id.isEmpty,
-           let cp = cfg.providers.first(where: { $0.id == id }),
-           cp.enabled,
-           (!needsImage || cp.kind.supportsImageEdit) {
-            return cp
-        }
-        // 2. Chat default — only if usable for this operation.
-        if let defaultID = cfg.defaultProviderID,
-           let cp = cfg.providers.first(where: { $0.id == defaultID }),
-           cp.enabled,
-           (!needsImage || cp.kind.supportsImageEdit) {
-            return cp
-        }
-        // 3. Image soft-fallback — cheapest enabled image-capable.
-        //    Cost order (Gemini → OpenRouter → OpenAI → Custom)
-        //    matches `AIImageAction.resolveProvider` so the chip
-        //    brand matches the worker brand.
-        if needsImage {
-            return AIProviderRegistry.shared.cheapestEnabledImageProvider()
-        }
-        // 4. Text fallback — any enabled provider.
-        return cfg.providers.first { $0.enabled }
+        return ProviderResolver.resolve(
+            nominalProviderID: providerID,
+            operationKind: operationKind,
+            config: cfg,
+            hasKey: { id in
+                ProviderResolver.runtimeHasCredential(providerID: id,
+                                                      operationKind: operationKind,
+                                                      config: cfg)
+            }
+        )
     }
 
     private func badgeColor(for kind: ProviderKind) -> Color {
@@ -1286,6 +1254,28 @@ struct BigHUDView: View {
                 .background(RoundedRectangle(cornerRadius: 3).fill(Color.primary.opacity(0.08)))
             Text(label)
         }
+    }
+
+    private var showTraitDebug: Bool {
+        UserDefaults.standard.bool(forKey: PreferenceKeys.hudShowTraitDebug)
+    }
+
+    private var traitDebugRow: some View {
+        let names = state.currentItem.map { ContextDetector.detect($0).activeNames } ?? []
+        let text = names.isEmpty ? "traits: none" : "traits: \(names.joined(separator: ", "))"
+        return HStack(spacing: 6) {
+            Image(systemName: "tag")
+                .font(.system(size: sz(9)))
+                .foregroundStyle(Color(red: 1.0, green: 0.82, blue: 0.0))
+            Text(text)
+                .font(.system(size: sz(9), design: .monospaced))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 4)
+        .help(text)
     }
 
     // MARK: Limited Mode banner

@@ -172,6 +172,24 @@ enum PasteSimulator {
 // MARK: - PasteboardWriter (lossless restoration)
 
 enum PasteboardWriter {
+    static func readableRepresentations(
+        for item: ClipboardItem,
+        store: ClipboardStore
+    ) -> (entries: [(type: String, data: Data)], missingCount: Int) {
+        var readableData: [(type: String, data: Data)] = []
+        var missingCount = 0
+        for typeStr in item.typesOrdered {
+            guard let rel = item.representations[typeStr] else { continue }
+            let url = store.blobURL(rel)
+            if let data = try? Data(contentsOf: url) {
+                readableData.append((type: typeStr, data: data))
+            } else {
+                missingCount += 1
+            }
+        }
+        return (readableData, missingCount)
+    }
+
     /// Restores every representation of a clipboard item. This is Paste-as-is:
     /// if the item was copied from Excel, all of its representations (TSV,
     /// HTML, RTF, proprietary metadata) are written back to the pasteboard in
@@ -191,17 +209,9 @@ enum PasteboardWriter {
         // a broken paste. Two-pass: read all blobs into memory first,
         // declare only types whose blob loaded, then write the data.
         if !item.representations.isEmpty && !item.typesOrdered.isEmpty {
-            var readableData: [(type: String, data: Data)] = []
-            var missingCount = 0
-            for typeStr in item.typesOrdered {
-                guard let rel = item.representations[typeStr] else { continue }
-                let url = store.blobURL(rel)
-                if let data = try? Data(contentsOf: url) {
-                    readableData.append((type: typeStr, data: data))
-                } else {
-                    missingCount += 1
-                }
-            }
+            let result = readableRepresentations(for: item, store: store)
+            let readableData = result.entries
+            let missingCount = result.missingCount
             if !readableData.isEmpty {
                 let types = readableData.map { NSPasteboard.PasteboardType($0.type) }
                 pb.declareTypes(types, owner: nil)

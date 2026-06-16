@@ -922,6 +922,10 @@ struct ImageToASCIIArtAction: ClipboardAction {
     static let defaultOutWidth: Int = 40
     private static let charAspect: Double = 0.5
 
+    private var effectiveOutWidth: Int {
+        ASCIIArtSettings.maxWidth(for: id, default: Self.defaultOutWidth)
+    }
+
     // Tonal ramp, lightest → darkest. A finer 15-step ramp (vs the old 10)
     // gives smoother shading; structural edges are drawn separately with
     // directional glyphs (see `render`). Index 0 = space (lightest).
@@ -937,9 +941,10 @@ struct ImageToASCIIArtAction: ClipboardAction {
     }
 
     func apply(item: ClipboardItem, context: ContentContext) async -> ApplyOutcome {
+        let outWidth = effectiveOutWidth
         let result: String = await runOffMain {
             guard let img = loadImage(item) else { return "" }
-            return Self.render(image: img, outWidth: Self.defaultOutWidth)
+            return Self.render(image: img, outWidth: outWidth)
         }
         guard !result.isEmpty else {
             return .failed(original: item,
@@ -1106,6 +1111,25 @@ struct ImageToASCIIArtAction: ClipboardAction {
             output.append("\n")
         }
         return output
+    }
+}
+
+/// User-configurable output width for ASCII art, stored per action ID. Kept
+/// parallel to `ResizeSettings`: built-in actions do not carry descriptor
+/// parameters, so the editor writes a small scalar preference and the action
+/// reads it at runtime.
+enum ASCIIArtSettings {
+    static let minWidth = 16
+    static let maxWidth = 160
+    private static func key(_ id: String) -> String { "drpaste.image.asciiMaxWidth.\(id)" }
+
+    static func maxWidth(for id: String, default def: Int = ImageToASCIIArtAction.defaultOutWidth) -> Int {
+        let v = UserDefaults.standard.integer(forKey: key(id))
+        return v >= minWidth ? v : def
+    }
+
+    static func setMaxWidth(_ v: Int, for id: String) {
+        UserDefaults.standard.set(min(maxWidth, max(minWidth, v)), forKey: key(id))
     }
 }
 

@@ -287,6 +287,9 @@ struct ActionEditor: View {
     /// Editable longer-side limit for resize actions (px). Persisted via
     /// `ResizeSettings` on change.
     @State private var resizeMaxSide: Int = 1920
+    /// Editable column limit for ASCII-art output. Persisted via
+    /// `ASCIIArtSettings` on change.
+    @State private var asciiMaxWidth: Int = ImageToASCIIArtAction.defaultOutWidth
     @State private var transformationEngine: TransformationEngine = .regexReplace
     @State private var transformationParams: [String: String] = [:]
     @State private var aiPrompt: String = ""
@@ -330,9 +333,9 @@ struct ActionEditor: View {
     /// MiniHUD use.
     @State private var testInflight: AIInflight?
     @State private var testElapsed: TimeInterval = 0
-    /// 10 Hz timer that ticks `testElapsed` while an AI test is running,
-    /// same chrome as BigHUD's `aiTickTimer`. Invalidated on completion.
-    @State private var testTickTimer: Timer?
+    /// 10 Hz Task-backed ticker that ticks `testElapsed` while an AI test is
+    /// running, same chrome as BigHUD's elapsed state. Cancelled on completion.
+    @State private var testTickTask: Task<Void, Never>?
     /// #A57 — handle for the in-flight playground test task. Stored so
     /// `runTest()` can cancel an earlier run before starting the next
     /// one (otherwise a fast double-click on Run leaves the prior
@@ -737,6 +740,9 @@ struct ActionEditor: View {
                 if Self.resizeActionIDs.contains(actionID) {
                     resizeTargetField(actionID: actionID)
                 }
+                if Self.asciiArtActionIDs.contains(actionID) {
+                    asciiWidthField(actionID: actionID)
+                }
                 if actionID == "builtin.text.unit_conversion" {
                     unitConversionModeField(actionID: actionID)
                 }
@@ -776,6 +782,11 @@ struct ActionEditor: View {
         "builtin.image.resize"
     ]
 
+    /// ASCII-art actions whose output column count is user-adjustable.
+    static let asciiArtActionIDs: Set<String> = [
+        "builtin.image.to_ascii_art"
+    ]
+
     /// Numeric field for the resize longer-side limit. Writes through
     /// `ResizeSettings` immediately so the next Run test / paste uses it.
     @ViewBuilder
@@ -802,6 +813,35 @@ struct ActionEditor: View {
                     .labelsHidden()
             }
             Text("Images larger than this on their longer side are scaled down to fit. Smaller images pass through unchanged.")
+                .font(.caption2).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Numeric field for ASCII-art output width. Writes through
+    /// `ASCIIArtSettings` immediately so Run test and the HUD share one value.
+    @ViewBuilder
+    private func asciiWidthField(actionID: String) -> some View {
+        Divider().padding(.vertical, 2)
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Maximum columns").font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                TextField("\(ImageToASCIIArtAction.defaultOutWidth)",
+                          value: $asciiMaxWidth,
+                          format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 90)
+                    .onChange(of: asciiMaxWidth) { newValue in
+                        ASCIIArtSettings.setMaxWidth(newValue, for: actionID)
+                    }
+                    .onSubmit { asciiMaxWidth = ASCIIArtSettings.maxWidth(for: actionID) }
+                Text("cols").foregroundStyle(.secondary)
+                Stepper("", value: $asciiMaxWidth,
+                        in: ASCIIArtSettings.minWidth...ASCIIArtSettings.maxWidth,
+                        step: 4)
+                    .labelsHidden()
+            }
+            Text("Lower values fit chats and comments; higher values preserve more image detail in monospaced targets.")
                 .font(.caption2).foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -1277,11 +1317,11 @@ struct ActionEditor: View {
                 // when "Default" doesn't work for the operation and
                 // the soft fallback rerouted to a different provider.
                 if let effective = effectiveProvider() {
-                    Image(systemName: effective.kind.iconName)
+                    Image(systemName: effective.providerKind.iconName)
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(effective.kind.brandColor)
+                        .foregroundStyle(effective.providerKind.brandColor)
                         .frame(width: 16, height: 16)
-                        .background(Circle().fill(effective.kind.brandColor.opacity(0.18)))
+                        .background(Circle().fill(effective.providerKind.brandColor.opacity(0.18)))
                 } else {
                     // No working provider for this operation —
                     // small orange warning glyph in the lookup
@@ -1385,24 +1425,8 @@ struct ActionEditor: View {
     ///     the current operation (e.g. Anthropic + image action)
     ///     — runtime reroutes to a different provider.
     private var isProviderRerouted: Bool {
-        let cfg = AIProviderRegistry.shared.config
-        let needsImage = (kind == .ai && (aiKind == .image || aiKind == .textToImage))
         guard let effective = effectiveProvider() else { return false }
-        if !aiProviderID.isEmpty {
-            // Explicit override broken if it doesn't exist, is
-            // disabled, or lacks the needed capability.
-            if let cp = cfg.providers.first(where: { $0.id == aiProviderID }),
-               cp.enabled, (!needsImage || cp.kind.supportsImageEdit) {
-                return false
-            }
-            return true
-        }
-        // Default sentinel — rerouted when chat default differs
-        // from the effective resolved provider.
-        if let chatDefault = AIProviderRegistry.shared.defaultProvider {
-            return chatDefault.id != effective.id
-        }
-        return false
+        return effective.isRerouted
     }
 
     /// Tooltip for the reroute glyph — explains WHY the chip is
@@ -1411,7 +1435,7 @@ struct ActionEditor: View {
         let cfg = AIProviderRegistry.shared.config
         let needsImage = (kind == .ai && (aiKind == .image || aiKind == .textToImage))
         let effective = effectiveProvider()
-        let effectiveName = effective?.displayName ?? "—"
+        let effectiveName = effective?.providerLabel ?? "—"
         if !aiProviderID.isEmpty {
             if let cp = cfg.providers.first(where: { $0.id == aiProviderID }) {
                 if !cp.enabled {
@@ -1465,17 +1489,17 @@ struct ActionEditor: View {
                 if !aiProviderID.isEmpty {
                     // Explicit override broken.
                     if let cp = cfg.providers.first(where: { $0.id == aiProviderID }) {
-                        Text("Picked provider “\(cp.displayName)” \(brokenExplicitReason(cp: cp, needsImage: needsImage)). Routed to \(effective.displayName).")
+                    Text("Picked provider “\(cp.displayName)” \(brokenExplicitReason(cp: cp, needsImage: needsImage)). Routed to \(effective.providerLabel).")
                             .font(.caption2).foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
                     } else {
-                        Text("Picked provider no longer exists. Routed to \(effective.displayName).")
+                        Text("Picked provider no longer exists. Routed to \(effective.providerLabel).")
                             .font(.caption2).foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 } else if let chatDefault = AIProviderRegistry.shared.defaultProvider {
                     // Default sentinel rerouted.
-                    Text("Default chat provider (\(chatDefault.displayName)) can't run this. Routed to \(effective.displayName).")
+                    Text("Default chat provider (\(chatDefault.displayName)) can't run this. Routed to \(effective.providerLabel).")
                         .font(.caption2).foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -1484,7 +1508,7 @@ struct ActionEditor: View {
             // Default sentinel works fine — just label who that is.
             HStack(spacing: 4) {
                 Spacer().frame(width: 100)
-                Text("Resolves to \(effective.displayName). Change the default in Settings → AI to switch.")
+                Text("Resolves to \(effective.providerLabel). Change the default in Settings → AI to switch.")
                     .font(.caption2).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -1516,27 +1540,20 @@ struct ActionEditor: View {
     ///      happen if you re-pick Default" view — but the chip
     ///      shows what's happening NOW.
     private var currentPickerLabel: String {
-        let cfg = AIProviderRegistry.shared.config
-        let needsImage = (kind == .ai && (aiKind == .image || aiKind == .textToImage))
-        // Case 1 — explicit override is usable as-is.
-        if !aiProviderID.isEmpty,
-           let cp = cfg.providers.first(where: { $0.id == aiProviderID }),
-           cp.enabled,
-           (!needsImage || cp.kind.supportsImageEdit) {
-            return cp.displayName
+        let effective = effectiveProvider()
+        // Case 1 — explicit override is usable as-is. `isRerouted` already
+        // includes disabled / wrong-capability / missing-key readiness.
+        if !aiProviderID.isEmpty, let effective, !effective.isRerouted {
+            return effective.providerLabel
         }
         // Case 3 — Default sentinel selected (aiProviderID empty).
         if aiProviderID.isEmpty {
-            if let effective = effectiveProvider() {
-                return "Default · \(effective.displayName)"
-            }
+            if let effective { return "Default · \(effective.providerLabel)" }
             return "Default"
         }
         // Case 2 — explicit override is broken (missing/disabled/
         // wrong capability). Don't lie; surface the fallback.
-        if let effective = effectiveProvider() {
-            return effective.displayName
-        }
+        if let effective { return effective.providerLabel }
         return "—"
     }
 
@@ -1592,41 +1609,34 @@ struct ActionEditor: View {
     private func brokenExplicitReason(cp: ConfiguredProvider, needsImage: Bool) -> String {
         if !cp.enabled { return "is disabled" }
         if needsImage && !cp.kind.supportsImageEdit { return "can't run image actions" }
+        if !cp.kind.isLocal && APIKeyStorage.load(for: cp.id)?.isEmpty != false {
+            return "has no API key"
+        }
         return "isn't usable"
     }
 
-    /// Walk the same resolution chain `AIImageAction.resolveProvider`
-    /// uses at runtime so the UI shows the real provider that will
-    /// fire when the user clicks Run. For text-only actions there's
-    /// no capability gate — every configured provider qualifies, so
-    /// the default wins outright.
-    private func effectiveProvider() -> ConfiguredProvider? {
+    /// Shared provider resolution for editor chrome. The picker chip, hint row,
+    /// warning glyph, and test-panel loading state all consume the same
+    /// `ResolvedAIProvider` that BigHUD and Settings use.
+    private func effectiveProvider() -> ResolvedAIProvider? {
         let cfg = AIProviderRegistry.shared.config
-        let needsImage = (aiKind == .image || aiKind == .textToImage)
-        // 1. Per-action explicit override wins if it's usable.
-        if !aiProviderID.isEmpty,
-           let cp = cfg.providers.first(where: { $0.id == aiProviderID }),
-           cp.enabled,
-           (!needsImage || cp.kind.supportsImageEdit) {
-            return cp
-        }
-        // 2. Configured default — usable when no operation gate or
-        //    when the default itself supports image edits.
-        if let defaultID = cfg.defaultProviderID,
-           let cp = cfg.providers.first(where: { $0.id == defaultID }),
-           cp.enabled,
-           (!needsImage || cp.kind.supportsImageEdit) {
-            return cp
-        }
-        // 3. Soft fallback — for image operations only, pick the
-        //    cheapest enabled image-capable provider. Matches the
-        //    runtime AIImageAction.resolveProvider chain (which
-        //    also walks providers in cost-rank order).
-        if needsImage {
-            return AIProviderRegistry.shared.cheapestEnabledImageProvider()
-        }
-        // 4. For text-only operations, any enabled provider works.
-        return cfg.providers.first { $0.enabled }
+        let operationKind: AIOperationKind = {
+            switch aiKind {
+            case .image: return .imageEdit
+            case .textToImage: return .textToImage
+            case .text: return .text
+            }
+        }()
+        return ProviderResolver.resolve(
+            nominalProviderID: aiProviderID.isEmpty ? nil : aiProviderID,
+            operationKind: operationKind,
+            config: cfg,
+            hasKey: { id in
+                ProviderResolver.runtimeHasCredential(providerID: id,
+                                                      operationKind: operationKind,
+                                                      config: cfg)
+            }
+        )
     }
 
     // MARK: - Test panel
@@ -1810,6 +1820,9 @@ struct ActionEditor: View {
         let newID = "user.transform.\(UUID().uuidString.prefix(8))"
         let newTitle = nextDuplicateTitle(base: title)
         let appliesArray = applicableTypes.map { $0.rawValue }.sorted()
+        let trimmedDesc = actionDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedDefault = defaultDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let customDesc = (trimmedDesc.isEmpty || trimmedDesc == trimmedDefault) ? nil : trimmedDesc
         let descriptor = CustomTransformationDescriptor(
             id: newID,
             title: newTitle,
@@ -1818,7 +1831,8 @@ struct ActionEditor: View {
             applicableTypes: appliesArray,
             enabled: true,
             requiredTraits: requiredTraits.sorted(),
-            forbiddenTraits: forbiddenTraits
+            forbiddenTraits: forbiddenTraits,
+            description: customDesc
         )
         // Insert directly after the original so the clone shows up
         // as the original's right-hand neighbour in the Settings
@@ -1841,6 +1855,9 @@ struct ActionEditor: View {
         let newID = "user.\(UUID().uuidString.prefix(8))"
         let newTitle = nextDuplicateTitle(base: title)
         let appliesArray = applicableTypes.map { $0.rawValue }.sorted()
+        let trimmedDesc = actionDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedDefault = defaultDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let customDesc = (trimmedDesc.isEmpty || trimmedDesc == trimmedDefault) ? nil : trimmedDesc
         let resolvedApplicableTypes: [String] =
             aiKind == .image ? ["image"] : appliesArray
         let descriptor = CustomAIDescriptor(
@@ -1852,7 +1869,8 @@ struct ActionEditor: View {
             enabled: true,
             kind: aiKind,
             requiredTraits: requiredTraits.sorted(),
-            forbiddenTraits: forbiddenTraits
+            forbiddenTraits: forbiddenTraits,
+            description: customDesc
         )
         // Insert directly after the original — see duplicate-
         // Transformation comment above for rationale.
@@ -1940,6 +1958,9 @@ struct ActionEditor: View {
             if Self.resizeActionIDs.contains(id) {
                 resizeMaxSide = ResizeSettings.maxLongSide(for: id)
             }
+            if Self.asciiArtActionIDs.contains(id) {
+                asciiMaxWidth = ASCIIArtSettings.maxWidth(for: id)
+            }
         case .editTransformation(let d):
             kind = .transformation
             title = d.title
@@ -1968,6 +1989,12 @@ struct ActionEditor: View {
         // is read AFTER the switch so it sees the loaded kind / engine / id.
         if let id = currentActionID, let override = registry.customDescription(forActionID: id) {
             actionDescription = override
+        } else if case .editTransformation(let d) = context,
+                  let description = d.description {
+            actionDescription = description
+        } else if case .editAI(let d) = context,
+                  let description = d.description {
+            actionDescription = description
         } else if isEditing {
             actionDescription = defaultDescription
         }
@@ -2139,6 +2166,9 @@ struct ActionEditor: View {
     private func save() {
         let appliesArray = applicableTypes.map { $0.rawValue }.sorted()
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedDesc = actionDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedDefault = defaultDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let customDesc = (trimmedDesc.isEmpty || trimmedDesc == trimmedDefault) ? nil : trimmedDesc
 
         // Resolve target id first so hotkey conflict resolution can use it.
         let targetID: String
@@ -2186,7 +2216,8 @@ struct ActionEditor: View {
                 applicableTypes: appliesArray,
                 enabled: true,
                 requiredTraits: requiredTraits.sorted(),
-                forbiddenTraits: forbiddenTraits
+                forbiddenTraits: forbiddenTraits,
+                description: customDesc
             )
             registry.upsertCustomTransformation(descriptor)
             registry.setHotkey(hotkey, for: targetID)
@@ -2212,7 +2243,8 @@ struct ActionEditor: View {
                 enabled: true,
                 kind: aiKind,
                 requiredTraits: requiredTraits.sorted(),
-                forbiddenTraits: forbiddenTraits
+                forbiddenTraits: forbiddenTraits,
+                description: customDesc
             )
             registry.upsertCustomAI(descriptor)
             registry.setHotkey(hotkey, for: targetID)
@@ -2221,12 +2253,10 @@ struct ActionEditor: View {
         // override when the field is empty or still equals the bundled
         // default — so the action keeps tracking future default updates
         // instead of freezing a copy of today's text.
-        let trimmedDesc = actionDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedDefault = defaultDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedDesc.isEmpty || trimmedDesc == trimmedDefault {
-            registry.setCustomDescription(nil, forActionID: targetID)
+        if case .builtin = kind {
+            registry.setCustomDescription(customDesc, forActionID: targetID)
         } else {
-            registry.setCustomDescription(trimmedDesc, forActionID: targetID)
+            registry.setCustomDescription(nil, forActionID: targetID)
         }
         // Persist the test-panel Input sample only if the user actually
         // modified it this session. Diffing against the originalTestSample
@@ -2256,8 +2286,8 @@ struct ActionEditor: View {
         testOutcome = nil
         testInflight = nil
         testElapsed = 0
-        testTickTimer?.invalidate()
-        testTickTimer = nil
+        testTickTask?.cancel()
+        testTickTask = nil
 
         // Build the input clip. Three modes:
         //
@@ -2500,17 +2530,11 @@ struct ActionEditor: View {
         // for image actions whose chat default was Anthropic but
         // whose REAL execution rerouted to OpenAI via soft fallback
         // — lying about which provider actually ran the request.
-        if let cp = effectiveProvider() {
-            let modelLabel: String
-            if isImageAI {
-                modelLabel = (cp.kind == .gemini)
-                    ? "gemini-2.5-flash-image-preview"
-                    : "gpt-image-1"
-            } else {
-                modelLabel = cp.model
-            }
+        if let resolved = effectiveProvider() {
+            let modelLabel = isImageAI ? imageRuntimeModelLabel(for: resolved.providerKind)
+                                       : resolved.modelLabel
             return AIInflight(
-                providerLabel: cp.displayName,
+                providerLabel: resolved.providerLabel,
                 modelName: modelLabel,
                 actionTitle: actionTitle,
                 startedAt: Date()
@@ -2524,21 +2548,23 @@ struct ActionEditor: View {
         )
     }
 
+    private func imageRuntimeModelLabel(for kind: ProviderKind) -> String {
+        kind == .gemini ? "gemini-2.5-flash-image-preview" : "gpt-image-1"
+    }
+
     @MainActor
     private func startTestTickTimer() {
         stopTestTickTimer()
         let started = testInflight?.startedAt ?? Date()
-        testTickTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
-            Task { @MainActor in
-                self.testElapsed = Date().timeIntervalSince(started)
-            }
+        testTickTask = ElapsedTicker.start(startedAt: started) { elapsed in
+            self.testElapsed = elapsed
         }
     }
 
     @MainActor
     private func stopTestTickTimer() {
-        testTickTimer?.invalidate()
-        testTickTimer = nil
+        testTickTask?.cancel()
+        testTickTask = nil
     }
 
     // `describeOutcome` / `describeImageOutcome` were the plain-text

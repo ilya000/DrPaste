@@ -703,7 +703,7 @@ enum ActionTestSamples {
                 // courtesy.
                 req.setValue("DrPaste/\(AppBrand.version) (macOS clipboard manager)",
                              forHTTPHeaderField: "User-Agent")
-                let (data, response) = try await URLSession.shared.data(for: req)
+                let (data, response) = try await AIHTTP.session.data(for: req)
                 guard let http = response as? HTTPURLResponse,
                       (200..<300).contains(http.statusCode) else { return }
                 // Sanity check — it must decode as an image before

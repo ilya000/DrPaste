@@ -94,7 +94,16 @@ Custom per-action hotkeys can be assigned in Settings — tapping them applies t
 
 ## Installation
 
-DrPaste is built with Swift Package Manager. Requirements:
+Download the latest DMG from GitHub Releases:
+
+- **Latest DMG** — <https://github.com/ilya000/DrPaste/releases/latest/download/DrPaste-0.59.0.dmg>
+- **All releases** — <https://github.com/ilya000/DrPaste/releases>
+
+DrPaste is currently distributed as a direct alpha download. Notarization is
+pending until Developer ID signing credentials are available; macOS may show a
+Gatekeeper warning for unsigned local builds.
+
+To build from source, DrPaste uses Swift Package Manager. Requirements:
 
 - macOS 13 (Ventura) or later
 - Xcode Command Line Tools
@@ -143,6 +152,8 @@ Built on Apple's AppKit, SwiftUI, Core Image, Vision, ScreenCaptureKit, PDFKit, 
 ## Links
 
 - **Home page** — <https://ctrl8.com/drpaste.html>
+- **Latest DMG** — <https://github.com/ilya000/DrPaste/releases/latest/download/DrPaste-0.59.0.dmg>
+- **Releases** — <https://github.com/ilya000/DrPaste/releases>
 - **Source** — <https://github.com/ilya000/DrPaste>
 - **Author** — iLya Os (Ilya V. Osipov), <https://github.com/ilya000>
 - **More projects** — <https://ctrl8.com>

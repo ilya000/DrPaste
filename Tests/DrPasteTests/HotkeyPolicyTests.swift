@@ -56,4 +56,22 @@ final class HotkeyPolicyTests: XCTestCase {
         XCTAssertFalse(hotkey.isOptCmdOnly)
         XCTAssertEqual(hotkey.displayString, "⌃⇧R")
     }
+
+    func testRegistryPrunesOrphanedActionHotkeys() {
+        let registry = ActionRegistry()
+        let valid = optCmd(kVK_ANSI_R)
+        let orphan = optCmd(kVK_ANSI_T)
+
+        var config = ActionConfig()
+        config.actionHotkeys = [
+            "builtin.identity": valid,
+            "missing.action": orphan
+        ]
+        registry.config = config
+
+        XCTAssertEqual(registry.config.actionHotkeys["builtin.identity"], valid)
+        XCTAssertNil(registry.config.actionHotkeys["missing.action"])
+        XCTAssertNil(registry.conflictingAction(for: orphan),
+                     "orphan hotkeys must not reserve shortcuts")
+    }
 }

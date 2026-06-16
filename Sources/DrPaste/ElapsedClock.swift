@@ -103,3 +103,21 @@ final class ElapsedClock: ObservableObject {
         }
     }
 }
+
+/// Lightweight Task-backed ticker for AppKit controllers / SwiftUI views that
+/// already own their own state and only need elapsed seconds pushed into it.
+/// This is the non-ObservableObject sibling of `ElapsedClock`: callers keep the
+/// returned Task and cancel it in their existing teardown path.
+@MainActor
+enum ElapsedTicker {
+    static func start(startedAt: Date = Date(),
+                      intervalNanoseconds: UInt64 = 100_000_000,
+                      onTick: @escaping @MainActor (TimeInterval) -> Void) -> Task<Void, Never> {
+        Task { @MainActor in
+            while !Task.isCancelled {
+                onTick(Date().timeIntervalSince(startedAt))
+                try? await Task.sleep(nanoseconds: intervalNanoseconds)
+            }
+        }
+    }
+}

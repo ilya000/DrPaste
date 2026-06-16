@@ -45,4 +45,29 @@ final class ASCIIArtTests: XCTestCase {
         let out = ImageToASCIIArtAction.render(image: img, outWidth: 40)
         XCTAssertTrue(out.contains("-"), "horizontal edge should yield - strokes:\n\(out)")
     }
+
+    func testRendererHonoursRequestedWidth() {
+        let img = image({ ctx in
+            ctx.setFillColor(CGColor(gray: 0.15, alpha: 1))
+            ctx.fill(CGRect(x: 0, y: 0, width: 80, height: 80))
+        }, 80, 80)
+        let out = ImageToASCIIArtAction.render(image: img, outWidth: 24)
+        let maxLine = out.split(separator: "\n").map(\.count).max() ?? 0
+        XCTAssertLessThanOrEqual(maxLine, 24)
+    }
+
+    func testASCIIArtSettingsRoundTripAndClamp() {
+        let id = "test.ascii.\(UUID().uuidString)"
+        defer {
+            UserDefaults.standard.removeObject(forKey: "drpaste.image.asciiMaxWidth.\(id)")
+        }
+
+        XCTAssertEqual(ASCIIArtSettings.maxWidth(for: id, default: 40), 40)
+        ASCIIArtSettings.setMaxWidth(88, for: id)
+        XCTAssertEqual(ASCIIArtSettings.maxWidth(for: id), 88)
+        ASCIIArtSettings.setMaxWidth(1, for: id)
+        XCTAssertEqual(ASCIIArtSettings.maxWidth(for: id), ASCIIArtSettings.minWidth)
+        ASCIIArtSettings.setMaxWidth(10_000, for: id)
+        XCTAssertEqual(ASCIIArtSettings.maxWidth(for: id), ASCIIArtSettings.maxWidth)
+    }
 }

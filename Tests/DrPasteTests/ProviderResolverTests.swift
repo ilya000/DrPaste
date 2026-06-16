@@ -37,6 +37,12 @@ final class ProviderResolverTests: XCTestCase {
                            baseURL: "https://openrouter.ai/api/v1", enabled: true)
     }
 
+    private func makeCustom(id: String = "custom") -> ConfiguredProvider {
+        ConfiguredProvider(id: id, kind: .custom, displayName: "Custom",
+                           model: "local-model",
+                           baseURL: "http://localhost:9999/v1", enabled: true)
+    }
+
     private func makeConfig(_ providers: [ConfiguredProvider],
                             defaultID: String? = nil) -> ProvidersConfig {
         ProvidersConfig(defaultProviderID: defaultID, providers: providers)
@@ -146,5 +152,22 @@ final class ProviderResolverTests: XCTestCase {
             config: cfg,
             hasKey: { _ in false })
         XCTAssertNil(r)
+    }
+
+    // MARK: Runtime credential adapter
+
+    func testRuntimeCredentialAdapterAllowsNoAuthCustomTextButNotImage() {
+        let cfg = makeConfig([makeCustom()], defaultID: "custom")
+
+        XCTAssertTrue(ProviderResolver.runtimeHasCredential(
+            providerID: "custom",
+            operationKind: .text,
+            config: cfg
+        ))
+        XCTAssertFalse(ProviderResolver.runtimeHasCredential(
+            providerID: "custom",
+            operationKind: .imageEdit,
+            config: cfg
+        ))
     }
 }

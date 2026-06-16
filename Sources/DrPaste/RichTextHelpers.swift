@@ -133,47 +133,13 @@ enum RichTextHelpers {
             interpretedSyntax: .full,
             failurePolicy: .returnPartiallyParsedIfPossible,
             languageCode: nil)
-        guard var attr = try? AttributedString(markdown: markdown, options: options) else {
+        guard let attr = try? AttributedString(markdown: markdown, options: options) else {
             return NSAttributedString(string: markdown,
                                       attributes: [.font: NSFont.systemFont(ofSize: 13)])
         }
-        let base = NSFont.systemFont(ofSize: 13)
-        attr.font = base
-
-        // Inline emphasis → real font traits (the parser only records metadata).
-        for run in attr.runs {
-            guard let inline = run.inlinePresentationIntent else { continue }
-            var font = inline.contains(.code)
-                ? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular) : base
-            var traits: NSFontDescriptor.SymbolicTraits = []
-            if inline.contains(.stronglyEmphasized) { traits.insert(.bold) }
-            if inline.contains(.emphasized) { traits.insert(.italic) }
-            if !traits.isEmpty,
-               let f = NSFont(descriptor: font.fontDescriptor.withSymbolicTraits(traits),
-                              size: font.pointSize) {
-                font = f
-            }
-            attr[run.range].font = font
-        }
-
-        // Block styling — heading sizes + fenced-code-block monospace.
-        for run in attr.runs {
-            guard let intent = run.presentationIntent else { continue }
-            for component in intent.components {
-                switch component.kind {
-                case .header(let level):
-                    let size: CGFloat = level <= 1 ? 22 : (level == 2 ? 18 : (level == 3 ? 16 : 14))
-                    attr[run.range].font = NSFont.boldSystemFont(ofSize: size)
-                case .codeBlock:
-                    attr[run.range].font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-                default:
-                    break
-                }
-            }
-        }
-
         // The parser carries block structure only as metadata with no newlines —
         // rebuild inserting a separator at each block boundary.
+        let base = NSFont.systemFont(ofSize: 13)
         let result = NSMutableAttributedString()
         var isFirst = true
         var lastIntent: PresentationIntent?
@@ -183,11 +149,44 @@ enum RichTextHelpers {
                 let sep = (isListItemIntent(intent) && isListItemIntent(lastIntent)) ? "\n" : "\n\n"
                 result.append(NSAttributedString(string: sep, attributes: [.font: base]))
             }
+            let start = result.length
             result.append(NSAttributedString(AttributedString(attr[run.range])))
+            let range = NSRange(location: start, length: result.length - start)
+            result.addAttributes([.font: font(for: run, base: base)], range: range)
             lastIntent = intent
             isFirst = false
         }
         return result
+    }
+
+    private static func font(for run: AttributedString.Runs.Run, base: NSFont) -> NSFont {
+        if let intent = run.presentationIntent {
+            for component in intent.components {
+                switch component.kind {
+                case .header(let level):
+                    let size: CGFloat = level <= 1 ? 22 : (level == 2 ? 18 : (level == 3 ? 16 : 14))
+                    return NSFont.boldSystemFont(ofSize: size)
+                case .codeBlock:
+                    return NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+                default:
+                    break
+                }
+            }
+        }
+
+        guard let inline = run.inlinePresentationIntent else { return base }
+        var font = inline.contains(.code)
+            ? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+            : base
+        var traits: NSFontDescriptor.SymbolicTraits = []
+        if inline.contains(.stronglyEmphasized) { traits.insert(.bold) }
+        if inline.contains(.emphasized) { traits.insert(.italic) }
+        if !traits.isEmpty,
+           let styled = NSFont(descriptor: font.fontDescriptor.withSymbolicTraits(traits),
+                               size: font.pointSize) {
+            font = styled
+        }
+        return font
     }
 
     private static func isListItemIntent(_ intent: PresentationIntent?) -> Bool {

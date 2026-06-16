@@ -847,7 +847,7 @@ final class AnthropicProvider: AIProvider {
         ]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await AIHTTP.session.data(for: req)
         try checkHTTP(resp: resp, data: data)
 
         struct Block: Decodable { let type: String; let text: String? }
@@ -1014,7 +1014,7 @@ final class OpenAICompatibleProvider: AIProvider {
 
         let (data, resp): (Data, URLResponse)
         do {
-            (data, resp) = try await URLSession.shared.data(for: req)
+            (data, resp) = try await AIHTTP.session.data(for: req)
         } catch {
             throw AIProviderError.networkUnreachable
         }
@@ -1143,7 +1143,7 @@ final class GeminiProvider: AIProvider {
         ]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await AIHTTP.session.data(for: req)
         try checkHTTP(resp: resp, data: data)
 
         struct Part: Decodable { let text: String? }

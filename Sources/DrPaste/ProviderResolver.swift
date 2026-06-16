@@ -246,3 +246,26 @@ enum ProviderResolver {
         )
     }
 }
+
+// MARK: - Runtime credential adapter
+
+extension ProviderResolver {
+    /// Readiness predicate used by UI/runtime wrappers when calling the pure
+    /// resolver. Text AI can use local providers and custom no-auth endpoints;
+    /// image edit/generation currently requires an API key for every supported
+    /// provider kind, matching `AIImageAction.resolveProvider`.
+    static func runtimeHasCredential(
+        providerID: String,
+        operationKind: AIOperationKind,
+        config: ProvidersConfig
+    ) -> Bool {
+        guard let cp = config.providers.first(where: { $0.id == providerID }) else {
+            return false
+        }
+        if operationKind == .text {
+            if cp.kind.isLocal { return true }
+            if cp.kind == .custom, cp.baseURL?.isEmpty == false { return true }
+        }
+        return APIKeyStorage.load(for: providerID)?.isEmpty == false
+    }
+}

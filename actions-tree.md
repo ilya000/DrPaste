@@ -1,9 +1,15 @@
 # DrPaste — Default actions tree
 
-Snapshot of every action shipped in DrPaste as of **0.57.0**.
+Snapshot of every action shipped in DrPaste as of **0.59.0**.
 Generated from `DefaultTransformationSeed.swift`, `DefaultAISeed.swift`,
 standalone `ClipboardAction` registrations in `main.swift`, and
 `CuratedDefaults.enabledByDefault`.
+
+**Finalization policy.** DrPaste is feature-frozen. This tree is not a prompt
+for more actions; it is the pruning map for the product as it exists. The HUD
+should lead with frequent, useful, predictable actions. Impressive and rare
+actions remain available, but should appear only after context gates pass, after
+the user enables them, or inside the action palette.
 
 **Convention v2 (#A74, 0.56.0).** Action IDs use the form
 `<namespace>.<content_kind>.<verb_noun>` where `content_kind` matches
@@ -29,6 +35,47 @@ controls only the **first-launch** state and the post-Factory-Reset state.
 |---|---|---|---|---|
 | Paste as is | `builtin.identity` | Builtin | ✅ | (anchor — all kinds) |
 | Type Slowly | `builtin.text.type_slowly` | Builtin | ✅ | text, code, markdown, url |
+
+## Final HUD priority model
+
+This is the canonical sort principle for first-run and Factory Reset states.
+
+### Text / Markdown / Rich text
+
+1. Paste as is.
+2. Fix grammar, Translate, Summarize.
+3. Tidy text, Fix keyboard layout, Clean OCR when their traits match.
+4. Improve clarity, Make shorter, Formal tone, Friendly tone when enabled.
+5. Email reply / subject only for mail-like clips.
+6. Extract links, Extract emails, Unit conversion, Cyrillic transliteration.
+7. QR, Text to files, Type Slowly.
+8. Case changes, line sorting, slug/Base64/encoding helpers.
+9. Unicode pseudo-fonts and chat/social novelty actions.
+10. Text to image and other showcase actions.
+
+### URL
+
+1. Paste as is.
+2. Clean URL when tracking parameters exist.
+3. Preview card, Generate QR.
+4. Markdown link, domain extraction, URL decode.
+5. HTML link, URL encode, Type Slowly.
+
+### Code / JSON / Table
+
+1. Paste as is.
+2. Local deterministic formatting / validation.
+3. Explain code and Find bugs.
+4. Extraction and wrapping helpers.
+5. Target-needing or niche transforms such as code translation, Base64, wiki.
+
+### Image / Files
+
+1. Paste as is.
+2. OCR, Decode QR, image info.
+3. Strip metadata, resize, rotate, compress.
+4. Copy paths / filenames / shell-safe paths / reveal in Finder.
+5. ASCII art, rich icons, AI image styles.
 
 ## Text — case
 
@@ -267,27 +314,27 @@ Seeded via `DefaultAISeed`. Every entry defaults to enabled at seed time.
 | Category | Total | Enabled by default | Palette only |
 |---|---:|---:|---:|
 | Paste / general | 2 | 2 | 0 |
-| Text — case | 7 | 2 | 5 |
-| Text — whitespace / lines | 6 | 1 | 5 |
-| Text — encoding / derived | 7 | 3 | 4 |
+| Text — case | 7 | 2, trait-gated | 5 |
+| Text — whitespace / lines | 4 | 1, trait-gated | 3 |
+| Text — encoding / derived | 7 | 2-3, context-scoped | 4-5 |
 | Text — extras | 4 | 3 | 1 |
 | URL | 7 | 4 | 3 |
-| JSON | 6 | 4 | 2 |
+| JSON | 6 | 3 | 3 |
 | Code | 4 | 3 | 1 |
 | Markdown | 4 | 3 | 1 |
-| Table / CSV | 5 | 5 | 0 |
+| Table / CSV | 5 | 4 | 1 |
 | Rich text | 5 | 5 | 0 |
-| Unicode pseudo-fonts | 22 | 21 | 1 |
+| Unicode pseudo-fonts | 22 | 6, chat-gated | 16 |
 | HTML | 3 | 1 | 2 |
-| Transliteration | 2 | 2 | 0 |
-| Image | 11 | 9 | 2 |
+| Transliteration | 2 | 1, trait-gated | 1 |
+| Image | 11 | 8-9 | 2-3 |
 | Files | 7 | 7 | 0 |
 | Fun / Internet Slang | 3 | 0 | 3 |
-| AI text | 13 | 13 | 0 |
-| AI code | 4 | 4 | 0 |
-| AI image | 3 | 3 | 0 |
+| AI text | 13 | core writing/OCR/email only | niche rewrites off |
+| AI code | 4 | explain/find bugs | pretty/translate off |
+| AI image | 3 | 0 | 3 |
 | AI text → image | 1 | 1 | 0 |
-| **Total shipped** | **126** | **96** | **30** |
+| **Total shipped** | **126** | **compact/contextual** | **long tail hidden** |
 
 ---
 
@@ -302,18 +349,16 @@ Seeded via `DefaultAISeed`. Every entry defaults to enabled at seed time.
   UPPERCASE and lowercase are curated-on; Sentence case, Title Case, and
   the three programmer-cases live in the palette to keep the chip strip
   scannable on a quick ⌥⌘V press.
-- **Unicode pseudo-fonts are mostly curated-on** by deliberate marketing
-  decision — they're the brightest "wow factor" in the chip strip and
-  the user can disable variants they don't want in two clicks. The
-  outlier is `font_markdown` (parses `**bold**` markup span-by-span)
-  which is palette-only because it's narrower in scope.
+- **Unicode pseudo-fonts are no longer the default face of the product.**
+  A small useful set stays enabled, but all pseudo-fonts are gated to
+  chat/social source context. They are impressive and fun, not the core
+  clipboard workflow.
 - **Fun / Internet Slang trio (Leetspeak / UwU / Zalgo) is palette-only**
   by design — keeps the default chip strip serious; the user opts in
   when they want them.
-- **AI seeds bypass the curated table** — every entry in `DefaultAISeed`
-  defaults to `enabled = true` on the descriptor itself, regardless of
-  the CuratedDefaults table. To disable an AI seed at first launch you
-  flip its descriptor flag, not the curated list.
+- **AI seeds are curated by `CuratedDefaults.isEnabledByDefault`.** The core
+  writing/code/OCR actions ship on; novelty, target-needing, or redundant AI
+  actions ship off and remain discoverable in Settings.
 - **`builtin.identity` is an anchor**, not a real transformation — it's
   a Tier-0 entry that pastes the original clip untouched. Lives in
   `IdentityAction`.
