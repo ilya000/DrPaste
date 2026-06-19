@@ -92,17 +92,20 @@ echo "APPL????" > "$CONTENTS/PkgInfo"
 if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
   echo "==> Codesigning with $CODESIGN_IDENTITY"
   codesign --force --deep --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$APP_DIR"
+  codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 else
   echo "==> Skipping codesign (set CODESIGN_IDENTITY to sign)"
 fi
 
 if [[ -n "${NOTARY_PROFILE:-}" ]]; then
   ZIP="$ROOT/dist/$APP_NAME-$VERSION.zip"
-  echo "==> Creating notarization zip"
+  echo "==> Creating app notarization zip"
+  rm -f "$ZIP"
   ditto -c -k --keepParent "$APP_DIR" "$ZIP"
-  echo "==> Submitting to notarytool profile $NOTARY_PROFILE"
+  echo "==> Submitting app to notarytool profile $NOTARY_PROFILE"
   xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
   xcrun stapler staple "$APP_DIR"
+  xcrun stapler validate "$APP_DIR"
 else
   echo "==> Skipping notarization (set NOTARY_PROFILE to submit)"
 fi
@@ -110,6 +113,13 @@ fi
 DMG="$ROOT/dist/$APP_NAME-$VERSION.dmg"
 rm -f "$DMG"
 hdiutil create -volname "$APP_NAME $VERSION" -srcfolder "$APP_DIR" -ov -format UDZO "$DMG" >/dev/null
+
+if [[ -n "${NOTARY_PROFILE:-}" ]]; then
+  echo "==> Submitting DMG to notarytool profile $NOTARY_PROFILE"
+  xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun stapler staple "$DMG"
+  xcrun stapler validate "$DMG"
+fi
 
 echo "==> Built:"
 echo "    $APP_DIR"

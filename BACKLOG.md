@@ -473,14 +473,15 @@ public panel and explicitly says the data is external, not in-app telemetry.
 
 ### #A1 — Ship as a signed `.app` bundle with `.icns` and notarization
 
-**Status:** partial / release tooling shipped. `scripts/build_app.sh` now
+**Status:** shipped. `scripts/build_app.sh` now
 builds a release SwiftPM product, creates `dist/DrPaste.app`, embeds
-`Info.plist`, `PkgInfo`, resources and `AppIcon.icns`, optionally codesigns /
-notarizes via `CODESIGN_IDENTITY` / `NOTARY_PROFILE`, and emits a DMG.
+`Info.plist`, `PkgInfo`, resources and `AppIcon.icns`, codesigns with
+Developer ID when `CODESIGN_IDENTITY` is set, notarizes/staples both the app and
+final DMG when `NOTARY_PROFILE` is set, and emits a distribution DMG.
 `.github/workflows/release.yml` builds the DMG on `v*` tag push /
 manual dispatch, uploads it as an artifact, and creates a draft GitHub
-Release. Apple Developer ID credentials plus final signing/notarization remain
-release-ops work.
+Release. The public `v0.59.0` DMG was notarized and stapled with the
+`iodia-notary` profile on 2026-06-20.
 **Touches:** new build script, `Info.plist`, code-signing identity, notarization
 pipeline, distribution channel.
 **Context:** DrPaste currently builds as a SwiftPM executable and runs via
@@ -491,8 +492,8 @@ can't be wired up, and the iCloud Keychain entitlement is unreachable.
 - Generate a proper `.app` bundle from the SwiftPM build product
   (`Contents/MacOS/DrPaste`, `Contents/Info.plist`,
   `Contents/Resources/AppIcon.icns`, `Contents/PkgInfo`)
-- Acquire an Apple Developer ID, sign with `codesign --options runtime`
-- Notarize via `xcrun notarytool submit` and staple
+- Sign with Apple Developer ID using `codesign --options runtime`
+- Notarize via `xcrun notarytool submit` and staple both app and DMG
 - Build a DMG (`hdiutil create`) for distribution
 - GitHub Release workflow that produces the DMG on tag push
 

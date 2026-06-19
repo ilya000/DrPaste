@@ -99,9 +99,8 @@ Download the latest DMG from GitHub Releases:
 - **Latest DMG** — <https://github.com/ilya000/DrPaste/releases/latest/download/DrPaste-0.59.0.dmg>
 - **All releases** — <https://github.com/ilya000/DrPaste/releases>
 
-DrPaste is currently distributed as a direct alpha download. Notarization is
-pending until Developer ID signing credentials are available; macOS may show a
-Gatekeeper warning for unsigned local builds.
+DrPaste is currently distributed as a direct alpha download. The release DMG is
+Developer ID signed, notarized by Apple, and stapled for Gatekeeper validation.
 
 To build from source, DrPaste uses Swift Package Manager. Requirements:
 

@@ -485,10 +485,10 @@ The active backlog lives in `BACKLOG.md`. DrPaste is now feature-frozen:
 prefer finishing, pruning, packaging, tests, and documentation over expanding
 the product. Highlights of **remaining** work:
 
-1. **#A1** — release ops still open: sign/notarize the `.app` bundle once
-   Apple Developer ID credentials are available. Local `scripts/build_app.sh`
-   creates `dist/DrPaste.app` and a DMG; `.github/workflows/release.yml`
-   builds/uploads a draft release on tag push.
+1. **#A1 shipped** — release ops are wired: local `scripts/build_app.sh`
+   creates `dist/DrPaste.app`, signs with Developer ID when
+   `CODESIGN_IDENTITY` is set, notarizes/staples both app and DMG when
+   `NOTARY_PROFILE` is set, and emits the distribution DMG.
 2. **#A45 shipped** — contract-test coverage covers registry seeds, provider
    resolution, import merge, PasteCommitter, SelectionCaptureService, and
    many transformation engines.
