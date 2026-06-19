@@ -6,9 +6,17 @@ let package = Package(
     platforms: [
         .macOS(.v13)
     ],
+    dependencies: [
+        // Shared Latin ↔ Cyrillic transliteration engine (14 langs + detection), extracted from
+        // this app so DrPaste and PolyType share ONE source of truth (sibling checkout).
+        .package(path: "../ioTranslit"),
+    ],
     targets: [
         .executableTarget(
             name: "DrPaste",
+            dependencies: [
+                .product(name: "ioTranslit", package: "ioTranslit"),
+            ],
             path: "Sources/DrPaste",
             resources: [
                 .process("Resources")

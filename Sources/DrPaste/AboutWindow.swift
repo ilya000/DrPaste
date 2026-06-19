@@ -3,7 +3,7 @@
 //  DrPaste
 //
 //  Copyright © 2026 iLya Os.
-//  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
+//  Licensed under the MIT License. See LICENSE.
 //  See LICENSE for terms.
 //
 //  Custom About window. NSApp.orderFrontStandardAboutPanel is too narrow and
@@ -81,7 +81,7 @@ struct AboutView: View {
             // Copyright + license + source link
             VStack(alignment: .leading, spacing: 8) {
                 Text("Copyright © 2026 iLya Os.")
-                Text("Licensed under GNU GPL v3.0-or-later with attribution requirement.")
+                Text("Licensed under the MIT License.")
                     .foregroundStyle(.secondary)
                 HStack(spacing: 6) {
                     Text("Source code:")

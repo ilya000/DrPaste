@@ -6,7 +6,7 @@ The clipboard is where thought breaks — wrong formatting, broken layout, track
 
 Hold `⌥⌘V`, browse your clipboard history and transformations in a HUD, choose an action, release to paste. There is no separate window to manage, no panel to dismiss — the workflow is keyboard-first and gesture-driven. Instead of stopping to ask "how do I fix this paste?", you stay in flow.
 
-Current version: **0.59.0** (alpha, feature-frozen).
+Current version: **0.59.1** (alpha, feature-frozen).
 
 ## Product status
 
@@ -96,7 +96,7 @@ Custom per-action hotkeys can be assigned in Settings — tapping them applies t
 
 Download the latest DMG from GitHub Releases:
 
-- **Latest DMG** — <https://github.com/ilya000/DrPaste/releases/latest/download/DrPaste-0.59.0.dmg>
+- **Latest DMG** — <https://github.com/ilya000/DrPaste/releases/latest/download/DrPaste-0.59.1.dmg>
 - **All releases** — <https://github.com/ilya000/DrPaste/releases>
 
 DrPaste is currently distributed as a direct alpha download. The release DMG is
@@ -151,7 +151,7 @@ Built on Apple's AppKit, SwiftUI, Core Image, Vision, ScreenCaptureKit, PDFKit, 
 ## Links
 
 - **Home page** — <https://ctrl8.com/drpaste.html>
-- **Latest DMG** — <https://github.com/ilya000/DrPaste/releases/latest/download/DrPaste-0.59.0.dmg>
+- **Latest DMG** — <https://github.com/ilya000/DrPaste/releases/latest/download/DrPaste-0.59.1.dmg>
 - **Releases** — <https://github.com/ilya000/DrPaste/releases>
 - **Source** — <https://github.com/ilya000/DrPaste>
 - **Author** — iLya Os (Ilya V. Osipov), <https://github.com/ilya000>
@@ -159,7 +159,7 @@ Built on Apple's AppKit, SwiftUI, Core Image, Vision, ScreenCaptureKit, PDFKit, 
 
 ## License
 
-GNU GPL v3.0-or-later with attribution requirement. See [LICENSE](LICENSE).
+MIT License. See [LICENSE](LICENSE).
 
 Copyright © 2026 iLya Os (Ilya V. Osipov).
 

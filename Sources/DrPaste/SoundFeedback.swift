@@ -3,7 +3,7 @@
 //  DrPaste
 //
 //  Copyright © 2026 iLya Os.
-//  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
+//  Licensed under the MIT License. See LICENSE.
 //  See LICENSE for terms.
 //
 //  Sound feedback for copy / paste / type operations. All cues are enabled by

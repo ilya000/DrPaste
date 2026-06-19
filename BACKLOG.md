@@ -4,7 +4,7 @@ Feature-freeze notes, release-hardening work, and a condensed changelog.
 Historical free-form notes were collapsed into this document; the long-form
 discussion that preceded each shipped item lives in git history.
 
-Current version: **0.59.0** (alpha, feature-frozen). `AppBrand.version` is the live
+Current version: **0.59.1** (alpha, feature-frozen). `AppBrand.version` is the live
 source of truth — bump there per release. The version string in this
 file's header and in `SKILL.md` / `README.md` / `HELP.md` is updated
 alongside. See [SKILL.md](SKILL.md) for
@@ -480,7 +480,7 @@ Developer ID when `CODESIGN_IDENTITY` is set, notarizes/staples both the app and
 final DMG when `NOTARY_PROFILE` is set, and emits a distribution DMG.
 `.github/workflows/release.yml` builds the DMG on `v*` tag push /
 manual dispatch, uploads it as an artifact, and creates a draft GitHub
-Release. The public `v0.59.0` DMG was notarized and stapled with the
+Release. The public `v0.59.1` DMG is notarized and stapled with the
 `iodia-notary` profile on 2026-06-20.
 **Touches:** new build script, `Info.plist`, code-signing identity, notarization
 pipeline, distribution channel.

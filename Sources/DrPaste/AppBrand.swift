@@ -3,7 +3,7 @@
 //  DrPaste
 //
 //  Copyright © 2026 iLya Os.
-//  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
+//  Licensed under the MIT License. See LICENSE.
 //  See LICENSE for terms.
 //
 //  Single source of truth for product name, icons, version, and About credits.
@@ -15,7 +15,7 @@ import SwiftUI
 
 enum AppBrand {
     static let name: String = "DrPaste"
-    static let version: String = "0.59.0"
+    static let version: String = "0.59.1"
     static let tagline: String = "Keep your train of thought intact"
 
     static let githubURL = "https://github.com/ilya000/DrPaste"
@@ -102,7 +102,7 @@ enum AppBrand {
 
         body.append(NSAttributedString(string: """
         Copyright © 2026 iLya Os.
-        Licensed under GNU GPL v3.0-or-later with attribution requirement.
+        Licensed under the MIT License.
 
 
         """))

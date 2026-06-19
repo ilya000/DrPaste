@@ -3,7 +3,7 @@
 //  DrPaste
 //
 //  Copyright © 2026 iLya Os.
-//  Licensed under GPL-3.0-or-later with attribution (GPL §7(d)).
+//  Licensed under the MIT License. See LICENSE.
 //  See LICENSE for terms.
 //
 //  Per-action hotkeys. The user assigns a global shortcut to any action; when

@@ -9,7 +9,7 @@ Native macOS clipboard utility built around press-and-hold UX. Goal is not "yet 
 
 Original working name: **ClipMacPoC**. Final product name: **DrPaste** (chosen 25 May 2026). The "Dr" semantic is **PhD / scholar / educated**, not medical. The icon reflects this: clipboard + mortarboard cap, not a medical cross.
 
-Current version: **0.59.0** (alpha, unsigned SwiftPM build, feature-frozen).
+Current version: **0.59.1** (alpha, Developer ID signed + Apple notarized DMG, feature-frozen).
 
 Finalization rule: do not expand DrPaste into a broader product. Work should
 polish the existing clipboard/HUD/action paradigm: bugs, reliability, ordering,
@@ -22,7 +22,7 @@ removing, hiding, or context-gating clutter over adding a visible capability.
 ~/Dropbox/Claude My/DrPaste/
   Package.swift
   README.md                         English, publishable
-  LICENSE                           GPL-3.0-or-later + attribution §7(d)
+  LICENSE                           MIT License
   SKILL.md                          this file
   BACKLOG.md                        feature-freeze notes + release hardening + changelog
   HELP.md                           Russian end-user guide (16 sections)
@@ -156,7 +156,7 @@ User holds `⌥⌘V` → BigHUD overlay appears → `↑↓` browses clipboard h
 - **Keyboard-first, mouse-available** — same posture as Spotlight or Cmd-Tab.
 - **System HUD aesthetic** — translucent, light/dark, system accent.
 - **Graceful degradation** — works without Accessibility permission (Limited Mode).
-- **Open source** — GPL-3.0 with attribution, community-extensible.
+- **Open source** — MIT License, permissive and community-extensible.
 
 ### Two-surface model — HUD runs, Settings manages
 
@@ -418,7 +418,7 @@ To force a specific engine: `CLIPMAC_ENGINE=monitor swift run`.
 
 ## License
 
-GPL-3.0-or-later with attribution requirement via GPL §7(d). `LICENSE`
+MIT License — permissive, attribution via the standard MIT notice. `LICENSE`
 contains the attribution clause and a pointer to the canonical text.
 
 Copyright `© 2026 iLya Os`. The handle `iLya Os` is the standard form
@@ -699,7 +699,7 @@ All global hotkeys are fixed except per-action `⌥⌘<letter>` chords.
   SKILL.md                        this file — project memory
   HELP.md                         Russian end-user guide
   BACKLOG.md                      active items + condensed changelog
-  LICENSE                         GPL-3.0-or-later + §7(d) attribution
+  LICENSE                         MIT License
   .gitattributes                  enforces LF line endings
   .build/                         SwiftPM artefacts (exclude from sync)
 ```
