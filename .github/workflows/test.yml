@@ -13,7 +13,7 @@ permissions:
 jobs:
   swift-test:
     name: Swift test
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - name: Check out sources
